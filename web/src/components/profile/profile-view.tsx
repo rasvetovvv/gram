@@ -43,11 +43,11 @@ import {
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { API_URL, ApiError, api } from "@/lib/api";
 import type { Community, Post, ProfileReply, User } from "@/lib/types";
 import { presenceText, statusLine } from "@/lib/presence";
-import { nameStyle, themeGradient } from "@/lib/profile-color";
+import { nameStyle, profileTheme, themeGradient } from "@/lib/profile-color";
 import { compactNumber, relativeTime } from "@/lib/utils";
 import { GiftCard, GiftDetailTrigger, type RichGift } from "../gifts/gift-gallery";
 import { UserReportSheet } from "./user-report-sheet";
@@ -264,9 +264,18 @@ export function ProfileView({ username }: { username: string }) {
 
   const errorMessage = follow.error?.message || subscription.error?.message || directChat.error?.message || showcase.error?.message;
   const storyViews = stories.map((story) => ({ id: story.id, title: story.title, media_url: story.media_url, created_at: story.created_at }));
+  const theme = profileTheme(profile.profile_color);
 
   return (
-    <div className="pb-8">
+    <div
+      className="pb-8"
+      /*
+       * The chosen colour drives this page's accents, not just the name: the presence dot and
+       * the "в сети" line read `--online`, so overriding it here themes them together. Scoped
+       * to the page on purpose — a green dot still means "online" everywhere else.
+       */
+      style={theme.slug === "default" ? undefined : ({ "--online": theme.accent } as CSSProperties)}
+    >
       <header
         className={`sticky top-0 z-40 flex min-h-[56px] items-center gap-3 border-b border-[var(--line-structural)] bg-[var(--header)] px-3 backdrop-blur-xl transition duration-200 sm:px-4 max-[899px]:fixed max-[899px]:inset-x-0 ${scrolled ? "" : "max-[899px]:pointer-events-none max-[899px]:-translate-y-full max-[899px]:opacity-0"}`}
       >
@@ -383,8 +392,14 @@ export function ProfileView({ username }: { username: string }) {
 
         {!isMe && !profile.blocked_me && profile.paid_subscription_enabled && (profile.subscription_price_stars ?? 0) > 0 ? (
           <button
-            className={profile.is_subscribed ? "quiet-button mt-4 w-full" : "mt-4 flex min-h-14 w-full items-center justify-center gap-2 rounded-full border-0 bg-white px-5 font-extrabold"}
-            style={profile.is_subscribed ? undefined : { color: "#000000" }}
+            className={profile.is_subscribed ? "quiet-button mt-4 w-full" : "mt-4 flex min-h-14 w-full items-center justify-center gap-2 rounded-full border-0 px-5 font-extrabold"}
+            // Themed: the button that costs money is the loudest thing on the page, so it wears
+            // the colour its owner chose rather than a flat white nobody picked.
+            style={
+              profile.is_subscribed
+                ? undefined
+                : { background: theme.accent, color: theme.onAccent }
+            }
             // Cancelling costs the remaining period, so it routes through a confirmation.
             onClick={() => (profile.is_subscribed ? setCancelSubOpen(true) : subscription.mutate())}
             disabled={subscription.isPending}
