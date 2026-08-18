@@ -1,0 +1,6 @@
+node_modules
+.next
+npm-debug.log
+# Local overrides must never reach an image: NEXT_PUBLIC_* is baked in at build time,
+# so a stray .env.local would point the container at a developer's own machine.
+.env*.local

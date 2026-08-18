@@ -1,0 +1,708 @@
+/*
+ * The reference's Stars page is one 600px column of flat cards on a near-black canvas:
+ * hero, balance, Telegram, ledger — in that order, with no drop shadows anywhere.
+ * Its resolved values map onto GRAM's tokens almost exactly: card #17181d is
+ * --surface-raised, the secondary button's white/6% is --hover, and the ledger's
+ * zinc-500 tab label is --dim. Where the reference reaches for sky-500 (#0ea5e9) we
+ * use --primary instead: globals.css declares the indigo brand as the colour that
+ * "drives actions, links and accents", and that contract outranks a per-page hue.
+ */
+.page {
+  min-height: 100vh;
+  padding: 0 16px 112px;
+  color: var(--ink);
+}
+
+/* --- hero ------------------------------------------------------------------ */
+
+.hero {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  padding-top: 12px;
+  text-align: center;
+}
+
+/*
+ * The reference ships a bespoke gem-star illustration. Rather than lift its artwork we
+ * draw GRAM's own star at the same 96px footprint and give it the luminosity the gem
+ * has, so the hero keeps the reference's optical weight without borrowing its asset.
+ */
+.heroStar {
+  position: relative;
+  display: grid;
+  width: 96px;
+  height: 96px;
+  place-items: center;
+  color: var(--stars);
+}
+
+.heroStar::before {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  content: "";
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--stars) 30%, transparent) 0%,
+    transparent 68%
+  );
+}
+
+.heroStar svg { position: relative; }
+
+.hero h1 {
+  margin: 12px 0 0;
+  color: #ffffff;
+  font-size: 1.375rem;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+}
+
+.hero p {
+  max-width: 20rem;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+/* --- cards ----------------------------------------------------------------- */
+
+.card {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--surface-raised);
+}
+
+.balanceCard {
+  margin-top: 20px;
+  padding: 20px;
+  border-radius: 16px;
+  background: var(--surface-raised);
+}
+
+.balanceValue {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #ffffff;
+  font-size: 1.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+.balanceValue svg { color: var(--stars); }
+.balanceValue small { color: var(--stars); font-size: 0.62em; font-weight: 700; }
+
+.balanceCaption {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+.balanceSkeleton {
+  width: 116px;
+  height: 30px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  animation: pulse 1.2s ease-in-out infinite alternate;
+}
+
+.retryLink {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--stars);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.balanceActions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.balanceActions > * { flex: 1 1 0; min-width: 0; }
+
+/* Reference button metrics: 48px tall, 16px radius, 15px/500 label, 8px icon gap. */
+.actionPrimary,
+.actionSecondary {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 16px;
+  color: #ffffff;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+
+.actionPrimary { background: var(--primary); }
+.actionPrimary:hover { background: var(--primary-strong); }
+.actionSecondary { background: var(--hover); }
+.actionSecondary:hover { background: var(--line-strong); }
+.actionPrimary:active,
+.actionSecondary:active { transform: scale(0.98); }
+
+.actionPrimary:disabled,
+.actionSecondary:disabled {
+  background: var(--surface-2);
+  color: var(--dim);
+  cursor: not-allowed;
+  transform: none;
+}
+
+/*
+ * Statistics is a disclosure, not a third destination, so it sits below the pair as a
+ * full-width ghost row. The reference only carries two buttons here because it has no
+ * transfer flow to place beside them.
+ */
+.disclosure {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+
+.disclosure:hover { background: var(--hover); }
+
+.notice {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--online) 18%, transparent);
+  color: var(--ink);
+  font-size: 0.875rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notice span { display: flex; align-items: center; gap: 8px; }
+.notice svg:first-child { color: var(--online); flex: none; }
+
+/* --- Telegram row --------------------------------------------------------- */
+
+/* #229ED9 is Telegram's own brand blue, the value the reference uses for this row. */
+.telegramChip {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, #229ed9 15%, transparent);
+  color: #229ed9;
+}
+
+.rowTitle {
+  margin: 0;
+  color: #ffffff;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.rowSubtitle {
+  overflow: hidden;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowAction {
+  display: inline-flex;
+  min-height: 40px;
+  flex: none;
+  align-items: center;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: #229ed9;
+  color: #ffffff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rowAction:disabled {
+  background: var(--surface-2);
+  color: var(--dim);
+  cursor: not-allowed;
+}
+
+/* --- statistics ----------------------------------------------------------- */
+
+.statGrid {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.statGrid > div {
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--hover);
+}
+
+.statGrid dt {
+  color: var(--dim);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.statGrid dd {
+  margin: 4px 0 0;
+  font-size: 1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- ledger --------------------------------------------------------------- */
+
+.ledger {
+  margin-top: 20px;
+  padding: 6px;
+  border-radius: 16px;
+  background: var(--surface-raised);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs button {
+  position: relative;
+  padding: 10px 12px 10px 0;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+
+.tabs button[data-active="true"] { color: #ffffff; }
+
+.tabUnderline {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.updatedAt {
+  margin-left: auto;
+  align-self: center;
+  color: var(--dim);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.ledgerBody { padding: 4px 6px; }
+
+.transactionList { margin: 0; padding: 0; list-style: none; }
+
+.transactionList li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 10px;
+}
+
+.transactionList li + li { border-top: 1px solid var(--line); }
+
+.transactionIcon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.credit {
+  background: color-mix(in srgb, var(--online) 16%, transparent);
+  color: var(--online);
+}
+
+.spend {
+  background: color-mix(in srgb, var(--stars) 16%, transparent);
+  color: var(--stars);
+}
+
+.refund {
+  background: color-mix(in srgb, var(--primary) 22%, transparent);
+  color: var(--identity);
+}
+
+.transactionCopy { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+
+.transactionCopy strong {
+  overflow: hidden;
+  color: #ffffff;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transactionCopy small {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.positiveAmount,
+.negativeAmount {
+  display: flex;
+  align-items: flex-end;
+  flex: none;
+  flex-direction: column;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.positiveAmount { color: var(--online); }
+.negativeAmount { color: var(--ink); }
+
+.positiveAmount small,
+.negativeAmount small {
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.emptyState {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 64px 32px;
+  text-align: center;
+}
+
+.emptyState > span {
+  display: grid;
+  width: 56px;
+  height: 56px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: color-mix(in srgb, #ffffff 2%, transparent);
+  color: var(--dim);
+}
+
+.emptyState strong {
+  margin-top: 16px;
+  color: var(--ink);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.emptyState p {
+  max-width: 30ch;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.emptyState button {
+  margin-top: 14px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--link);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ledgerLoading { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+
+.ledgerLoading span {
+  height: 52px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  animation: pulse 1.2s ease-in-out infinite alternate;
+}
+
+/* --- sheet contents ------------------------------------------------------- */
+
+.sheetHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 4px;
+}
+
+/*
+ * The reference tints its sheet title with the page accent instead of using plain ink —
+ * it is the only accented heading on the surface and it anchors the step you are on.
+ * It is a <p>, not a heading: BottomSheet already supplies the dialog's accessible name.
+ */
+.sheetHeading p {
+  margin: 0;
+  color: var(--primary-strong);
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.sheetBack {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 0 6px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--ink);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.optionList { margin: 8px 0 0; }
+.optionList > * + * { border-top: 1px solid var(--line); }
+
+/* Reference pack row: 28px star, 16px/500 label, 14px block padding, 12px gap. */
+.optionRow {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+
+.optionRow:hover:not(:disabled) { background: var(--hover); }
+.optionRow:disabled { cursor: not-allowed; opacity: 0.6; }
+
+.optionRow > svg:first-child { flex: none; color: var(--stars); }
+
+.optionLabel {
+  flex: 1;
+  min-width: 0;
+  color: #ffffff;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.optionMeta {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+
+.optionTrail {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+
+.optionCheck { color: var(--primary-strong); }
+
+/* Truthful status marker for a path with no processor behind it yet. */
+.pendingBadge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--stars) 16%, transparent);
+  color: var(--stars);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.methodChip {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.sheetNote {
+  margin: 16px 0 0;
+  padding: 0 4px;
+  color: var(--dim);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  text-align: center;
+}
+
+.sheetNote strong { color: var(--muted); font-weight: 600; }
+
+/* --- forms ---------------------------------------------------------------- */
+
+.form { display: flex; margin-top: 16px; flex-direction: column; gap: 16px; }
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.field > span:first-child { display: flex; align-items: center; gap: 6px; }
+.field > span:first-child i { color: var(--dim); font-size: 0.75rem; font-style: normal; font-weight: 400; }
+
+.field > small,
+.formError { margin: 0; color: #ff8d9b; font-size: 0.75rem; }
+
+.amountInput,
+.textInput {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line-structural);
+}
+
+.amountInput { color: var(--stars); }
+.textInput { color: var(--primary-strong); }
+
+.amountInput:focus-within,
+.textInput:focus-within,
+.messageInput:focus { box-shadow: inset 0 0 0 1px var(--primary-strong); }
+
+.amountInput input,
+.textInput input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #ffffff;
+  font-size: 1rem;
+}
+
+.messageInput {
+  width: 100%;
+  padding: 13px 14px;
+  border: 0;
+  border-radius: 14px;
+  outline: 0;
+  background: var(--surface);
+  color: #ffffff;
+  line-height: 1.45;
+  resize: vertical;
+  box-shadow: inset 0 0 0 1px var(--line-structural);
+}
+
+.sendSummary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px;
+  border-radius: 14px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.sendSummary strong {
+  color: var(--stars);
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@keyframes pulse { to { opacity: 0.55; } }
+
+@media (max-width: 479px) {
+  .updatedAt { display: none; }
+  .statGrid { grid-template-columns: minmax(0, 1fr); }
+  /* On a 375px column the running balance costs more description than it is worth. */
+  .positiveAmount small,
+  .negativeAmount small { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .balanceSkeleton,
+  .ledgerLoading span { animation: none; }
+}
+
+/*
+ * The shell drops its mobile top bar at this width, so the hero would otherwise start
+ * flush against the viewport edge. 26px matches the top inset of GRAM's channel header.
+ */
+@media (min-width: 900px) {
+  .hero { padding-top: 26px; }
+  .page { padding-bottom: 48px; }
+}

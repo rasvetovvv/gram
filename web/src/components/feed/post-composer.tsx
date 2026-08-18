@@ -1,0 +1,354 @@
+"use client";
+
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import * as Popover from "@radix-ui/react-popover";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  BarChart3,
+  Camera,
+  Code2,
+  FileText,
+  Film,
+  ImagePlus,
+  Link2,
+  MoreHorizontal,
+  Music2,
+  Paperclip,
+  Save,
+  ShieldAlert,
+  Smile,
+  X
+} from "lucide-react";
+import { useRef, useState } from "react";
+import { api } from "@/lib/api";
+import { useToast } from "../ui/toast";
+import { UserAvatar } from "../user-avatar";
+
+const MAX_LENGTH = 560;
+const MAX_IMAGES = 4;
+
+const EMOJI = ["🙂", "😂", "🔥", "❤️", "👍", "🎉", "✨", "😮", "😢", "🙏", "👀", "💯", "🌙", "☕", "📷", "🎧"];
+
+/** The reference's "Ещё" menu. Only the surfaces GRAM actually supports are enabled. */
+const MORE_ITEMS = [
+  { icon: Camera, label: "Камера" },
+  { icon: Paperclip, label: "Прикрепить файл" },
+  { icon: Code2, label: "Блок кода" },
+  { icon: Save, label: "Сохранить черновик" },
+  { icon: FileText, label: "Черновики" },
+  { icon: ShieldAlert, label: "Контент 18+" }
+];
+
+/**
+ * Inline composer, following the reference: a borderless growing input at 17px, a divider,
+ * then a scrollable row of 32/36px round icon actions with the publish pill pinned right.
+ *
+ * A textarea stands in for the reference's contenteditable — it renders identically once it
+ * grows with its content, and avoids the paste and caret handling that rich input needs.
+ */
+export function PostComposer({
+  avatarUrl,
+  displayName,
+  placeholder = "Что нового?",
+  onPublished
+}: {
+  avatarUrl?: string | null;
+  displayName?: string;
+  placeholder?: string;
+  onPublished?: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const { notify } = useToast();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const [content, setContent] = useState("");
+  // Uploaded up front, so the author sees the real picture and can drop it before publishing.
+  const [pictures, setPictures] = useState<string[]>([]);
+  // One outbound link, shown as a card and confirmed before a reader follows it.
+  const [link, setLink] = useState<{ url: string; title: string } | null>(null);
+
+  const upload = useMutation({
+    mutationFn: (files: File[]) =>
+      Promise.all(files.slice(0, MAX_IMAGES - pictures.length).map((file) => api.uploadPostMedia(file))),
+    onSuccess: (uploaded) =>
+      setPictures((current) => [...current, ...uploaded.map((item) => item.url)].slice(0, MAX_IMAGES)),
+    onError: (error: Error) =>
+      notify("Не удалось загрузить", { variant: "error", detail: error.message })
+  });
+
+  const publish = useMutation({
+    mutationFn: () =>
+      api.createPost(
+        content.trim(),
+        pictures,
+        link?.url.trim() ? { url: link.url.trim(), title: link.title.trim() } : null
+      ),
+    onSuccess: async () => {
+      setContent("");
+      setPictures([]);
+      setLink(null);
+      if (inputRef.current) inputRef.current.style.height = "auto";
+      await queryClient.invalidateQueries({ queryKey: ["feed"] });
+      notify("Запись опубликована", { variant: "success" });
+      onPublished?.();
+    },
+    onError: (error: Error) =>
+      notify("Не удалось опубликовать", { variant: "error", detail: error.message })
+  });
+
+  function grow(node: HTMLTextAreaElement) {
+    node.style.height = "auto";
+    node.style.height = `${node.scrollHeight}px`;
+  }
+
+  function insertEmoji(emoji: string) {
+    const node = inputRef.current;
+    if (!node) {
+      setContent((current) => current + emoji);
+      return;
+    }
+    const start = node.selectionStart ?? content.length;
+    const end = node.selectionEnd ?? content.length;
+    const next = `${content.slice(0, start)}${emoji}${content.slice(end)}`.slice(0, MAX_LENGTH);
+    setContent(next);
+    requestAnimationFrame(() => {
+      node.focus();
+      node.setSelectionRange(start + emoji.length, start + emoji.length);
+      grow(node);
+    });
+  }
+
+  const tooLong = content.length > MAX_LENGTH;
+  // A picture is worth publishing on its own, so it counts as content.
+  const canPublish =
+    (content.trim().length >= 2 || pictures.length > 0 || Boolean(link?.url.trim())) &&
+    !tooLong &&
+    !publish.isPending &&
+    !upload.isPending;
+
+  return (
+    <div className="flex gap-3">
+      <UserAvatar src={avatarUrl} name={displayName ?? "GRAM"} size={40} ringColor="transparent" />
+      <div className="min-w-0 flex-1">
+        <textarea
+          ref={inputRef}
+          rows={1}
+          value={content}
+          aria-label={placeholder}
+          placeholder={placeholder}
+          onChange={(event) => {
+            setContent(event.target.value);
+            grow(event.currentTarget);
+          }}
+          className="block max-h-[45vh] min-h-9 w-full resize-none overflow-y-auto border-0 bg-transparent py-1.5 text-[17px] leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--dim)]"
+        />
+
+        <input
+          ref={picker}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            const files = [...(event.target.files ?? [])];
+            event.target.value = "";
+            if (files.length) upload.mutate(files);
+          }}
+        />
+
+        {pictures.length ? (
+          <div className="mb-1 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {pictures.map((url) => (
+              <span key={url} className="relative size-20 flex-none overflow-hidden rounded-[12px]">
+                {/* eslint-disable-next-line @next/next/no-img-element -- served from the API's own /media */}
+                <img src={url} alt="" className="size-full object-cover" />
+                <button
+                  type="button"
+                  aria-label="Убрать изображение"
+                  onClick={() => setPictures((current) => current.filter((item) => item !== url))}
+                  className="absolute right-1 top-1 grid size-6 place-items-center rounded-full bg-black/70 text-white transition hover:bg-black"
+                >
+                  <X size={13} />
+                </button>
+              </span>
+            ))}
+            {upload.isPending ? <span className="skeleton size-20 flex-none rounded-[12px]" /> : null}
+          </div>
+        ) : upload.isPending ? (
+          <div className="mb-1 flex gap-2">
+            <span className="skeleton size-20 rounded-[12px]" />
+          </div>
+        ) : null}
+
+        {link ? (
+          <div className="mb-1 grid gap-1.5 rounded-[14px] bg-[var(--surface-raised)] p-2.5">
+            <input
+              autoFocus
+              value={link.url}
+              onChange={(event) => setLink({ ...link, url: event.target.value })}
+              inputMode="url"
+              placeholder="https://…"
+              aria-label="Ссылка для карточки"
+              className="min-w-0 border-0 bg-transparent text-[15px] text-[var(--ink)] outline-none placeholder:text-[var(--dim)]"
+            />
+            <input
+              value={link.title}
+              onChange={(event) => setLink({ ...link, title: event.target.value })}
+              maxLength={120}
+              placeholder="Подпись (необязательно)"
+              aria-label="Подпись ссылки"
+              className="min-w-0 border-0 bg-transparent text-[13px] text-[var(--muted)] outline-none placeholder:text-[var(--dim)]"
+            />
+            <p className="m-0 text-[12px] leading-4 text-[var(--dim)]">
+              Читатель увидит карточку и подтвердит переход — GRAM предупредит, что сайт чужой.
+            </p>
+          </div>
+        ) : null}
+
+        <div className="mt-1 border-t border-[var(--line)] pt-2.5">
+          <div className="flex items-center gap-1">
+            <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <ComposerAction
+                icon={ImagePlus}
+                label={pictures.length >= MAX_IMAGES ? "Больше четырёх нельзя" : "Добавить фото"}
+                active={pictures.length > 0}
+                onClick={() => picker.current?.click()}
+                soon={pictures.length >= MAX_IMAGES}
+              />
+              <ComposerAction icon={Film} label="Добавить видео" soon />
+              <ComposerAction icon={Music2} label="Песня" soon />
+              <Popover.Root>
+                <Popover.Trigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Эмодзи"
+                    title="Эмодзи"
+                    className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border-0 bg-transparent text-[var(--dim)] transition hover:bg-white/[0.06] hover:text-[var(--ink)] active:scale-95 sm:size-9"
+                  >
+                    <Smile size={20} />
+                  </button>
+                </Popover.Trigger>
+                <Popover.Portal>
+                  <Popover.Content
+                    side="bottom"
+                    align="start"
+                    sideOffset={8}
+                    collisionPadding={12}
+                    className="z-[95] grid w-[min(17rem,calc(100vw-24px))] grid-cols-8 gap-0.5 rounded-[18px] bg-[#121216] p-2 shadow-[0_18px_48px_rgba(0,0,0,.6),inset_0_0_0_1px_var(--line)]"
+                  >
+                    {EMOJI.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        onClick={() => insertEmoji(emoji)}
+                        aria-label={`Вставить ${emoji}`}
+                        className="grid size-8 place-items-center rounded-[10px] border-0 bg-transparent text-lg transition hover:bg-white/[0.08]"
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </Popover.Content>
+                </Popover.Portal>
+              </Popover.Root>
+              <ComposerAction
+                icon={Link2}
+                label={link ? "Убрать ссылку" : "Прикрепить ссылку"}
+                active={Boolean(link)}
+                onClick={() => setLink(link ? null : { url: "", title: "" })}
+              />
+              <ComposerAction icon={BarChart3} label="Опрос" soon />
+              <ComposerMore />
+            </div>
+
+            {content.length > MAX_LENGTH - 80 ? (
+              <span className={`flex-none text-[13px] tabular-nums ${tooLong ? "text-[var(--danger)]" : "text-[var(--dim)]"}`}>
+                {MAX_LENGTH - content.length}
+              </span>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => publish.mutate()}
+              disabled={!canPublish}
+              className="h-9 flex-none rounded-full border-0 bg-[#e7e9ea] px-4 text-[15px] font-bold text-black transition hover:bg-white active:scale-[0.98] disabled:opacity-40"
+            >
+              {publish.isPending ? "Публикуем…" : "Опубликовать"}
+            </button>
+          </div>
+        </div>
+
+        {publish.error ? (
+          <p className="mb-0 mt-2 text-[13px] text-[var(--danger)]" aria-live="polite">
+            {publish.error.message}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ComposerAction({
+  icon: Icon,
+  label,
+  soon,
+  active,
+  onClick
+}: {
+  icon: React.ComponentType<{ size?: number }>;
+  label: string;
+  soon?: boolean;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={soon}
+      aria-label={soon ? `${label} — скоро` : label}
+      aria-pressed={active}
+      title={soon ? "Появится в следующем обновлении" : label}
+      className={`inline-flex size-8 shrink-0 items-center justify-center rounded-full border-0 bg-transparent transition hover:bg-white/[0.06] hover:text-[var(--ink)] active:scale-95 disabled:opacity-40 disabled:hover:bg-transparent sm:size-9 ${active ? "text-[var(--primary-strong)]" : "text-[var(--dim)]"}`}
+    >
+      <Icon size={20} />
+    </button>
+  );
+}
+
+function ComposerMore() {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          aria-label="Ещё"
+          title="Ещё"
+          className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border-0 bg-transparent text-[var(--dim)] transition hover:bg-white/[0.06] hover:text-[var(--ink)] active:scale-95 sm:size-9"
+        >
+          <MoreHorizontal size={20} />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          side="top"
+          align="start"
+          sideOffset={8}
+          collisionPadding={12}
+          className="z-[95] min-w-[232px] rounded-[18px] bg-[#202026] p-1.5 shadow-[0_18px_50px_rgba(0,0,0,.55)]"
+        >
+          {MORE_ITEMS.map(({ icon: Icon, label }) => (
+            <DropdownMenu.Item
+              key={label}
+              disabled
+              className="flex min-h-11 items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold text-[var(--dim)] outline-none data-[disabled]:opacity-60"
+            >
+              <Icon size={18} />
+              <span className="flex-1">{label}</span>
+              <span className="text-[12px] font-bold text-[var(--faint)]">скоро</span>
+            </DropdownMenu.Item>
+          ))}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}

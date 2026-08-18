@@ -1,0 +1,29 @@
+.env
+.DS_Store
+Thumbs.db
+*.log
+.coverage
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+web/node_modules/
+web/.next/
+web/out/
+.impeccable/live/
+# Junction-linked scratch copy of web/, so a second dev server can run while another
+# session holds web/'s own Next lock. Shares src/ and node_modules/ with the real app.
+.preview/
+
+# Local reference-inspection helpers and their captures
+tools/
+
+# Dependencies installed at the repo root (the app's own live under web/)
+/node_modules/
+
+# Runtime state and scratch, all of it regenerable
+.playwright-mcp/
+.claude-flow/
+# Uploads and the gift-artwork cache: written at runtime, fetched again when missing
+api/media/
