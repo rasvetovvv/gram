@@ -47,8 +47,18 @@ const MUSIC_LINK = /https?:\/\/(?:www\.|on\.|m\.)?soundcloud\.com\/\S+/gi;
 /**
  * One post, laid out the way the reference lays it out: the avatar is a column of its own, and
  * everything else — name, text, attachments, actions — is indented beside it.
+ *
+ * `showPinned` is off by default: a pin is an author's arrangement of their own page, so saying
+ * «Закреплено» in a mixed feed would describe a place the reader is not looking at.
  */
-export function PostCard({ post }: { post: Post; priority?: boolean }) {
+export function PostCard({
+  post,
+  showPinned = false
+}: {
+  post: Post;
+  priority?: boolean;
+  showPinned?: boolean;
+}) {
   const queryClient = useQueryClient();
   const viewRef = useRecordView(post.id);
   const { notify } = useToast();
@@ -148,7 +158,7 @@ export function PostCard({ post }: { post: Post; priority?: boolean }) {
         />
       </Link>
       <div className="min-w-0 flex-1">
-        {post.is_pinned ? (
+        {showPinned && post.is_pinned ? (
           <span className="mb-1 inline-flex items-center gap-1.5 text-[12px] font-semibold text-[var(--dim)]">
             <Pin size={12} />
             Закреплено

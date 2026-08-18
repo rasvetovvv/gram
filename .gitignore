@@ -27,3 +27,6 @@ tools/
 .claude-flow/
 # Uploads and the gift-artwork cache: written at runtime, fetched again when missing
 api/media/
+
+# TypeScript incremental build state, rewritten on every typecheck
+web/tsconfig.tsbuildinfo

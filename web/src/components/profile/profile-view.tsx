@@ -406,7 +406,7 @@ export function ProfileView({ username }: { username: string }) {
         </Tabs.List>
 
         <Tabs.Content value="posts" className="space-y-3 px-3 py-4 outline-none sm:px-5">
-          {feedQuery.isLoading ? <ProfileFeedSkeleton /> : feedQuery.isError ? <SectionError text={feedQuery.error.message} retry={() => feedQuery.refetch()} /> : posts.length ? posts.map((post) => <PostCard key={post.id} post={post} />) : <EmptySection icon={Grid3X3} title="Пока нет постов" text="Новые публикации появятся здесь." />}
+          {feedQuery.isLoading ? <ProfileFeedSkeleton /> : feedQuery.isError ? <SectionError text={feedQuery.error.message} retry={() => feedQuery.refetch()} /> : posts.length ? posts.map((post) => <PostCard key={post.id} post={post} showPinned />) : <EmptySection icon={Grid3X3} title="Пока нет постов" text="Новые публикации появятся здесь." />}
         </Tabs.Content>
 
         <Tabs.Content value="stories" className="outline-none">

@@ -53,6 +53,9 @@ services:
         NEXT_PUBLIC_API_URL: http://localhost:8000
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
+      # The browser reaches the api through the published port; Next's own /media proxy runs
+      # inside the network and has to use the service name.
+      API_INTERNAL_URL: http://api:8000
     ports:
       - "3000:3000"
     depends_on:

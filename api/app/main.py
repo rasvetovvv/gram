@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 import uuid
 from collections import Counter, defaultdict
@@ -236,6 +237,51 @@ DIRECT_CHAT_MEMBER_COUNT = 2
 OFFICIAL_USERNAME = "gram"
 # Shown instead of presence wherever the platform account appears, as in the reference.
 OFFICIAL_ROLE_TITLE = "Служебные уведомления"
+# How long a heartbeat vouches for someone being online; past it the profile says last seen.
+PRESENCE_WINDOW = timedelta(minutes=5)
+PRESENCE_SWEEP_SECONDS = 60
+
+
+async def _expire_presence() -> None:
+    """
+    Put out the green dot of anyone who stopped visiting.
+
+    Nothing else does: the flag goes up when a request arrives and comes down on logout, so a
+    closed tab used to leave someone «в сети» for good. Forty-three places read that flag, which
+    is why the truth is restored here rather than re-derived in each of them.
+    """
+    while True:
+        await asyncio.sleep(PRESENCE_SWEEP_SECONDS)
+        try:
+            async with SessionFactory() as session:
+                cutoff = utcnow() - PRESENCE_WINDOW
+                rows = (
+                    await session.execute(
+                        select(User.id, UserProfileDetails.last_seen_at)
+                        .join(
+                            UserProfileDetails,
+                            UserProfileDetails.user_id == User.id,
+                            isouter=True,
+                        )
+                        .where(User.is_online.is_(True))
+                    )
+                ).all()
+                # Compared in Python: the column is timezone-aware on PostgreSQL and a plain
+                # string on SQLite, and only one of those compares correctly in SQL.
+                stale = [
+                    user_id
+                    for user_id, last_seen in rows
+                    if last_seen is None or _as_utc(last_seen) <= cutoff
+                ]
+                if stale:
+                    await session.execute(
+                        update(User).where(User.id.in_(stale)).values(is_online=False)
+                    )
+                    await session.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # a housekeeping sweep must not take the app down
+            logging.getLogger("gram.presence").exception("presence sweep failed")
 
 
 @asynccontextmanager
@@ -251,7 +297,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # Warmed in the background: the catalogue renders from the cache a moment later, and a
         # container with no outbound network still starts and serves everything else.
         warm = asyncio.create_task(giftart.prefetch_originals())
+    presence = asyncio.create_task(_expire_presence())
     yield
+    presence.cancel()
     if warm and not warm.done():
         warm.cancel()
 
@@ -529,14 +577,23 @@ async def _touch_presence(
     if details is None:
         details = UserProfileDetails(user_id=user.id, last_seen_at=now)
         session.add(details)
-        user.is_online = online
+        user.is_online = await _presence_allowed(session, user) and online
         return True
     recent = details.last_seen_at and now - _as_utc(details.last_seen_at) < timedelta(seconds=45)
     if not force and user.is_online == online and recent:
         return False
     details.last_seen_at = now
-    user.is_online = online
+    # Someone who switched presence off never lights the flag, so none of the forty-three
+    # surfaces that read it has to remember the setting. The heartbeat is still recorded: it
+    # is what the last-seen line is measured from, and what the owner sees on their own page.
+    user.is_online = online and await _presence_allowed(session, user)
     return True
+
+
+async def _presence_allowed(session: AsyncSession, user: User) -> bool:
+    """Whether this account lets others see it online at all."""
+    settings = await session.get(UserSettings, user.id)
+    return settings is None or settings.show_online
 
 
 async def get_current_user(request: Request, session: SessionDep) -> User:
@@ -759,9 +816,7 @@ async def render_profile(
     identity.pop("name_gift", None)
     last_seen_at = details.last_seen_at if details else None
     identity["is_online"] = bool(
-        user.is_online
-        and last_seen_at
-        and _as_utc(last_seen_at) > utcnow() - timedelta(minutes=5)
+        user.is_online and last_seen_at and _as_utc(last_seen_at) > utcnow() - PRESENCE_WINDOW
     )
     owned_handles = (
         await session.scalars(
@@ -805,6 +860,12 @@ async def render_profile(
     if presence_hidden and not mine:
         identity["is_online"] = False
         last_seen_at = None
+    if mine:
+        # Your own page answers "am I here", which your heartbeat knows regardless of what the
+        # switch lets other people see — and the flag itself is off while presence is hidden.
+        identity["is_online"] = bool(
+            last_seen_at and _as_utc(last_seen_at) > utcnow() - PRESENCE_WINDOW
+        )
     return UserProfile(
         **identity,
         cover_url=user.cover_url,
@@ -2131,6 +2192,11 @@ async def update_my_settings(
     settings = await settings_for(session, me.id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(settings, field, value)
+    # The switch takes effect on the surfaces that read the flag straight away, rather than
+    # from this account's next request onwards.
+    me.is_online = settings.show_online and me.is_online
+    if settings.show_online:
+        await _touch_presence(session, me, online=True, force=True)
     await session.commit()
     await session.refresh(settings)
     return UserSettingsOut.model_validate(settings)
