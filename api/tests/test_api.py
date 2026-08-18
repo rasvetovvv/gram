@@ -2304,11 +2304,11 @@ async def test_settings_hide_presence_close_the_account_and_silence_kinds(
     assert (await client.get("/api/users/leon/stories")).status_code == 403
     assert (await client.get("/api/users/leon/replies")).status_code == 403
 
-    await client.post("/api/users/leon/follow")
-    assert (await client.get("/api/users/leon")).json()["can_view_content"] is True
-    opened = await client.get("/api/feed", params={"author": "leon"})
-    assert opened.status_code == 200
-    assert any(item["id"] == post_id for item in opened.json())
+    # A closed account is asked, not entered: the content stays shut until it answers.
+    asked = await client.post("/api/users/leon/follow")
+    assert asked.status_code == 200, asked.text
+    assert asked.json()["requested"] is True
+    assert (await client.get("/api/users/leon")).json()["can_view_content"] is False
 
     # A muted kind stops reaching the list it was muted from.
     liked = await client.post(f"/api/feed/{post_id}/like")
@@ -2913,3 +2913,190 @@ async def test_blocking_unfollows_both_ways_and_closes_the_profile(client: Async
     await login_as(client, "shunned")
     assert (await client.get("/api/users/leon")).json()["can_view_content"] is True
     assert (await client.post("/api/users/leon/follow")).status_code == 200
+
+
+async def test_a_block_reaches_posts_comments_saves_gifts_and_stars(client: AsyncClient) -> None:
+    """A block is not a chat setting: it closes every surface between two accounts."""
+    await register_partner(client, "shut_out")
+    await login_demo(client)
+    post_id = (await client.post("/api/feed", json={"content": "Только для своих"})).json()["id"]
+    await client.post("/api/users/shut_out/block")
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "shut_out")
+    # Their posts leave my lists, in both the mixed feed and the author's page.
+    feed = (await client.get("/api/feed")).json()
+    assert all(item["author"]["username"] != "leon" for item in feed)
+    assert (await client.get("/api/feed", params={"author": "leon"})).status_code == 403
+    assert (await client.get(f"/api/feed/{post_id}")).status_code == 403
+    # And every action aimed at them is refused rather than quietly dropped.
+    for path in (
+        f"/api/feed/{post_id}/like",
+        f"/api/feed/{post_id}/bookmark",
+        f"/api/feed/{post_id}/repost",
+        f"/api/feed/{post_id}/view",
+    ):
+        response = await client.post(path)
+        assert response.status_code == 403, f"{path}: {response.status_code}"
+    commented = await client.post(f"/api/feed/{post_id}/comments", json={"content": "Привет"})
+    assert commented.status_code == 403
+    assert (await client.get(f"/api/feed/{post_id}/comments")).status_code == 403
+    assert (await client.get("/api/gifts", params={"owner": "leon"})).status_code == 403
+    sent = await client.post("/api/stars/send", json={"to_username": "leon", "amount": 5})
+    assert sent.status_code == 403
+
+    # Unblocking gives everything back.
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    assert (await client.delete("/api/users/shut_out/block")).status_code == 200
+    await client.post("/api/auth/logout")
+    await login_as(client, "shut_out")
+    assert (await client.post(f"/api/feed/{post_id}/like")).status_code == 200
+    answered = await client.post(f"/api/feed/{post_id}/comments", json={"content": "Привет"})
+    assert answered.status_code == 201
+
+
+async def test_who_can_message_is_enforced_when_a_chat_is_opened(client: AsyncClient) -> None:
+    """The switch decides who may start a conversation, and says so when it refuses."""
+    await register_partner(client, "stranger_a")
+    await login_demo(client)
+    assert (await client.get("/api/users/me/settings")).json()["who_can_message"] == "everyone"
+    closed = await client.patch("/api/users/me/settings", json={"who_can_message": "nobody"})
+    assert closed.json()["who_can_message"] == "nobody"
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "stranger_a")
+    refused = await client.post("/api/chats/direct/leon")
+    assert refused.status_code == 403
+    assert "не принимает сообщения" in refused.json()["detail"]
+    assert (await client.post("/api/chats/secret/leon")).status_code == 403
+
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    await client.patch("/api/users/me/settings", json={"who_can_message": "following"})
+    await client.post("/api/auth/logout")
+    await login_as(client, "stranger_a")
+    only_read = await client.post("/api/chats/direct/leon")
+    assert only_read.status_code == 403
+    assert "только от тех, кого читает" in only_read.json()["detail"]
+
+    # Once the recipient reads them, the conversation opens.
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    assert (await client.post("/api/users/stranger_a/follow")).status_code == 200
+    await client.post("/api/auth/logout")
+    await login_as(client, "stranger_a")
+    assert (await client.post("/api/chats/direct/leon")).status_code == 200
+    nonsense = await client.patch("/api/users/me/settings", json={"who_can_message": "sometimes"})
+    assert nonsense.status_code == 422
+
+
+async def test_a_refused_follow_request_can_be_asked_again(client: AsyncClient) -> None:
+    """Declining is quiet and not permanent; withdrawing is the requester's own business."""
+    await register_partner(client, "hopeful")
+    await login_demo(client)
+    await client.patch("/api/users/me/settings", json={"private_account": True})
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "hopeful")
+    assert (await client.post("/api/users/leon/follow")).json()["requested"] is True
+    # Asking twice does not stack.
+    assert (await client.post("/api/users/leon/follow")).json()["requested"] is True
+
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    waiting = (await client.get("/api/users/me/follow-requests")).json()
+    assert len(waiting) == 1
+    declined = await client.delete(f"/api/users/me/follow-requests/{waiting[0]['id']}")
+    assert declined.status_code == 200
+    assert (await client.get("/api/users/me/follow-requests")).json() == []
+    again = await client.delete(f"/api/users/me/follow-requests/{waiting[0]['id']}")
+    assert again.status_code == 404
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "hopeful")
+    assert (await client.get("/api/users/leon")).json()["follow_requested"] is False
+    assert (await client.post("/api/users/leon/follow")).json()["requested"] is True
+    # Withdrawing an unanswered request is the same gesture as unfollowing.
+    assert (await client.delete("/api/users/leon/follow")).status_code == 200
+    assert (await client.get("/api/users/leon")).json()["follow_requested"] is False
+
+
+async def test_the_platform_account_carries_the_admin_badge(client: AsyncClient) -> None:
+    """The V badge is granted, not claimed: it travels with the account, nothing sets it."""
+    await login_demo(client)
+    official = await client.get("/api/users/gram")
+    assert official.status_code == 200, official.text
+    assert official.json()["is_admin"] is True
+    assert (await client.get("/api/users/leon")).json()["is_admin"] is False
+    # Nothing in the product may raise it.
+    await client.patch("/api/users/me", json={"is_admin": True})
+    assert (await client.get("/api/users/leon")).json()["is_admin"] is False
+
+
+async def test_an_owner_can_refuse_offers_on_a_gift_and_a_handle(client: AsyncClient) -> None:
+    """Refusing offers is said once and honoured, and takes a handle off the market with it."""
+    await login_demo(client)
+    gift = (await client.get("/api/gifts", params={"owner": "leon"})).json()[0]
+    closed = await client.patch(f"/api/gifts/{gift['id']}/offers", json={"offers_disabled": True})
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["offers_disabled"] is True
+
+    handle = next(
+        item
+        for item in (await client.get("/api/usernames")).json()
+        if item.get("is_owned_by_me") and item["username"] != "leon"
+    )
+    listed = await client.patch(
+        f"/api/usernames/{handle['id']}/listing", json={"for_sale": True, "price": 400}
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["status"] == "listed"
+    kept = await client.patch(
+        f"/api/usernames/{handle['id']}/offers", json={"offers_disabled": True}
+    )
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["offers_disabled"] is True
+    # "Not for sale" and "listed for sale" cannot both be true.
+    assert kept.json()["status"] != "listed"
+    assert kept.json()["price"] is None
+
+    await client.post("/api/auth/logout")
+    await register_partner(client, "bidder")
+    await login_as(client, "bidder")
+    refused = await client.post(f"/api/gifts/{gift['id']}/offers", json={"amount_stars": 50})
+    assert refused.status_code == 403
+    assert "не принимает предложения" in refused.json()["detail"]
+
+
+async def test_a_closed_account_answers_a_follow_request(client: AsyncClient) -> None:
+    """Accepting is what opens the content — the request itself changes nothing."""
+    await register_partner(client, "knocker")
+    await login_demo(client)
+    await client.patch("/api/users/me/settings", json={"private_account": True})
+    post_id = (await client.post("/api/feed", json={"content": "За закрытой дверью"})).json()["id"]
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "knocker")
+    assert (await client.post("/api/users/leon/follow")).json()["requested"] is True
+    assert (await client.get("/api/users/leon")).json()["follow_requested"] is True
+
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    waiting = await client.get("/api/users/me/follow-requests")
+    assert waiting.status_code == 200, waiting.text
+    assert [item["user"]["username"] for item in waiting.json()] == ["knocker"]
+    assert (await client.get("/api/users/leon")).json()["follow_requests_count"] == 1
+    kinds = {item["kind"] for item in (await client.get("/api/notifications")).json()}
+    assert "follow_request" in kinds
+    accepted = await client.post(f"/api/users/me/follow-requests/{waiting.json()[0]['id']}")
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["is_following"] is True
+    assert (await client.get("/api/users/me/follow-requests")).json() == []
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "knocker")
+    assert (await client.get("/api/users/leon")).json()["can_view_content"] is True
+    opened = await client.get("/api/feed", params={"author": "leon"})
+    assert opened.status_code == 200
+    assert any(item["id"] == post_id for item in opened.json())

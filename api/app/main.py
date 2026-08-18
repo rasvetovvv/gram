@@ -77,6 +77,7 @@ from app.models import (
     CreatorSettings,
     CreatorSubscription,
     Follow,
+    FollowRequest,
     Gift,
     GiftCollectible,
     GiftModel,
@@ -141,6 +142,7 @@ from app.schemas import (
     CreatorSettingsUpdate,
     DetailResponse,
     FeedPost,
+    FollowRequestOut,
     FollowState,
     GiftCategoryOut,
     GiftCompact,
@@ -170,6 +172,7 @@ from app.schemas import (
     MessageReactionOut,
     NoteUpsert,
     NotificationOut,
+    OffersToggle,
     PasswordChange,
     PostCommentCreate,
     PostCommentEdit,
@@ -721,6 +724,7 @@ def compact_user(
         is_online=user.is_online and not hide_presence,
         profile_color=user.profile_color or "default",
         is_premium=is_premium,
+        is_admin=user.is_admin,
         is_official=user.username.lower() == OFFICIAL_USERNAME,
         role_title=OFFICIAL_ROLE_TITLE if user.username.lower() == OFFICIAL_USERNAME else None,
         name_gift=name_gift,
@@ -775,6 +779,17 @@ async def render_profile(
     subscribed = False
     blocked = False
     blocked_me = False
+    requested = False
+    requests_waiting = 0
+    if user.id == me.id:
+        requests_waiting = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(FollowRequest)
+                .where(FollowRequest.target_id == me.id)
+            )
+            or 0
+        )
     if user.id != me.id:
         following = bool(
             await session.scalar(
@@ -806,6 +821,13 @@ async def render_profile(
                 select(func.count())
                 .select_from(UserBlock)
                 .where(UserBlock.blocker_id == user.id, UserBlock.blocked_id == me.id)
+            )
+        )
+        requested = bool(
+            await session.scalar(
+                select(func.count())
+                .select_from(FollowRequest)
+                .where(FollowRequest.requester_id == me.id, FollowRequest.target_id == user.id)
             )
         )
     showcases = (
@@ -917,6 +939,8 @@ async def render_profile(
         # Own profile, a public one, or one whose owner I follow: the tabs stay open. Being
         # blocked closes them whatever the account's own privacy says.
         can_view_content=bool(mine or (not blocked_me and (not is_private or following))),
+        follow_requested=requested,
+        follow_requests_count=requests_waiting,
         updated_at=details.updated_at if details else None,
         paid_subscription_enabled=(
             creator_settings.paid_subscription_enabled if creator_settings else False
@@ -1312,6 +1336,7 @@ async def render_username(
         last_action=last_event.action if last_event else None,
         last_action_at=last_event.created_at if last_event else None,
         is_primary_handle=bool(owner and owner.username.lower() == asset.username.lower()),
+        offers_disabled=asset.offers_disabled,
     )
 
 
@@ -1406,6 +1431,7 @@ async def render_gift(session: AsyncSession, gift: Gift, owner: User, me: User) 
         is_listed=gift.sale_price_stars is not None,
         hidden_in_profile=gift.hidden_in_profile,
         is_pinned=gift.pinned_at is not None,
+        offers_disabled=gift.offers_disabled,
     )
 
 
@@ -2450,12 +2476,15 @@ async def upsert_profile_note(
     return ProfileNote(content=details.profile_note, updated_at=details.updated_at)
 
 
-async def _follow_state(target: User, me: User, *, active: bool) -> FollowState:
+async def _follow_state(
+    target: User, me: User, *, active: bool, requested: bool = False
+) -> FollowState:
     return FollowState(
         username=target.username,
         is_following=active,
         followers_count=target.followers_count,
         following_count=me.following_count,
+        requested=requested,
     )
 
 
@@ -2483,6 +2512,27 @@ async def follow_user(username: str, session: SessionDep, me: CurrentUser) -> Fo
     )
     if existing:
         return await _follow_state(target, me, active=True)
+    # A closed account decides for itself: the follow becomes a request it can answer.
+    target_settings = await settings_for(session, target.id)
+    if target_settings.private_account:
+        pending = await session.scalar(
+            select(FollowRequest).where(
+                FollowRequest.requester_id == me.id, FollowRequest.target_id == target.id
+            )
+        )
+        if pending is None:
+            session.add(FollowRequest(requester_id=me.id, target_id=target.id))
+            session.add(
+                Notification(
+                    user_id=target.id,
+                    actor_id=me.id,
+                    kind=NotificationKind.FOLLOW_REQUEST,
+                    text=f"{me.display_name} хочет подписаться на вас",
+                    entity_id=str(me.id),
+                )
+            )
+            await session.commit()
+        return await _follow_state(target, me, active=False, requested=True)
     await session.execute(select(User).where(User.id.in_([me.id, target.id])).with_for_update())
     session.add(Follow(follower_id=me.id, following_id=target.id))
     me.following_count += 1
@@ -2505,6 +2555,15 @@ async def unfollow_user(username: str, session: SessionDep, me: CurrentUser) -> 
     target = await resolve_user(session, username)
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+    # Withdrawing an unanswered request is the same gesture as unfollowing.
+    pending = await session.scalar(
+        select(FollowRequest).where(
+            FollowRequest.requester_id == me.id, FollowRequest.target_id == target.id
+        )
+    )
+    if pending is not None:
+        await session.delete(pending)
+        await session.commit()
     existing = await session.scalar(
         select(Follow).where(Follow.follower_id == me.id, Follow.following_id == target.id)
     )
@@ -2515,6 +2574,131 @@ async def unfollow_user(username: str, session: SessionDep, me: CurrentUser) -> 
         target.followers_count = max(0, target.followers_count - 1)
         await session.commit()
     return await _follow_state(target, me, active=False)
+
+
+@app.get(
+    "/api/users/me/follow-requests", response_model=list[FollowRequestOut], tags=["social graph"]
+)
+async def read_follow_requests(session: SessionDep, me: CurrentUser) -> list[FollowRequestOut]:
+    """Who is waiting to be let into a closed account, newest first."""
+    rows = (
+        await session.execute(
+            select(FollowRequest, User)
+            .join(User, FollowRequest.requester_id == User.id)
+            .where(FollowRequest.target_id == me.id)
+            .order_by(FollowRequest.created_at.desc())
+        )
+    ).all()
+    hidden = await presence_hidden_ids(session, [user.id for _, user in rows])
+    premium = await premium_user_ids(session, [user.id for _, user in rows])
+    emblems = await name_gift_map(session, [user.id for _, user in rows])
+    return [
+        FollowRequestOut(
+            id=request.id,
+            user=compact_user(
+                user,
+                is_premium=user.id in premium,
+                hide_presence=user.id in hidden,
+                name_gift=emblems.get(user.id),
+            ),
+            created_at=request.created_at,
+        )
+        for request, user in rows
+    ]
+
+
+@app.post(
+    "/api/users/me/follow-requests/{request_id}",
+    response_model=FollowState,
+    tags=["social graph"],
+)
+async def accept_follow_request(
+    request_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> FollowState:
+    """Let them in: the request becomes a real follow, and they hear about it."""
+    request = await session.get(FollowRequest, request_id)
+    if request is None or request.target_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    requester = await session.get(User, request.requester_id)
+    if requester is None:
+        await session.delete(request)
+        await session.commit()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    existing = await session.scalar(
+        select(Follow).where(Follow.follower_id == requester.id, Follow.following_id == me.id)
+    )
+    if existing is None:
+        await session.execute(
+            select(User).where(User.id.in_([me.id, requester.id])).with_for_update()
+        )
+        session.add(Follow(follower_id=requester.id, following_id=me.id))
+        requester.following_count += 1
+        me.followers_count += 1
+        session.add(
+            Notification(
+                user_id=requester.id,
+                actor_id=me.id,
+                kind=NotificationKind.FOLLOW,
+                text=f"{me.display_name} принял(а) вашу заявку",
+                entity_id=str(me.id),
+            )
+        )
+    await session.delete(request)
+    await session.commit()
+    return await _follow_state(me, requester, active=True)
+
+
+@app.delete(
+    "/api/users/me/follow-requests/{request_id}",
+    response_model=DetailResponse,
+    tags=["social graph"],
+)
+async def decline_follow_request(
+    request_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """
+    Refuse quietly.
+
+    The requester is not told, and the row is deleted rather than remembered as a refusal, so
+    they may ask again later — a permanent "no" is what blocking is for.
+    """
+    request = await session.get(FollowRequest, request_id)
+    if request is None or request.target_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    await session.delete(request)
+    await session.commit()
+    return DetailResponse(detail="Заявка отклонена")
+
+
+BLOCKED_ACTION_DETAIL = "Недоступно: между вами блокировка"
+
+
+async def blocked_pair_ids(session: AsyncSession, me_id: uuid.UUID) -> set[uuid.UUID]:
+    """
+    Everyone on either side of a block with this account.
+
+    A block is symmetric in what it hides: the person I blocked disappears from my lists just
+    as I disappear from theirs. One query, because it filters whole feeds.
+    """
+    rows = await session.execute(
+        select(UserBlock.blocker_id, UserBlock.blocked_id).where(
+            or_(UserBlock.blocker_id == me_id, UserBlock.blocked_id == me_id)
+        )
+    )
+    ids: set[uuid.UUID] = set()
+    for blocker_id, blocked_id in rows.all():
+        ids.add(blocked_id if blocker_id == me_id else blocker_id)
+    return ids
+
+
+async def refuse_if_blocked_with(session: AsyncSession, other_id: uuid.UUID, me: User) -> None:
+    """Refuse an action aimed at someone a block stands between — in either direction."""
+    if other_id == me.id:
+        return
+    if await _blocked_between(session, me.id, other_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=BLOCKED_ACTION_DETAIL
+        )
 
 
 async def _blocked_between(
@@ -2533,6 +2717,36 @@ async def _blocked_between(
 
 
 BLOCKED_CHAT_DETAIL = "Переписка недоступна: чат заблокирован"
+
+
+async def refuse_if_closed_inbox(session: AsyncSession, target: User, me: User) -> None:
+    """
+    Honour the recipient's «кто может мне писать».
+
+    `following` means the recipient follows the sender — the reference's own reading of it, and
+    the only one that makes the setting useful: an account that answers nobody it has not
+    chosen to hear from. The refusal names the reason, because a chat that silently fails to
+    open reads as a broken product.
+    """
+    if target.id == me.id:
+        return
+    settings = await settings_for(session, target.id)
+    rule = settings.who_can_message or "everyone"
+    if rule == "everyone":
+        return
+    if rule == "nobody":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"@{target.username} не принимает сообщения",
+        )
+    follows_me = await session.scalar(
+        select(Follow.id).where(Follow.follower_id == target.id, Follow.following_id == me.id)
+    )
+    if not follows_me:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"@{target.username} принимает сообщения только от тех, кого читает",
+        )
 
 
 async def _drop_following(session: AsyncSession, follower: User, followed: User) -> None:
@@ -2631,6 +2845,8 @@ async def read_bookmarks(session: SessionDep, me: CurrentUser) -> list[FeedPost]
             .join(PostBookmark, PostBookmark.post_id == Post.id)
             .join(User, Post.author_id == User.id)
             .where(PostBookmark.user_id == me.id)
+            # Saved before the block, and no longer mine to read after it.
+            .where(Post.author_id.notin_(await blocked_pair_ids(session, me.id)))
             .order_by(PostBookmark.created_at.desc())
         )
     ).all()
@@ -2757,6 +2973,10 @@ async def read_feed(
     if mode == "following":
         followed = select(Follow.following_id).where(Follow.follower_id == me.id)
         query = query.where(or_(Post.author_id == me.id, Post.author_id.in_(followed)))
+    # A block hides both ways: their posts leave my feed, mine leave theirs.
+    walled_off = await blocked_pair_ids(session, me.id)
+    if walled_off:
+        query = query.where(Post.author_id.notin_(walled_off))
     # One author's page opens with whatever they pinned; a mixed feed has no owner to pin it.
     order = (
         (Post.pinned_at.is_(None), Post.created_at.desc())
@@ -2846,6 +3066,7 @@ async def record_post_view(
     post = await session.get(Post, post_id)
     if post is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
+    await refuse_if_blocked_with(session, post.author_id, me)
     seen = await session.scalar(
         select(PostView).where(PostView.post_id == post_id, PostView.user_id == me.id)
     )
@@ -3064,6 +3285,7 @@ async def toggle_post_like(post_id: uuid.UUID, session: SessionDep, me: CurrentU
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
     post, author = row
+    await refuse_if_blocked_with(session, author.id, me)
     like = await session.scalar(
         select(PostLike).where(PostLike.post_id == post.id, PostLike.user_id == me.id)
     )
@@ -3186,10 +3408,15 @@ async def read_comments(
     post = await session.get(Post, post_id)
     if post is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
+    author = await session.get(User, post.author_id)
+    if author is not None:
+        await require_content_access(session, author, me)
     query = (
         select(PostComment, User)
         .join(User, PostComment.author_id == User.id)
         .where(PostComment.post_id == post_id)
+        # A block hides the people, not the thread: their lines leave it for both of us.
+        .where(PostComment.author_id.notin_(await blocked_pair_ids(session, me.id)))
     )
     if sort == "top":
         weights = (
@@ -3272,6 +3499,7 @@ async def toggle_comment_like(
 ) -> PostCommentOut:
     """Same emoji-free like the reference puts on a comment: on, off, counted by rows."""
     post, comment = await _comment_for_action(session, post_id, comment_id)
+    await refuse_if_blocked_with(session, comment.author_id, me)
     existing = await session.scalar(
         select(PostCommentLike).where(
             PostCommentLike.comment_id == comment_id, PostCommentLike.user_id == me.id
@@ -3310,6 +3538,8 @@ async def create_comment(
     post = await session.get(Post, post_id)
     if post is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
+    # Someone who blocked me does not get answered by me, and I am not answered by them.
+    await refuse_if_blocked_with(session, post.author_id, me)
     if payload.parent_id is not None:
         parent = await session.get(PostComment, payload.parent_id)
         if parent is None or parent.post_id != post.id:
@@ -3352,10 +3582,14 @@ async def _toggle_post_relation(
     session: AsyncSession,
     model: type[PostBookmark | PostRepost],
     post_id: uuid.UUID,
-    user_id: uuid.UUID,
+    me: User,
 ) -> ToggleState:
-    if await session.get(Post, post_id) is None:
+    post = await session.get(Post, post_id)
+    if post is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
+    # Saving or republishing someone's words across a block is not a thing either side wants.
+    await refuse_if_blocked_with(session, post.author_id, me)
+    user_id = me.id
     relation = await session.scalar(
         select(model).where(model.post_id == post_id, model.user_id == user_id)
     )
@@ -3376,12 +3610,12 @@ async def _toggle_post_relation(
 
 @app.post("/api/feed/{post_id}/bookmark", response_model=ToggleState, tags=["feed"])
 async def toggle_bookmark(post_id: uuid.UUID, session: SessionDep, me: CurrentUser) -> ToggleState:
-    return await _toggle_post_relation(session, PostBookmark, post_id, me.id)
+    return await _toggle_post_relation(session, PostBookmark, post_id, me)
 
 
 @app.post("/api/feed/{post_id}/repost", response_model=ToggleState, tags=["feed"])
 async def toggle_repost(post_id: uuid.UUID, session: SessionDep, me: CurrentUser) -> ToggleState:
-    return await _toggle_post_relation(session, PostRepost, post_id, me.id)
+    return await _toggle_post_relation(session, PostRepost, post_id, me)
 
 
 async def render_chat_summary(session: AsyncSession, chat: Chat, me: User) -> ChatSummary:
@@ -3742,6 +3976,9 @@ async def create_direct_chat(username: str, session: SessionDep, me: CurrentUser
         )
     if await _blocked_between(session, me.id, target.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=BLOCKED_CHAT_DETAIL)
+    # The setting gates opening a conversation, not the messages inside one that already
+    # exists: a chat that stops working mid-thread would be a worse surprise than a refusal.
+    await refuse_if_closed_inbox(session, target, me)
     candidate_ids = (
         select(ChatMember.chat_id)
         .where(ChatMember.user_id.in_([me.id, target.id]))
@@ -3798,6 +4035,9 @@ async def create_secret_chat(username: str, session: SessionDep, me: CurrentUser
         )
     if await _blocked_between(session, me.id, target.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=BLOCKED_CHAT_DETAIL)
+    # The setting gates opening a conversation, not the messages inside one that already
+    # exists: a chat that stops working mid-thread would be a worse surprise than a refusal.
+    await refuse_if_closed_inbox(session, target, me)
     candidate_ids = (
         select(ChatMember.chat_id)
         .where(ChatMember.user_id.in_([me.id, target.id]))
@@ -4952,6 +5192,7 @@ async def send_stars(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя отправить Stars себе"
         )
+    await refuse_if_blocked_with(session, recipient.id, me)
     post = await session.get(Post, payload.post_id) if payload.post_id else None
     if payload.post_id is not None and (post is None or post.author_id != recipient.id):
         raise HTTPException(
@@ -5879,6 +6120,9 @@ async def update_username_listing(
     asset.price = payload.price if payload.for_sale else None
     asset.currency = "STARS"
     asset.listed_at = utcnow() if payload.for_sale else None
+    # Putting a handle up for sale is a change of mind about being asked at all.
+    if payload.for_sale:
+        asset.offers_disabled = False
     session.add(
         UsernameOwnershipEvent(
             asset_id=asset.id,
@@ -5888,6 +6132,45 @@ async def update_username_listing(
             price_stars=payload.price,
         )
     )
+    await session.commit()
+    await session.refresh(asset)
+    return await render_username(session, asset, me, me)
+
+
+@app.patch("/api/usernames/{asset_id}/offers", response_model=UsernameAssetOut, tags=["usernames"])
+async def update_username_offers(
+    asset_id: uuid.UUID, payload: OffersToggle, session: SessionDep, me: CurrentUser
+) -> UsernameAssetOut:
+    """
+    Say once that a handle is not for sale.
+
+    Marking it takes the handle off the market as well: "keeping it" and "listed for sale"
+    cannot both be true, and leaving a price on a handle nobody may buy invites the offers the
+    owner just refused.
+    """
+    asset = await session.scalar(
+        select(UsernameAsset).where(UsernameAsset.id == asset_id).with_for_update()
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Имя не найдено")
+    if asset.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим именем"
+        )
+    asset.offers_disabled = payload.offers_disabled
+    if payload.offers_disabled and asset.status == UsernameStatus.LISTED:
+        asset.status = UsernameStatus.RESERVED
+        asset.price = None
+        asset.listed_at = None
+        session.add(
+            UsernameOwnershipEvent(
+                asset_id=asset.id,
+                from_user_id=me.id,
+                to_user_id=me.id,
+                action="unlisted",
+                price_stars=None,
+            )
+        )
     await session.commit()
     await session.refresh(asset)
     return await render_username(session, asset, me, me)
@@ -6664,7 +6947,14 @@ async def read_gifts(
         owner_user = await resolve_user(session, owner)
         if owner_user is None:
             return []
+        # A collection is content: a closed account's is for its followers, and someone who
+        # blocked me does not show me theirs.
+        await require_content_access(session, owner_user, me)
         query = query.where(Gift.owner_id == owner_user.id)
+    else:
+        walled_off = await blocked_pair_ids(session, me.id)
+        if walled_off:
+            query = query.where(Gift.owner_id.notin_(walled_off))
     query = query.where(or_(Gift.hidden_in_profile.is_(False), Gift.owner_id == me.id))
     rows = (await session.execute(query)).all()
     return [await render_gift(session, gift, gift_owner, me) for gift, gift_owner in rows]
@@ -6697,6 +6987,37 @@ async def update_gift_visibility(
     await session.commit()
     await session.refresh(gift)
     return await render_gift(session, gift, me, me)
+
+
+@app.patch("/api/gifts/{gift_id}/offers", response_model=GiftOut, tags=["gifts"])
+async def update_gift_offers(
+    gift_id: uuid.UUID,
+    payload: OffersToggle,
+    session: SessionDep,
+    me: CurrentUser,
+) -> GiftOut:
+    """
+    Stop being asked a price for something that is not for sale.
+
+    Declining offers one by one tells a buyer to try again; refusing them tells the truth once.
+    Listing the item for sale is still possible — this only closes the bidding.
+    """
+    gift = await _owned_gift_simple(session, gift_id, me)
+    gift.offers_disabled = payload.offers_disabled
+    await session.commit()
+    await session.refresh(gift)
+    return await render_gift(session, gift, me, me)
+
+
+async def _owned_gift_simple(session: AsyncSession, gift_id: uuid.UUID, me: User) -> Gift:
+    gift = await session.get(Gift, gift_id)
+    if gift is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Подарок не найден")
+    if gift.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим подарком"
+        )
+    return gift
 
 
 async def _owned_gift(session: AsyncSession, gift_id: uuid.UUID, me: User) -> Gift:
@@ -6745,6 +7066,7 @@ async def read_gift(gift_id: uuid.UUID, session: SessionDep, me: CurrentUser) ->
     ).first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Подарок не найден")
+    await require_content_access(session, row.User, me)
     return await render_gift(session, row.Gift, row.User, me)
 
 
@@ -7085,6 +7407,13 @@ async def create_gift_offer(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя сделать предложение себе"
         )
+    # An owner who is not selling should stop being asked, not keep declining.
+    if gift.offers_disabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Владелец не принимает предложения по этому подарку",
+        )
+    await refuse_if_blocked_with(session, gift.owner_id, me)
     wallet = await _wallet_for_update(session, me.id)
     if wallet.balance < payload.amount_stars:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Недостаточно Stars")

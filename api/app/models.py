@@ -50,6 +50,7 @@ class NotificationKind(StrEnum):
     GIFT = "gift"
     USERNAME = "username"
     FOLLOW = "follow"
+    FOLLOW_REQUEST = "follow_request"
     SUBSCRIPTION = "subscription"
     STARS = "stars"
     COMMUNITY = "community"
@@ -67,6 +68,9 @@ class User(Base):
     bio: Mapped[str] = mapped_column(String(280), default="")
     location: Mapped[str | None] = mapped_column(String(80), nullable=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Staff. Drawn as the V badge before the name wherever the account appears, and the only
+    # flag that grants it — there is no way to buy or claim it.
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_online: Mapped[bool] = mapped_column(Boolean, default=False)
     related_usernames: Mapped[list[str]] = mapped_column(JSON, default=list)
     profile_color: Mapped[str] = mapped_column(String(24), default="default")
@@ -127,6 +131,9 @@ class UserSettings(Base):
     # A private account keeps its profile readable — name, avatar, counts — and closes the
     # content tabs to anyone who does not follow it.
     private_account: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Who may open a direct chat: everyone, only people this account follows, or nobody.
+    # Enforced when a chat or a message is created, not merely hidden in the UI.
+    who_can_message: Mapped[str] = mapped_column(String(20), default="everyone")
     status_emoji: Mapped[str | None] = mapped_column(String(8), nullable=True)
     status_text: Mapped[str | None] = mapped_column(String(40), nullable=True)
     notify_likes: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -239,6 +246,31 @@ class Follow(Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     following_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class FollowRequest(Base):
+    """
+    A pending "let me in" for a closed account.
+
+    A private account is not asking to be invisible, it is asking to decide: following it
+    writes a request instead of a `Follow`, and only the owner's acceptance turns it into one.
+    The row is deleted either way, so a refused request can be sent again later.
+    """
+
+    __tablename__ = "follow_requests"
+    __table_args__ = (
+        UniqueConstraint("requester_id", "target_id", name="uq_follow_request_pair"),
+        CheckConstraint("requester_id <> target_id", name="ck_follow_request_not_self"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    requester_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    target_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -724,6 +756,8 @@ class UsernameAsset(Base):
     currency: Mapped[str] = mapped_column(String(12), default="STARS")
     reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     listed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # An owner who is keeping the handle stops being asked for a price.
+    offers_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -796,6 +830,8 @@ class Gift(Base):
     # Owners curate what their profile shows. A hidden item stays theirs, keeps its provenance
     # and can still be sold — it simply does not appear in the public collection.
     hidden_in_profile: Mapped[bool] = mapped_column(Boolean, default=False)
+    # An owner who is not selling stops being asked: offers on this item are refused outright.
+    offers_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # Pinned items open the collection, newest pin first, however old the item itself is. This
     # is about order in the list; the showcase slots are about the two places on the header.
     pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

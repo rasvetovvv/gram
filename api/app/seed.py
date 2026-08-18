@@ -166,6 +166,9 @@ async def _upsert_demo_users(session: AsyncSession, now: datetime) -> dict[str, 
         user.bio = str(data["bio"])
         user.location = str(data["location"]) if data["location"] else None
         user.is_verified = bool(data["verified"])
+        # Staff. Only the platform account holds it in a fresh database; the V badge is granted,
+        # never claimed, so nothing in the product can set this flag.
+        user.is_admin = username == "gram"
         user.is_online = False
         user.related_usernames = list(data["related"])
         user.profile_color = str(data.get("profile_color", "default"))

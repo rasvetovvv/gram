@@ -87,6 +87,8 @@ class UserCompact(ApiModel):
     # The platform account is presented differently everywhere it appears (chat header,
     # chat list), so its status travels with the compact user rather than being re-derived.
     is_official: bool = False
+    # Staff, drawn as the V badge before the name. Not for sale and not claimable.
+    is_admin: bool = False
     role_title: str | None = None
     # The gift the owner put in their name slot, drawn bare beside the name wherever they
     # appear. Filled from one batched lookup per list, like premium above.
@@ -151,6 +153,10 @@ class UserProfile(UserCompact):
     # A private account shows its profile but closes its content to anyone not following it.
     is_private: bool = False
     can_view_content: bool = True
+    # A closed account decides: this says the viewer has asked and is waiting.
+    follow_requested: bool = False
+    # Only ever filled on one's own profile: how many people are waiting for an answer.
+    follow_requests_count: int = 0
     updated_at: datetime | None = None
     paid_subscription_enabled: bool = False
     subscription_price_stars: int | None = None
@@ -162,6 +168,8 @@ class UserSettingsOut(ApiModel):
 
     show_online: bool = True
     private_account: bool = False
+    # everyone | following | nobody — who may open a direct chat with this account.
+    who_can_message: Literal["everyone", "following", "nobody"] = "everyone"
     status_emoji: str | None = None
     status_text: str | None = None
     notify_likes: bool = True
@@ -175,6 +183,7 @@ class UserSettingsOut(ApiModel):
 class UserSettingsUpdate(BaseModel):
     show_online: bool | None = None
     private_account: bool | None = None
+    who_can_message: Literal["everyone", "following", "nobody"] | None = None
     status_emoji: Annotated[str | None, Field(max_length=8)] = None
     status_text: Annotated[str | None, Field(max_length=40)] = None
     notify_likes: bool | None = None
@@ -350,6 +359,16 @@ class FollowState(BaseModel):
     is_following: bool
     followers_count: int
     following_count: int
+    # True when the account is closed and the follow became a request instead.
+    requested: bool = False
+
+
+class FollowRequestOut(ApiModel):
+    """Someone waiting to be let into a closed account."""
+
+    id: uuid.UUID
+    user: UserCompact
+    created_at: datetime
 
 
 MAX_POST_IMAGES = 4
@@ -1111,6 +1130,12 @@ class GiftVisibilityUpdate(BaseModel):
     hidden: bool
 
 
+class OffersToggle(BaseModel):
+    """Whether the owner is willing to be asked a price for this item or handle."""
+
+    offers_disabled: bool
+
+
 class ChatGiftRequest(BaseModel):
     """
     Gifting inside a conversation.
@@ -1158,6 +1183,8 @@ class UsernameAssetOut(ApiModel):
     last_action: str | None = None
     last_action_at: datetime | None = None
     is_primary_handle: bool = False
+    # The owner is keeping this handle and refuses offers on it.
+    offers_disabled: bool = False
 
 
 class UsernameHistoryOut(ApiModel):
@@ -1232,6 +1259,8 @@ class GiftOut(ApiModel):
     hidden_in_profile: bool = False
     # Pinned items lead the collection, newest pin first.
     is_pinned: bool = False
+    # The owner is not selling and does not want to be asked.
+    offers_disabled: bool = False
 
 
 class GiftPurchaseOut(ApiModel):
