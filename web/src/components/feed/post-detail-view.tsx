@@ -32,7 +32,7 @@ export function PostDetailView({ id }: { id: string }) {
         </div>
       ) : query.data ? (
         <div className="px-3 pb-6 sm:px-5">
-          <PostCard post={query.data} priority />
+          <PostCard post={query.data} priority showPinned openOnClick={false} />
           <PostComments post={query.data} />
         </div>
       ) : (

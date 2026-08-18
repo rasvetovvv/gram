@@ -418,6 +418,25 @@ class PostReport(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class UserReport(Base):
+    """A complaint about an account, on the same terms as one about a post."""
+
+    __tablename__ = "user_reports"
+    __table_args__ = (
+        UniqueConstraint("subject_id", "reporter_id", name="uq_user_report"),
+        CheckConstraint("subject_id <> reporter_id", name="ck_user_report_not_self"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    reporter_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    reason: Mapped[str] = mapped_column(String(40))
+    comment: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Chat(Base):
     __tablename__ = "chats"
 
@@ -777,6 +796,9 @@ class Gift(Base):
     # Owners curate what their profile shows. A hidden item stays theirs, keeps its provenance
     # and can still be sold — it simply does not appear in the public collection.
     hidden_in_profile: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Pinned items open the collection, newest pin first, however old the item itself is. This
+    # is about order in the list; the showcase slots are about the two places on the header.
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class GiftModel(Base):

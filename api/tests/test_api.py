@@ -2748,3 +2748,168 @@ async def test_a_name_slot_gift_travels_with_its_owner_into_the_feed(
     # A comment carries it too: the marker belongs to the person, not to the surface.
     commented = await client.post(f"/api/feed/{post['id']}/comments", json={"content": "И тут"})
     assert commented.json()["author"]["name_gift"]["id"] == gifts[1]["id"]
+
+
+async def test_stars_can_support_one_post_and_the_card_counts_them(client: AsyncClient) -> None:
+    """Support aimed at a post is counted on that post and notifies about that post."""
+    await register_partner(client, "patron")
+    await login_demo(client)
+    post = (await client.post("/api/feed", json={"content": "Поддержите эту запись"})).json()
+    assert post["stars_count"] == 0
+    assert post["starred_by_me"] is False
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "patron")
+    await client.post("/api/stars/top-up", json={"amount": 500})
+    sent = await client.post(
+        "/api/stars/send",
+        json={"to_username": "leon", "amount": 40, "post_id": post["id"]},
+    )
+    assert sent.status_code == 200, sent.text
+    seen = (await client.get(f"/api/feed/{post['id']}")).json()
+    assert seen["stars_count"] == 40
+    assert seen["starred_by_me"] is True
+    # Supporting it again adds up rather than replacing the previous gift.
+    await client.post(
+        "/api/stars/send", json={"to_username": "leon", "amount": 10, "post_id": post["id"]}
+    )
+    assert (await client.get(f"/api/feed/{post['id']}")).json()["stars_count"] == 50
+    # The post has to belong to the person being supported.
+    mine = (await client.post("/api/feed", json={"content": "Моя же запись"})).json()
+    assert (
+        await client.post(
+            "/api/stars/send",
+            json={"to_username": "leon", "amount": 5, "post_id": mine["id"]},
+        )
+    ).status_code == 400
+
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    notice = next(
+        item
+        for item in (await client.get("/api/notifications")).json()
+        if item["kind"] == "stars" and item["entity_id"] == post["id"]
+    )
+    assert "поддержал" in notice["text"]
+    # The author sees the tally but is not offered to support themselves.
+    assert (await client.get(f"/api/feed/{post['id']}")).json()["starred_by_me"] is False
+
+
+async def test_a_pinned_gift_leads_the_collection(client: AsyncClient) -> None:
+    """Pinning is about order: a pinned item comes first however old it is."""
+    await login_demo(client)
+    gifts = (await client.get("/api/gifts", params={"owner": "leon"})).json()
+    assert len(gifts) >= 2
+    last = gifts[-1]
+    assert last["is_pinned"] is False
+
+    pinned = await client.post(f"/api/gifts/{last['id']}/pin")
+    assert pinned.status_code == 200, pinned.text
+    assert pinned.json()["is_pinned"] is True
+    listed = (await client.get("/api/gifts", params={"owner": "leon"})).json()
+    assert listed[0]["id"] == last["id"]
+    # Pinning a hidden item brings it back: a pin nobody can see would promise nothing.
+    await client.patch(f"/api/gifts/{last['id']}/visibility", json={"hidden": True})
+    assert (await client.post(f"/api/gifts/{last['id']}/pin")).json()["hidden_in_profile"] is False
+    assert (await client.delete(f"/api/gifts/{last['id']}/pin")).json()["is_pinned"] is False
+    assert (await client.get("/api/gifts", params={"owner": "leon"})).json()[0]["id"] != last["id"]
+
+    await register_partner(client, "envious")
+    await login_as(client, "envious")
+    assert (await client.post(f"/api/gifts/{last['id']}/pin")).status_code == 403
+
+
+async def test_a_profile_may_only_feature_its_own_community(client: AsyncClient) -> None:
+    """Someone else's community on your page would be an endorsement nobody gave."""
+    await login_demo(client)
+    mine = await client.post(
+        "/api/communities",
+        json={
+            "name": "Своё сообщество",
+            "title": "Своё сообщество",
+            "slug": "my-own-place",
+            "description": "Про своё",
+        },
+    )
+    assert mine.status_code == 201, mine.text
+    only_mine = await client.get("/api/communities", params={"mine": "true"})
+    slugs = {item["slug"] for item in only_mine.json()}
+    assert "my-own-place" in slugs
+    # Everything the picker offers is this account's own, seeded channels included.
+    assert all(item["is_owner"] for item in only_mine.json())
+
+    assert (
+        await client.patch("/api/users/me", json={"featured_community_slug": "my-own-place"})
+    ).status_code == 200
+    await client.post("/api/auth/logout")
+    await register_partner(client, "outsider")
+    await login_as(client, "outsider")
+    refused = await client.patch(
+        "/api/users/me", json={"featured_community_slug": "my-own-place"}
+    )
+    assert refused.status_code == 422
+    assert "своё сообщество" in refused.json()["detail"]
+    assert (await client.get("/api/communities", params={"mine": "true"})).json() == []
+    # The picker never offers someone else's channel, however visible it is in the catalogue.
+    everything = {item["slug"] for item in (await client.get("/api/communities")).json()}
+    assert "my-own-place" in everything
+
+
+async def test_a_complaint_about_an_account_is_one_row_per_person(client: AsyncClient) -> None:
+    """The same terms as a complaint about a post: stored, replaceable, never about oneself."""
+    await register_partner(client, "reporter")
+    await login_as(client, "reporter")
+    first = await client.post(
+        "/api/users/leon/report", json={"reason": "abuse", "comment": "Грубит"}
+    )
+    assert first.status_code == 201, first.text
+    assert first.json()["detail"] == "Жалоба отправлена"
+    assert (
+        await client.post("/api/users/leon/report", json={"reason": "spam"})
+    ).status_code == 201
+    mine = await client.post("/api/users/reporter/report", json={"reason": "spam"})
+    assert mine.status_code == 400
+    ghost = await client.post("/api/users/nobody/report", json={"reason": "spam"})
+    assert ghost.status_code == 404
+
+
+async def test_blocking_unfollows_both_ways_and_closes_the_profile(client: AsyncClient) -> None:
+    """A block ends the following in both directions and shuts the content to the blocked side."""
+    await register_partner(client, "shunned")
+    await login_as(client, "shunned")
+    assert (await client.post("/api/users/leon/follow")).status_code == 200
+    await client.post("/api/auth/logout")
+
+    await login_demo(client)
+    assert (await client.post("/api/users/shunned/follow")).status_code == 200
+    before = (await client.get("/api/users/shunned")).json()
+    assert before["is_following"] is True
+    assert before["blocked_me"] is False
+    assert (await client.post("/api/users/shunned/block")).status_code == 200
+    after = (await client.get("/api/users/shunned")).json()
+    assert after["is_blocked"] is True
+    assert after["is_following"] is False
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "shunned")
+    theirs = (await client.get("/api/users/leon")).json()
+    # They are told, they are no longer following, and the tabs are closed to them.
+    assert theirs["blocked_me"] is True
+    assert theirs["is_following"] is False
+    assert theirs["can_view_content"] is False
+    posts = await client.get("/api/feed", params={"author": "leon"})
+    assert posts.status_code == 403
+    assert "заблокировал" in posts.json()["detail"]
+    assert (await client.get("/api/users/leon/stories")).status_code == 403
+    # Pressing «Читать» again must not walk around it.
+    refused = await client.post("/api/users/leon/follow")
+    assert refused.status_code == 403
+    assert "заблокировал" in refused.json()["detail"]
+
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    assert (await client.delete("/api/users/shunned/block")).status_code == 200
+    await client.post("/api/auth/logout")
+    await login_as(client, "shunned")
+    assert (await client.get("/api/users/leon")).json()["can_view_content"] is True
+    assert (await client.post("/api/users/leon/follow")).status_code == 200

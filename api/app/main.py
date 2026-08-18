@@ -109,6 +109,7 @@ from app.models import (
     UsernameStatus,
     UserPreferences,
     UserProfileDetails,
+    UserReport,
     UserSettings,
     utcnow,
 )
@@ -211,6 +212,7 @@ from app.schemas import (
     UsernameListingUpdate,
     UsernameReserve,
     UserProfile,
+    UserReportCreate,
     UserSettingsOut,
     UserSettingsUpdate,
     WalletOut,
@@ -772,6 +774,7 @@ async def render_profile(
     following = False
     subscribed = False
     blocked = False
+    blocked_me = False
     if user.id != me.id:
         following = bool(
             await session.scalar(
@@ -796,6 +799,13 @@ async def render_profile(
                 select(func.count())
                 .select_from(UserBlock)
                 .where(UserBlock.blocker_id == me.id, UserBlock.blocked_id == user.id)
+            )
+        )
+        blocked_me = bool(
+            await session.scalar(
+                select(func.count())
+                .select_from(UserBlock)
+                .where(UserBlock.blocker_id == user.id, UserBlock.blocked_id == me.id)
             )
         )
     showcases = (
@@ -882,6 +892,7 @@ async def render_profile(
         is_following=following,
         is_subscribed=subscribed,
         is_blocked=blocked,
+        blocked_me=blocked_me,
         posts_count=posts_count,
         stars_balance=wallet.balance if wallet else None,
         featured_gift=gifts.get("featured"),
@@ -903,8 +914,9 @@ async def render_profile(
         status_emoji=settings.status_emoji if settings else None,
         status_text=settings.status_text if settings else None,
         is_private=is_private,
-        # Own profile, a public one, or one whose owner I follow: the tabs stay open.
-        can_view_content=bool(mine or not is_private or following),
+        # Own profile, a public one, or one whose owner I follow: the tabs stay open. Being
+        # blocked closes them whatever the account's own privacy says.
+        can_view_content=bool(mine or (not blocked_me and (not is_private or following))),
         updated_at=details.updated_at if details else None,
         paid_subscription_enabled=(
             creator_settings.paid_subscription_enabled if creator_settings else False
@@ -1197,6 +1209,30 @@ async def render_post(  # noqa: PLR0913
             .where(PostMute.post_id == post.id, PostMute.user_id == me.id)
         )
     )
+    # What the post earned, read off the ledger rather than kept as a second number that could
+    # disagree with it: the credits to its author tagged with this post.
+    stars = int(
+        await session.scalar(
+            select(func.coalesce(func.sum(StarLedger.amount), 0)).where(
+                StarLedger.entity_type == "post",
+                StarLedger.entity_id == str(post.id),
+                StarLedger.amount > 0,
+            )
+        )
+        or 0
+    )
+    starred = bool(
+        await session.scalar(
+            select(func.count())
+            .select_from(StarLedger)
+            .where(
+                StarLedger.entity_type == "post",
+                StarLedger.entity_id == str(post.id),
+                StarLedger.user_id == me.id,
+                StarLedger.amount < 0,
+            )
+        )
+    )
     return FeedPost(
         id=post.id,
         author=compact_user(
@@ -1229,6 +1265,8 @@ async def render_post(  # noqa: PLR0913
         edited_at=post.edited_at,
         is_pinned=post.pinned_at is not None,
         is_muted=muted,
+        stars_count=stars,
+        starred_by_me=starred,
         can_edit=post.author_id == me.id,
         can_delete=post.author_id == me.id,
     )
@@ -1367,6 +1405,7 @@ async def render_gift(session: AsyncSession, gift: Gift, owner: User, me: User) 
         listed_at=gift.listed_at,
         is_listed=gift.sale_price_stars is not None,
         hidden_in_profile=gift.hidden_in_profile,
+        is_pinned=gift.pinned_at is not None,
     )
 
 
@@ -2038,13 +2077,17 @@ async def update_current_profile(  # noqa: C901, PLR0912, PLR0915
         me.related_usernames = related_usernames or []
     featured_community_slug = detail_fields.get("featured_community_slug")
     if featured_community_slug is not None:
-        community_exists = await session.scalar(
-            select(Community.id).where(Community.slug == featured_community_slug)
+        owned = await session.scalar(
+            select(Community.id).where(
+                Community.slug == featured_community_slug, Community.owner_id == me.id
+            )
         )
-        if community_exists is None:
+        if owned is None:
+            # Existence is not enough: a profile advertising someone else's community would
+            # read as an endorsement nobody gave.
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Сообщество для профиля не найдено",
+                detail="В профиле можно показать только своё сообщество",
             )
     if detail_fields:
         details = await session.get(UserProfileDetails, me.id)
@@ -2162,10 +2205,21 @@ async def require_content_access(session: AsyncSession, owner: User, me: User) -
     A private account's posts, stories and replies are for its followers.
 
     The profile itself stays readable — name, avatar, counts — so a stranger can decide whether
-    to ask; only the content behind the tabs is closed.
+    to ask; only the content behind the tabs is closed. Somebody the owner has blocked is closed
+    out of the content too, and told so rather than shown an empty page.
     """
     if owner.id == me.id:
         return
+    blocked = await session.scalar(
+        select(UserBlock.id).where(
+            UserBlock.blocker_id == owner.id, UserBlock.blocked_id == me.id
+        )
+    )
+    if blocked is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"@{owner.username} заблокировал(а) вас",
+        )
     settings = await session.get(UserSettings, owner.id)
     if settings is None or not settings.private_account:
         return
@@ -2414,6 +2468,16 @@ async def follow_user(username: str, session: SessionDep, me: CurrentUser) -> Fo
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя подписаться на себя"
         )
+    # A block that could be walked around by pressing «Читать» again would not be a block.
+    if await session.scalar(
+        select(UserBlock.id).where(
+            UserBlock.blocker_id == target.id, UserBlock.blocked_id == me.id
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"@{target.username} заблокировал(а) вас",
+        )
     existing = await session.scalar(
         select(Follow).where(Follow.follower_id == me.id, Follow.following_id == target.id)
     )
@@ -2471,13 +2535,26 @@ async def _blocked_between(
 BLOCKED_CHAT_DETAIL = "Переписка недоступна: чат заблокирован"
 
 
+async def _drop_following(session: AsyncSession, follower: User, followed: User) -> None:
+    """Undo one direction of following, keeping both counters honest."""
+    link = await session.scalar(
+        select(Follow).where(Follow.follower_id == follower.id, Follow.following_id == followed.id)
+    )
+    if link is None:
+        return
+    await session.delete(link)
+    follower.following_count = max(0, follower.following_count - 1)
+    followed.followers_count = max(0, followed.followers_count - 1)
+
+
 @app.post("/api/users/{username}/block", response_model=DetailResponse, tags=["social graph"])
 async def block_user(username: str, session: SessionDep, me: CurrentUser) -> DetailResponse:
     """
     Refuse a person: the direct chat closes both ways and any following is dropped.
 
-    Unfollowing is part of blocking rather than a separate step, because a feed that keeps
-    showing someone you have blocked is not a block at all.
+    Both directions of following go, not only mine: someone I have blocked must not keep my
+    posts in their feed, and a follower count that still includes them would be a lie. The
+    blocked side is told plainly on my profile, because silence there reads as a bug.
     """
     target = await resolve_user(session, username)
     if target is None:
@@ -2492,14 +2569,9 @@ async def block_user(username: str, session: SessionDep, me: CurrentUser) -> Det
     if existing is not None:
         return DetailResponse(detail="Уже заблокирован")
     session.add(UserBlock(blocker_id=me.id, blocked_id=target.id))
-    following = await session.scalar(
-        select(Follow).where(Follow.follower_id == me.id, Follow.following_id == target.id)
-    )
-    if following is not None:
-        await session.execute(select(User).where(User.id.in_([me.id, target.id])).with_for_update())
-        await session.delete(following)
-        me.following_count = max(0, me.following_count - 1)
-        target.followers_count = max(0, target.followers_count - 1)
+    await session.execute(select(User).where(User.id.in_([me.id, target.id])).with_for_update())
+    await _drop_following(session, me, target)
+    await _drop_following(session, target, me)
     await session.commit()
     return DetailResponse(detail=f"@{target.username} заблокирован")
 
@@ -2921,6 +2993,44 @@ async def report_post(
         session.add(
             PostReport(
                 post_id=post_id,
+                reporter_id=me.id,
+                reason=payload.reason,
+                comment=payload.comment,
+            )
+        )
+    else:
+        existing.reason = payload.reason
+        existing.comment = payload.comment
+    await session.commit()
+    return DetailResponse(detail="Жалоба отправлена")
+
+
+@app.post(
+    "/api/users/{username}/report",
+    response_model=DetailResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["social graph"],
+)
+async def report_user(
+    username: str, payload: UserReportCreate, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """A complaint about an account: stored once per person, its reason replaceable."""
+    subject = await resolve_user(session, username)
+    if subject is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Аккаунт не найден")
+    if subject.id == me.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя пожаловаться на себя"
+        )
+    existing = await session.scalar(
+        select(UserReport).where(
+            UserReport.subject_id == subject.id, UserReport.reporter_id == me.id
+        )
+    )
+    if existing is None:
+        session.add(
+            UserReport(
+                subject_id=subject.id,
                 reporter_id=me.id,
                 reason=payload.reason,
                 comment=payload.comment,
@@ -4842,6 +4952,12 @@ async def send_stars(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя отправить Stars себе"
         )
+    post = await session.get(Post, payload.post_id) if payload.post_id else None
+    if payload.post_id is not None and (post is None or post.author_id != recipient.id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Публикация не найдена или принадлежит другому автору",
+        )
     wallets = (
         await session.scalars(
             select(StarWallet)
@@ -4854,7 +4970,10 @@ async def send_stars(
     sender_wallet = by_user.get(me.id) or await _wallet_for_update(session, me.id)
     recipient_wallet = by_user.get(recipient.id) or await _wallet_for_update(session, recipient.id)
     transfer_id = uuid.uuid4()
-    description = payload.message or f"Перевод для @{recipient.username}"
+    description = payload.message or (
+        "Поддержка публикации" if post else f"Перевод для @{recipient.username}"
+    )
+    entity = {"entity_type": "post", "entity_id": str(post.id)} if post else {}
     _ledger_change(
         session,
         sender_wallet,
@@ -4863,6 +4982,7 @@ async def send_stars(
         description=description,
         correlation_id=transfer_id,
         counterparty_id=recipient.id,
+        **entity,
     )
     _ledger_change(
         session,
@@ -4872,14 +4992,21 @@ async def send_stars(
         description=description,
         correlation_id=transfer_id,
         counterparty_id=me.id,
+        **entity,
     )
     session.add(
         Notification(
             user_id=recipient.id,
             actor_id=me.id,
             kind=NotificationKind.STARS,
-            text=f"{me.display_name} отправил(а) вам {payload.amount} Stars",
-            entity_id=str(transfer_id),
+            text=(
+                f"{me.display_name} поддержал(а) вашу публикацию: {payload.amount} Stars"
+                if post
+                else f"{me.display_name} отправил(а) вам {payload.amount} Stars"
+            ),
+            # A notice about support for a post opens that post; a plain transfer has only
+            # the transfer to point at.
+            entity_id=str(post.id) if post else str(transfer_id),
         )
     )
     await session.commit()
@@ -4922,6 +5049,16 @@ async def subscribe_to_creator(
     if creator.id == me.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя подписаться на себя"
+        )
+    # Taking money for access that the block denies would be the worst kind of dead end.
+    if await session.scalar(
+        select(UserBlock.id).where(
+            UserBlock.blocker_id == creator.id, UserBlock.blocked_id == me.id
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"@{creator.username} заблокировал(а) вас",
         )
     creator_settings = await session.get(CreatorSettings, creator.id)
     if creator_settings and not creator_settings.paid_subscription_enabled:
@@ -5406,12 +5543,21 @@ async def render_community(session: AsyncSession, community: Community, me: User
 
 
 @app.get("/api/communities", response_model=list[CommunityOut], tags=["communities"])
-async def read_communities(session: SessionDep, me: CurrentUser) -> list[CommunityOut]:
-    communities = (
-        await session.scalars(
-            select(Community).order_by(Community.members_count.desc(), Community.created_at.desc())
-        )
-    ).all()
+async def read_communities(
+    session: SessionDep, me: CurrentUser, *, mine: bool = False
+) -> list[CommunityOut]:
+    """
+    Every community worth showing this reader, or only the ones they own.
+
+    `mine` is what the profile's own community picker asks for: you may put your community on
+    your page, so the picker offers exactly those and nothing else.
+    """
+    query = select(Community).order_by(
+        Community.members_count.desc(), Community.created_at.desc()
+    )
+    if mine:
+        query = query.where(Community.owner_id == me.id)
+    communities = (await session.scalars(query)).all()
     rendered: list[CommunityOut] = []
     for community in communities:
         item = await render_community(session, community, me)
@@ -6509,7 +6655,10 @@ async def read_gifts(
     intact, still sellable — so the owner keeps seeing them, flagged, and can put them back.
     """
     query = (
-        select(Gift, User).join(User, Gift.owner_id == User.id).order_by(Gift.received_at.desc())
+        select(Gift, User)
+        .join(User, Gift.owner_id == User.id)
+        # Pinned first, newest pin leading, then the rest as they arrived.
+        .order_by(Gift.pinned_at.is_(None), Gift.pinned_at.desc(), Gift.received_at.desc())
     )
     if owner:
         owner_user = await resolve_user(session, owner)
@@ -6544,6 +6693,44 @@ async def update_gift_visibility(
                 GiftShowcase.user_id == me.id, GiftShowcase.gift_id == gift.id
             )
         )
+        gift.pinned_at = None
+    await session.commit()
+    await session.refresh(gift)
+    return await render_gift(session, gift, me, me)
+
+
+async def _owned_gift(session: AsyncSession, gift_id: uuid.UUID, me: User) -> Gift:
+    gift = await session.scalar(select(Gift).where(Gift.id == gift_id).with_for_update())
+    if gift is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Подарок не найден")
+    if gift.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим подарком"
+        )
+    return gift
+
+
+@app.post("/api/gifts/{gift_id}/pin", response_model=GiftOut, tags=["gifts"])
+async def pin_gift(gift_id: uuid.UUID, session: SessionDep, me: CurrentUser) -> GiftOut:
+    """
+    Keep an item at the head of the collection.
+
+    Several may be pinned at once — a collection has favourites, not one favourite — and the
+    newest pin leads. A hidden item is shown again by pinning it: pinning something nobody can
+    see would be a promise the profile does not keep.
+    """
+    gift = await _owned_gift(session, gift_id, me)
+    gift.pinned_at = utcnow()
+    gift.hidden_in_profile = False
+    await session.commit()
+    await session.refresh(gift)
+    return await render_gift(session, gift, me, me)
+
+
+@app.delete("/api/gifts/{gift_id}/pin", response_model=GiftOut, tags=["gifts"])
+async def unpin_gift(gift_id: uuid.UUID, session: SessionDep, me: CurrentUser) -> GiftOut:
+    gift = await _owned_gift(session, gift_id, me)
+    gift.pinned_at = None
     await session.commit()
     await session.refresh(gift)
     return await render_gift(session, gift, me, me)

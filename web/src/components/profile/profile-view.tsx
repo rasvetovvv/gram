@@ -27,6 +27,7 @@ import {
   MessageCircle,
   MoreHorizontal,
   Pause,
+  Pin,
   Play,
   Plus,
   QrCode,
@@ -49,6 +50,7 @@ import { presenceText, statusLine } from "@/lib/presence";
 import { nameStyle, themeGradient } from "@/lib/profile-color";
 import { compactNumber, relativeTime } from "@/lib/utils";
 import { GiftCard, GiftDetailTrigger, type RichGift } from "../gifts/gift-gallery";
+import { UserReportSheet } from "./user-report-sheet";
 import { GiftImage, giftArtProps } from "../gifts/gift-image";
 import { GiftPurchaseSheet } from "../gifts/gift-purchase-sheet";
 import { PostCard } from "../feed/post-card";
@@ -128,12 +130,13 @@ export function ProfileView({ username }: { username: string }) {
   const communityQuery = useQuery({
     queryKey: ["profile-community", profile?.featured_community_slug],
     queryFn: () => api.community(profile!.featured_community_slug!),
-    enabled: Boolean(profile?.featured_community_slug)
+    // Someone the owner blocked sees none of the page's content, the channel card included.
+    enabled: Boolean(profile?.featured_community_slug) && contentOpen
   });
   const communityPostsQuery = useQuery({
     queryKey: ["profile-community-posts", profile?.featured_community_slug],
     queryFn: () => api.communityPosts(profile!.featured_community_slug!),
-    enabled: Boolean(profile?.featured_community_slug)
+    enabled: Boolean(profile?.featured_community_slug) && contentOpen
   });
 
   const isMe = Boolean(profile && (profile.is_me || meQuery.data?.id === profile.id));
@@ -301,14 +304,18 @@ export function ProfileView({ username }: { username: string }) {
           <div className="relative z-20 mb-1 flex flex-wrap items-center justify-end gap-2">
             {isMe ? (
               <>
-                <ProfileMoreMenu profile={profile} isMe={isMe} shareProfile={shareProfile} setFeedback={setFeedback} />
+                <ProfileMoreMenu profile={profile} isMe={isMe} shareProfile={shareProfile} />
                 <button className="profile-primary-action" onClick={() => setEditOpen(true)}><Edit3 size={16} />Редактировать</button>
               </>
+            ) : profile.blocked_me ? (
+              // Blocked: writing, gifting and following would all be refused, so the page
+              // offers only what still works — sharing it and reporting it.
+              <ProfileMoreMenu profile={profile} isMe={isMe} shareProfile={shareProfile} />
             ) : (
               <>
                 <button className={OUTLINE_ACTION} onClick={() => directChat.mutate()} disabled={directChat.isPending} aria-label="Написать"><MessageCircle size={16} /></button>
                 <button className={OUTLINE_ACTION} onClick={() => setGiftSheetOpen(true)} aria-label="Отправить подарок"><GiftIcon size={16} /></button>
-                <ProfileMoreMenu profile={profile} isMe={isMe} shareProfile={shareProfile} setFeedback={setFeedback} />
+                <ProfileMoreMenu profile={profile} isMe={isMe} shareProfile={shareProfile} />
                 <button className={profile.is_following ? "quiet-button" : "profile-primary-action"} onClick={() => follow.mutate()} disabled={follow.isPending}>{profile.is_following ? <><Check size={16} />Вы подписаны</> : "Читать"}</button>
               </>
             )}
@@ -374,7 +381,7 @@ export function ProfileView({ username }: { username: string }) {
           <button className="min-h-11 border-0 bg-transparent p-0 text-left" onClick={() => openConnections("followers")}><strong className="font-bold">{compactNumber(profile.followers_count)}</strong> <span className="text-[var(--dim)]">Подписчики</span></button>
         </div>
 
-        {!isMe && profile.paid_subscription_enabled && (profile.subscription_price_stars ?? 0) > 0 ? (
+        {!isMe && !profile.blocked_me && profile.paid_subscription_enabled && (profile.subscription_price_stars ?? 0) > 0 ? (
           <button
             className={profile.is_subscribed ? "quiet-button mt-4 w-full" : "mt-4 flex min-h-14 w-full items-center justify-center gap-2 rounded-full border-0 bg-white px-5 font-extrabold"}
             style={profile.is_subscribed ? undefined : { color: "#000000" }}
@@ -496,7 +503,7 @@ function ProfileTab({
   );
 }
 
-function ProfileMoreMenu({ profile, isMe, shareProfile, setFeedback }: { profile: User; isMe: boolean; shareProfile: () => Promise<void>; setFeedback: (text: string) => void }) {
+function ProfileMoreMenu({ profile, isMe, shareProfile }: { profile: User; isMe: boolean; shareProfile: () => Promise<void> }) {
   const item = "flex min-h-12 cursor-pointer items-center gap-3 rounded-[14px] px-3 text-[0.95rem] font-semibold outline-none focus:bg-[#27272a] data-[highlighted]:bg-[#27272a]";
   const queryClient = useQueryClient();
   const { notify } = useToast();
@@ -533,6 +540,30 @@ function ProfileMoreMenu({ profile, isMe, shareProfile, setFeedback }: { profile
     onError: (error: Error) =>
       notify("Не удалось подарить Premium", { variant: "error", detail: error.message })
   });
+  // Keyed rather than unmounted on close: a Radix dialog torn down while still open leaves
+  // `pointer-events: none` on the page behind it.
+  const [report, setReport] = useState({ open: false, seq: 0 });
+  const [confirmBlock, setConfirmBlock] = useState(false);
+  const block = useMutation({
+    mutationFn: () =>
+      profile.is_blocked ? api.unblockUser(profile.username) : api.blockUser(profile.username),
+    onSuccess: async () => {
+      setConfirmBlock(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["profile", profile.username] }),
+        queryClient.invalidateQueries({ queryKey: ["chats"] }),
+        queryClient.invalidateQueries({ queryKey: ["feed"] })
+      ]);
+      notify(profile.is_blocked ? "Пользователь разблокирован" : "Пользователь заблокирован", {
+        variant: "success",
+        detail: profile.is_blocked
+          ? `@${profile.username} снова может писать вам`
+          : `@${profile.username} не сможет писать вам`
+      });
+    },
+    onError: (error: Error) =>
+      notify("Не получилось", { variant: "error", detail: error.message })
+  });
   return (
     <>
     <DropdownMenu.Root>
@@ -556,17 +587,37 @@ function ProfileMoreMenu({ profile, isMe, shareProfile, setFeedback }: { profile
                 <Sparkles size={18} className="text-[var(--premium)]" />Подарить Premium
               </DropdownMenu.Item>
               <DropdownMenu.Separator className="mx-2 my-1.5 h-px bg-[var(--line)]" />
-              <DropdownMenu.Item className={item} onSelect={() => setFeedback("Жалоба будет доступна позже")}>
+              <DropdownMenu.Item className={item} onSelect={() => setReport((current) => ({ open: true, seq: current.seq + 1 }))}>
                 <Flag size={18} className="text-[var(--muted)]" />Пожаловаться
               </DropdownMenu.Item>
-              <DropdownMenu.Item className={`${item} text-[var(--danger)]`} onSelect={() => setFeedback("Блокировка будет доступна позже")}>
-                <Ban size={18} />Заблокировать
+              <DropdownMenu.Item
+                className={`${item} ${profile.is_blocked ? "" : "text-[var(--danger)]"}`}
+                onSelect={() => (profile.is_blocked ? block.mutate() : setConfirmBlock(true))}
+              >
+                {profile.is_blocked ? <ShieldCheck size={18} /> : <Ban size={18} />}
+                {profile.is_blocked ? "Разблокировать" : "Заблокировать"}
               </DropdownMenu.Item>
             </>
           )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+    <ConfirmDialog
+      open={confirmBlock}
+      onOpenChange={setConfirmBlock}
+      title={`Заблокировать @${profile.username}?`}
+      description="Он не сможет писать вам, а ваш диалог закроется с обеих сторон. Разблокировать можно в любой момент."
+      confirmLabel={block.isPending ? "Блокируем…" : "Заблокировать"}
+      error={block.error?.message}
+      pending={block.isPending}
+      onConfirm={() => block.mutate()}
+    />
+    <UserReportSheet
+      key={`report-${report.seq}`}
+      profile={profile}
+      open={report.open}
+      onOpenChange={(open) => setReport((current) => ({ ...current, open }))}
+    />
     <ConfirmDialog
       open={giftPremiumOpen}
       onOpenChange={(next) => {
@@ -745,7 +796,40 @@ function StoryComposerDialog({ open, onOpenChange, posts, username }: { open: bo
 function ProfileCollection({ gifts, meUsername }: { gifts: RichGift[]; meUsername?: string }) {
   const openGifts = useUiStore((state) => state.openGifts);
   if (!gifts.length) return <EmptySection icon={GiftIcon} title="Коллекция пока пуста" text="Подарки пользователя появятся здесь." action={<button type="button" className="quiet-button mt-3" onClick={() => openGifts()}>Открыть подарки</button>} />;
-  return <section className="px-3 py-4 sm:px-5"><div className="mb-4 flex items-center justify-between"><div><h2 className="m-0 text-lg font-bold">Подарки</h2><p className="mb-0 mt-1 text-xs text-[var(--muted)]">Коллекционные предметы с историей владения</p></div><button type="button" className="border-0 bg-transparent p-0 text-sm font-semibold text-[var(--link)]" onClick={() => openGifts()}>Все</button></div><div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-3">{gifts.map((gift, index) => <GiftCard key={gift.id} gift={gift} index={index} me={meUsername} />)}</div></section>;
+  return <section className="px-3 py-4 sm:px-5"><div className="mb-4 flex items-center justify-between"><div><h2 className="m-0 text-lg font-bold">Подарки</h2><p className="mb-0 mt-1 text-xs text-[var(--muted)]">Коллекционные предметы с историей владения</p></div><button type="button" className="border-0 bg-transparent p-0 text-sm font-semibold text-[var(--link)]" onClick={() => openGifts()}>Все</button></div><div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-3">{gifts.map((gift, index) => <CollectionItem key={gift.id} gift={gift} index={index} meUsername={meUsername} />)}</div></section>;
+}
+
+/**
+ * One item in the collection, marked when its owner pinned it.
+ *
+ * Pinning itself lives in the item's own sheet, next to the rest of what an owner can do with
+ * it — a control floating over the artwork would cover the thing it is about.
+ */
+function CollectionItem({
+  gift,
+  index,
+  meUsername
+}: {
+  gift: RichGift;
+  index: number;
+  meUsername?: string;
+}) {
+  return (
+    // The card is a button, which would shrink to its content once it stops being the grid's
+    // own child; `[&>button]:w-full` keeps the tile the size of its cell.
+    <div className="relative block w-full min-w-0 [&>button]:w-full">
+      <GiftCard gift={gift} index={index} me={meUsername} />
+      {gift.is_pinned ? (
+        <span
+          className="pointer-events-none absolute left-1.5 top-1.5 grid size-6 place-items-center rounded-full bg-black/65 text-white backdrop-blur-sm"
+          title="Закреплён в коллекции"
+          aria-label="Закреплён в коллекции"
+        >
+          <Pin size={13} />
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 function EmptySection({ icon: Icon, title, text, action }: { icon: React.ComponentType<{ className?: string }>; title: string; text: string; action?: React.ReactNode }) {
@@ -762,16 +846,26 @@ function SectionError({ text, retry }: { text: string; retry: () => void }) {
  * The profile above it stays whole — name, avatar, counts — so the decision to follow can be
  * made from something, which is the point of a private account rather than a hidden one.
  */
+/**
+ * Why the tabs are closed: the account is private, or its owner has blocked this reader.
+ *
+ * The second case is named rather than dressed up as the first — someone who has been blocked
+ * would otherwise keep trying to subscribe to a page that will never open.
+ */
 function ClosedAccountPanel({ profile }: { profile: User }) {
+  const blocked = Boolean(profile.blocked_me);
   return (
     <section className="mx-4 mb-4 grid justify-items-center gap-2 rounded-[22px] bg-[var(--surface)] px-5 py-8 text-center shadow-[inset_0_0_0_1px_var(--line)]">
       <span className="grid size-12 place-items-center rounded-full bg-[var(--surface-raised)] text-[var(--muted)]">
-        <Lock size={22} />
+        {blocked ? <Ban size={22} /> : <Lock size={22} />}
       </span>
-      <strong className="text-[16px]">Закрытый аккаунт</strong>
+      <strong className="text-[16px]">
+        {blocked ? `@${profile.username} заблокировал(а) вас` : "Закрытый аккаунт"}
+      </strong>
       <p className="mb-0 max-w-[42ch] text-[14px] leading-6 text-[var(--muted)]">
-        Посты, истории и ответы {profile.display_name} видны только подписчикам. Подпишитесь,
-        чтобы открыть их.
+        {blocked
+          ? "Посты, истории и ответы этого аккаунта вам недоступны, и написать ему нельзя."
+          : `Посты, истории и ответы ${profile.display_name} видны только подписчикам. Подпишитесь, чтобы открыть их.`}
       </p>
     </section>
   );

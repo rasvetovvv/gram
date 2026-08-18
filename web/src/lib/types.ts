@@ -39,6 +39,8 @@ export type User = {
   is_subscribed?: boolean;
   /** Whether I have blocked them, so the menu can offer to undo it. */
   is_blocked?: boolean;
+  /** The other direction: they blocked me, which is why their content is closed. */
+  blocked_me?: boolean;
   interests?: string[];
   onboarding_complete?: boolean;
   featured_gift?: GiftSummary | null;
@@ -157,6 +159,9 @@ export type Post = {
   is_pinned?: boolean;
   /** Whether I switched off notifications about this post. */
   is_muted?: boolean;
+  /** Stars this post earned, and whether I am among the people who sent them. */
+  stars_count?: number;
+  starred_by_me?: boolean;
   can_edit?: boolean;
   can_delete?: boolean;
 };
@@ -329,6 +334,8 @@ export type Gift = {
   is_listed?: boolean;
   /** Owners curate their profile; a hidden item stays theirs but leaves the public grid. */
   hidden_in_profile?: boolean;
+  /** Pinned items lead the collection, newest pin first. */
+  is_pinned?: boolean;
 };
 
 export type GiftModel = {

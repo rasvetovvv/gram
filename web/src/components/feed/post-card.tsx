@@ -21,6 +21,7 @@ import {
   Trash2
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import type { Post } from "@/lib/types";
@@ -39,6 +40,7 @@ import { PostGallery } from "./post-gallery";
 import { PostLinkCard } from "./post-link-card";
 import { PostMusicCard, useRecordView } from "./post-music";
 import { PostReportSheet } from "./post-report-sheet";
+import { PostStarsSheet } from "./post-stars-sheet";
 import { RichText } from "./rich-text";
 
 /** A music link that became a card is dropped from the text, the way the reference drops it. */
@@ -53,13 +55,17 @@ const MUSIC_LINK = /https?:\/\/(?:www\.|on\.|m\.)?soundcloud\.com\/\S+/gi;
  */
 export function PostCard({
   post,
-  showPinned = false
+  showPinned = false,
+  openOnClick = true
 }: {
   post: Post;
   priority?: boolean;
   showPinned?: boolean;
+  /** Off on the post's own page, where there is nowhere further to open. */
+  openOnClick?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const viewRef = useRecordView(post.id);
   const { notify } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -68,6 +74,7 @@ export function PostCard({
   // the page underneath unclickable.
   const [edit, setEdit] = useState({ open: false, seq: 0 });
   const [report, setReport] = useState({ open: false, seq: 0 });
+  const [stars, setStars] = useState({ open: false, seq: 0 });
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
   const isMine = post.can_edit ?? Boolean(me && me.id === post.author.id);
   const pictures = post.image_urls?.length
@@ -143,10 +150,33 @@ export function PostCard({
   }
 
   const item = "flex min-h-10 cursor-pointer items-center gap-3 rounded-[13px] px-3 text-sm outline-none focus:bg-[#27272a]";
+
+  /**
+   * The whole card opens the post, the way the reference's does — except where the reader is
+   * already doing something with it: a link, a control, a menu, or a text selection they are
+   * about to copy.
+   */
+  function openPost(event: React.MouseEvent<HTMLElement>) {
+    if (!openOnClick) return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target?.closest(
+        "a,button,[role='button'],[role='menu'],[role='dialog'],input,textarea,video,[data-keep-click]"
+      )
+    )
+      return;
+    if (window.getSelection()?.toString()) return;
+    router.push(`/post/${post.id}`);
+  }
+
   return (
     <article
       ref={viewRef}
-      className="surface flex gap-3 px-4 py-4 md:gap-3.5 md:px-5 md:py-5"
+      onClick={openPost}
+      className={cn(
+        "surface flex gap-3 px-4 py-4 md:gap-3.5 md:px-5 md:py-5",
+        openOnClick && "cursor-pointer"
+      )}
     >
       <Link href={`/u/${post.author.username}`} className="shrink-0">
         <UserAvatar
@@ -317,17 +347,44 @@ export function PostCard({
             />
           </div>
           <div className="flex items-center gap-0.5 sm:gap-1">
-            <Link
-              href={`/stars?to=${encodeURIComponent(post.author.username)}`}
-              aria-label="Поддержать звёздами"
-              title="Поддержать звёздами"
-              className="group grid size-9 place-items-center rounded-full text-[var(--stars)] transition-all duration-200 hover:bg-[#ff9f1c1a] active:scale-90"
-            >
-              <Star
-                size={18}
-                className="transition-transform duration-200 group-hover:scale-110"
-              />
-            </Link>
+            {isMine ? (
+              // Nobody supports their own post, so this is a tally, not a control.
+              <span
+                className="inline-flex items-center text-[var(--stars)]"
+                title="Звёзды за публикацию"
+                aria-label={`Звёзды за публикацию: ${post.stars_count ?? 0}`}
+              >
+                <span className="grid size-9 place-items-center">
+                  <Star size={18} fill={post.stars_count ? "currentColor" : "none"} />
+                </span>
+                {post.stars_count ? (
+                  <span className="-ml-0.5 min-w-[14px] text-[13px] font-medium tabular-nums">
+                    {post.stars_count}
+                  </span>
+                ) : null}
+              </span>
+            ) : (
+              <button
+                type="button"
+                aria-label={`Поддержать звёздами${post.stars_count ? `, ${post.stars_count}` : ""}`}
+                title="Поддержать звёздами"
+                onClick={() => setStars((current) => ({ open: true, seq: current.seq + 1 }))}
+                className="group inline-flex items-center text-[var(--stars)]"
+              >
+                <span className="grid size-9 place-items-center rounded-full transition-all duration-200 group-hover:bg-[#ff9f1c1a] group-active:scale-90">
+                  <Star
+                    size={18}
+                    fill={post.starred_by_me ? "currentColor" : "none"}
+                    className="transition-transform duration-200 group-hover:scale-110"
+                  />
+                </span>
+                {post.stars_count ? (
+                  <span className="-ml-0.5 min-w-[14px] text-[13px] font-medium tabular-nums">
+                    <AnimatedCounter value={post.stars_count} />
+                  </span>
+                ) : null}
+              </button>
+            )}
             <span
               className="ml-0.5 inline-flex items-center gap-1 pr-0.5"
               title="Просмотры"
@@ -362,6 +419,12 @@ export function PostCard({
         post={post}
         open={report.open}
         onOpenChange={(open) => setReport((current) => ({ ...current, open }))}
+      />
+      <PostStarsSheet
+        key={`stars-${stars.seq}`}
+        post={post}
+        open={stars.open}
+        onOpenChange={(open) => setStars((current) => ({ ...current, open }))}
       />
     </article>
   );

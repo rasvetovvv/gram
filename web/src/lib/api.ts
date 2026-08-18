@@ -372,6 +372,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ reason, comment: comment?.trim() || undefined })
     }),
+  /** A complaint about an account, on the same terms as one about a post. */
+  reportUser: (username: string, reason: PostReportReason, comment?: string) =>
+    request<{ detail: string }>(`/api/users/${encodeURIComponent(username)}/report`, {
+      method: "POST",
+      body: JSON.stringify({ reason, comment: comment?.trim() || undefined })
+    }),
   likePost: (id: string) => request<Post>(`/api/feed/${id}/like`, { method: "POST" }),
   comments: (postId: string, sort: CommentSort = "new") =>
     request<Comment[]>(`/api/feed/${postId}/comments?sort=${sort}`),
@@ -508,10 +514,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ amount })
     }),
-  sendStars: (toUsername: string, amount: number, message?: string) =>
+  sendStars: (toUsername: string, amount: number, message?: string, postId?: string) =>
     request<StarTransferReceipt>("/api/stars/send", {
       method: "POST",
-      body: JSON.stringify({ to_username: toUsername, amount, message })
+      body: JSON.stringify({ to_username: toUsername, amount, message, post_id: postId })
     }),
   subscriptions: () => request<Subscription[]>("/api/subscriptions"),
   premium: () => request<PremiumEntitlement | null>("/api/premium"),
@@ -532,6 +538,8 @@ export const api = {
     request<CreatorAnalytics>(`/api/creator/analytics?period_days=${encodeURIComponent(periodDays)}`),
 
   communities: () => request<Community[]>("/api/communities"),
+  /** Only the communities this account owns — what the profile may put on its page. */
+  myCommunities: () => request<Community[]>("/api/communities?mine=true"),
   createCommunity: (payload: CommunityCreateInput) =>
     request<Community>("/api/communities", { method: "POST", body: JSON.stringify(payload) }),
   community: (slug: string) => request<Community>(`/api/communities/${encodeURIComponent(slug)}`),
@@ -606,6 +614,9 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ hidden })
     }),
+  /** Keeps an owned item at the head of the collection, or lets it fall back into order. */
+  pinGift: (id: string, pinned: boolean) =>
+    request<Gift>(`/api/gifts/${id}/pin`, { method: pinned ? "POST" : "DELETE" }),
   gift: (id: string) => request<Gift>(`/api/gifts/${id}`),
   upgradeGift: (id: string) => request<Gift>(`/api/gifts/${id}/upgrade`, { method: "POST" }),
   setGiftListing: (id: string, priceStars: number | null) =>

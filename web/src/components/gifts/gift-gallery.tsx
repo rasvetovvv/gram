@@ -11,6 +11,8 @@ import {
   Gem,
   Gift,
   History,
+  Pin,
+  PinOff,
   Send,
   ShieldCheck,
   ShoppingBag,
@@ -561,6 +563,19 @@ function GiftDialog({
       );
     },
   });
+  const pin = useMutation({
+    mutationFn: (pinned: boolean) => api.pinGift(gift.id, pinned),
+    onSuccess: async (updated) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["gifts"] }),
+        queryClient.invalidateQueries({ queryKey: ["gift", gift.id] }),
+        queryClient.invalidateQueries({ queryKey: ["profile", me] }),
+      ]);
+      setFeedback(
+        updated.is_pinned ? "Закреплён в начале коллекции" : "Откреплён",
+      );
+    },
+  });
   const buyNow = useMutation({
     mutationFn: () => api.buyGift(gift.id),
     onSuccess: async () => {
@@ -786,6 +801,18 @@ function GiftDialog({
                     </button>
                   )}
                 </div>
+                {/*
+                  Pinning is about order in the collection, not about the two places on the
+                  header: a pinned item leads the grid however old it is.
+                */}
+                <button
+                  className="quiet-button mt-2 w-full"
+                  onClick={() => pin.mutate(!gift.is_pinned)}
+                  disabled={pin.isPending}
+                >
+                  {gift.is_pinned ? <PinOff size={17} /> : <Pin size={17} />}
+                  {gift.is_pinned ? "Открепить из коллекции" : "Закрепить в коллекции"}
+                </button>
                 {/*
                   Hiding is curation, not disposal: the item stays owned, keeps its provenance
                   and can still be sold — it just leaves the public grid, so pinning it is off.

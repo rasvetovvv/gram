@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import Image from "next/image";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
@@ -84,6 +85,12 @@ export function ProfileEditSheet({
   const me = useQuery({
     queryKey: ["me"],
     queryFn: api.currentUser,
+    enabled: open,
+  });
+  // Only your own communities can go on your page, so the picker offers exactly those.
+  const mine = useQuery({
+    queryKey: ["my-communities"],
+    queryFn: api.myCommunities,
     enabled: open,
   });
   const form = useForm<EditForm>({
@@ -474,13 +481,30 @@ export function ProfileEditSheet({
                   </div>
                   <Field
                     label="Канал в профиле"
-                    hint="Slug сообщества, которое закрепится карточкой"
+                    hint="Показать можно только своё сообщество — карточкой в шапке"
+                    error={form.formState.errors.featured_community_slug?.message}
                   >
-                    <input
-                      className="field px-4"
-                      placeholder="digital-objects"
-                      {...form.register("featured_community_slug")}
-                    />
+                    {mine.data?.length ? (
+                      <select
+                        className="field px-4"
+                        aria-label="Канал в профиле"
+                        {...form.register("featured_community_slug")}
+                      >
+                        <option value="">Не показывать</option>
+                        {mine.data.map((community) => (
+                          <option key={community.slug} value={community.slug}>
+                            {community.title ?? community.name} · @{community.slug}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="m-0 text-[13px] text-[var(--muted)]">
+                        У вас пока нет своего сообщества.{" "}
+                        <Link href="/communities" className="font-semibold text-[var(--link)]">
+                          Создать
+                        </Link>
+                      </p>
+                    )}
                   </Field>
                 </div>
               ) : null}

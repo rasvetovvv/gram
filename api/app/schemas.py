@@ -123,6 +123,9 @@ class UserProfile(UserCompact):
     is_subscribed: bool = False
     # Whether the viewer has blocked this profile, so the chat menu can offer the opposite.
     is_blocked: bool = False
+    # The other direction: this profile has blocked the viewer. Said plainly, because a page
+    # that silently hides its posts reads as a broken page.
+    blocked_me: bool = False
     posts_count: int = 0
     stars_balance: int | None = None
     featured_gift: GiftCompact | None = None
@@ -423,6 +426,9 @@ class FeedPost(ApiModel):
     is_pinned: bool = False
     # Whether the reader has switched off notifications about this post.
     is_muted: bool = False
+    # Stars this post earned, and whether this reader is among the people who sent them.
+    stars_count: int = 0
+    starred_by_me: bool = False
     # What the reader may do with it, so the menu is built from the server's answer rather
     # than from a client-side guess about who owns what.
     can_edit: bool = False
@@ -453,6 +459,10 @@ class PostReportCreate(BaseModel):
 
     reason: Literal["spam", "abuse", "adult", "fraud", "violence", "other"]
     comment: Annotated[str | None, Field(max_length=300)] = None
+
+
+class UserReportCreate(PostReportCreate):
+    """A complaint about an account, on the same terms as one about a post."""
 
 
 class UploadedMedia(ApiModel):
@@ -756,6 +766,9 @@ class StarSendRequest(BaseModel):
     to_username: UsernameInput
     amount: Annotated[int, Field(ge=1, le=1_000_000)]
     message: Annotated[str | None, Field(max_length=160)] = None
+    # Support aimed at one post rather than at the person in general: the card then carries a
+    # count of what it earned, and the notice about it opens that post.
+    post_id: uuid.UUID | None = None
 
 
 class StarTransferReceipt(BaseModel):
@@ -1217,6 +1230,8 @@ class GiftOut(ApiModel):
     listed_at: datetime | None = None
     is_listed: bool = False
     hidden_in_profile: bool = False
+    # Pinned items lead the collection, newest pin first.
+    is_pinned: bool = False
 
 
 class GiftPurchaseOut(ApiModel):
