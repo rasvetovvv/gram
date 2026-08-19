@@ -150,12 +150,30 @@ function errorMessage(body: ApiErrorShape): string {
   return body.message ?? "Не удалось связаться с GRAM. Проверьте соединение и попробуйте ещё раз.";
 }
 
+/**
+ * A timestamp with no zone, which the API means as UTC.
+ *
+ * `new Date("2026-08-19T21:49:16")` is read as *local* time by every browser, so a post
+ * published a second ago appeared three hours old to anyone east of Greenwich. Postgres returns
+ * the offset and this never matches; SQLite drops it, and the whole product was wrong by the
+ * reader's own offset.
+ */
+const NAIVE_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/;
+
+function normalizePayload(value: unknown): unknown {
+  if (typeof value === "string" && NAIVE_TIMESTAMP.test(value)) return `${value}Z`;
+  return withAbsoluteMedia(value);
+}
+
 function withAbsoluteMedia(value: unknown): unknown {
   if (typeof value === "string" && value.startsWith("/media/")) return `${API_URL}${value}`;
-  if (Array.isArray(value)) return value.map(withAbsoluteMedia);
+  if (Array.isArray(value)) return value.map(normalizePayload);
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, withAbsoluteMedia(item)])
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        normalizePayload(item)
+      ])
     );
   }
   return value;
@@ -210,7 +228,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(response.status, errorMessage(errorBody), errorBody);
   }
 
-  return withAbsoluteMedia(body) as T;
+  return normalizePayload(body) as T;
 }
 
 async function restoreSession(): Promise<User> {

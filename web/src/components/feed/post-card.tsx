@@ -83,6 +83,15 @@ export function PostCard({
     : post.media_url
       ? [post.media_url]
       : [];
+  // Where this post was published, when it was not a profile.
+  const channel = post.community_slug
+    ? {
+        slug: post.community_slug,
+        title: post.community_title ?? post.community_slug,
+        avatar_url: post.community_avatar_url ?? null,
+        verified: Boolean(post.community_verified)
+      }
+    : null;
   // The card already names the track and links to it, so the raw url would only repeat itself.
   const text = post.music ? post.content.replace(MUSIC_LINK, "").replace(/[ \t]{2,}/g, " ").trim() : post.content;
 
@@ -179,11 +188,16 @@ export function PostCard({
         openOnClick && "cursor-pointer"
       )}
     >
-      <Link href={`/u/${post.author.username}`} className="shrink-0">
+      {/*
+        A channel publishes as itself. The person who pressed the button is its owner, not an
+        author anyone reads: the card carries the channel's picture, name and address, and
+        leads to the channel.
+      */}
+      <Link href={channel ? `/c/${channel.slug}` : `/u/${post.author.username}`} className="shrink-0">
         <UserAvatar
-          src={post.author.avatar_url}
-          name={post.author.display_name}
-          online={post.author.is_online}
+          src={channel ? channel.avatar_url : post.author.avatar_url}
+          name={channel ? channel.title : post.author.display_name}
+          online={channel ? false : post.author.is_online}
           size={40}
           ringColor="var(--surface)"
         />
@@ -197,17 +211,34 @@ export function PostCard({
         ) : null}
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1 leading-tight">
-            {post.author.is_admin ? <AdminMark size={15} /> : null}
-            <Link
-              className="inline-flex min-w-0 items-center text-[15px] font-semibold hover:underline"
-              href={`/u/${post.author.username}`}
-            >
-              <span className="truncate" style={{ color: nameColor(post.author.profile_color) }}>
-                {post.author.display_name}
-              </span>
-            </Link>
-            {post.author.verified ? <VerifiedMark /> : null}
-            {post.author.is_premium ? (
+            {channel ? (
+              <>
+                <Link
+                  className="inline-flex min-w-0 items-center text-[15px] font-semibold hover:underline"
+                  href={`/c/${channel.slug}`}
+                >
+                  <span className="truncate">{channel.title}</span>
+                </Link>
+                {channel.verified ? <VerifiedMark /> : null}
+                <span className="shrink-0 whitespace-nowrap text-[13px] text-[var(--dim)]">
+                  @{channel.slug} · {relativeTime(post.created_at)}
+                  {post.edited_at ? " · ред." : ""}
+                </span>
+              </>
+            ) : null}
+            {channel ? null : post.author.is_admin ? <AdminMark size={15} /> : null}
+            {channel ? null : (
+              <Link
+                className="inline-flex min-w-0 items-center text-[15px] font-semibold hover:underline"
+                href={`/u/${post.author.username}`}
+              >
+                <span className="truncate" style={{ color: nameColor(post.author.profile_color) }}>
+                  {post.author.display_name}
+                </span>
+              </Link>
+            )}
+            {channel ? null : post.author.verified ? <VerifiedMark /> : null}
+            {!channel && post.author.is_premium ? (
               <Link
                 href="/premium"
                 aria-label="Открыть GRAM Premium"
@@ -216,7 +247,7 @@ export function PostCard({
                 <PremiumMark size={15} profileColor={post.author.profile_color} />
               </Link>
             ) : null}
-            {post.author.name_gift ? (
+            {!channel && post.author.name_gift ? (
               <GiftDetailTrigger
                 gift={post.author.name_gift as RichGift}
                 me={me?.username}
@@ -225,10 +256,12 @@ export function PostCard({
                 <GiftImage {...giftArtProps(post.author.name_gift)} size={20} bare />
               </GiftDetailTrigger>
             ) : null}
-            <span className="shrink-0 whitespace-nowrap text-[13px] text-[var(--dim)]">
-              @{post.author.username} · {relativeTime(post.created_at)}
-              {post.edited_at ? " · ред." : ""}
-            </span>
+            {channel ? null : (
+              <span className="shrink-0 whitespace-nowrap text-[13px] text-[var(--dim)]">
+                @{post.author.username} · {relativeTime(post.created_at)}
+                {post.edited_at ? " · ред." : ""}
+              </span>
+            )}
           </div>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>

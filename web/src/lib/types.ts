@@ -174,6 +174,11 @@ export type Post = {
   starred_by_me?: boolean;
   can_edit?: boolean;
   can_delete?: boolean;
+  /** Set when the post was published into a community: the card is then the channel's. */
+  community_slug?: string | null;
+  community_title?: string | null;
+  community_avatar_url?: string | null;
+  community_verified?: boolean;
 };
 
 export type ChatKind = "direct" | "group" | "secret" | "saved";

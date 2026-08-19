@@ -92,6 +92,8 @@ export type Community = {
   posts_count: number;
   is_member: boolean;
   is_owner: boolean;
+  /** Staff-granted, like a person's tick: a channel cannot claim or buy it. */
+  is_verified?: boolean;
   is_paid: boolean;
   monthly_price: number;
   owner?: CommunityPerson | null;
@@ -102,14 +104,14 @@ export type Community = {
   created_at: string;
 };
 
-export type CommunityPost = {
-  id: string;
-  community_id: string;
-  author: CommunityPerson;
-  content: string;
-  image_url?: string | null;
-  created_at: string;
-};
+/**
+ * A channel post is a post.
+ *
+ * It used to be its own thin shape with no likes, comments or views, which meant a channel's
+ * readers could not answer anything it said. Re-exported under the old name so call sites read
+ * the same, and typed as the real thing so they get the whole card.
+ */
+export type { Post as CommunityPost } from "./types";
 
 export type CreateCommunityInput = {
   title: string;

@@ -24,7 +24,6 @@ from app.models import (
     ChatMember,
     Community,
     CommunityMember,
-    CommunityPost,
     CreatorSettings,
     Follow,
     Gift,
@@ -767,6 +766,8 @@ async def _seed_community(session: AsyncSession, users: dict[str, User], now: da
             location="Киев",
             website_url="https://gram.local/objects",
             members_count=3,
+            # Staff-granted, so the demo shows what a verified channel looks like.
+            is_verified=True,
             created_at=now - timedelta(days=60),
         )
         session.add(community)
@@ -778,7 +779,8 @@ async def _seed_community(session: AsyncSession, users: dict[str, User], now: da
                     community_id=community.id, user_id=users["artem"].id, role="member"
                 ),
                 CommunityMember(community_id=community.id, user_id=users["maya"].id, role="member"),
-                CommunityPost(
+                # A channel post is a `Post` with a community: same likes, comments and views.
+                Post(
                     id=demo_id("community-post:welcome"),
                     community_id=community.id,
                     author_id=users["leon"].id,

@@ -460,6 +460,13 @@ class FeedPost(ApiModel):
     # than from a client-side guess about who owns what.
     can_edit: bool = False
     can_delete: bool = False
+    # Set when the post was published into a community. A channel post is published *as* the
+    # channel, so the card needs its name, its picture and whether it is verified — the person
+    # who pressed the button is not the author anyone should read.
+    community_slug: str | None = None
+    community_title: str | None = None
+    community_avatar_url: str | None = None
+    community_verified: bool = False
 
 
 class PostEdit(BaseModel):
@@ -1022,6 +1029,8 @@ class CommunityOut(ApiModel):
     location: str | None = None
     website_url: str | None = None
     is_private: bool
+    # Staff-granted, drawn as the tick beside the channel's name wherever it appears.
+    is_verified: bool = False
     members_count: int
     is_member: bool
     is_owner: bool
@@ -1030,6 +1039,12 @@ class CommunityOut(ApiModel):
     is_paid: bool = False
     monthly_price: int = 0
     created_at: datetime
+
+
+class CommunityVerification(BaseModel):
+    """Staff granting or withdrawing a channel's tick."""
+
+    verified: bool
 
 
 class CommunityPostCreate(PostCreate):

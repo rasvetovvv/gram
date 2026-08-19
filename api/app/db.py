@@ -90,6 +90,15 @@ def _add_missing_columns(connection: Connection) -> None:
 # the plain/upgraded split already carried a rolled model, backdrop and symbol, so leaving it
 # NULL would demote whole collections back to plain artwork and lose the rolls.
 BACKFILLS: dict[tuple[str, str], str] = {
+    # Community posts used to live in their own table with no likes, comments or views. They are
+    # `posts` now; this copies the old rows across the first time the column appears, keeping
+    # their ids so links to them still resolve.
+    ("posts", "community_id"): (
+        "INSERT INTO posts (id, author_id, community_id, content, image_url, created_at) "
+        "SELECT id, author_id, community_id, content, image_url, created_at "
+        "FROM community_posts "
+        "WHERE NOT EXISTS (SELECT 1 FROM posts WHERE posts.id = community_posts.id)"
+    ),
     ("gifts", "opened_at"): "UPDATE gifts SET opened_at = received_at WHERE opened_at IS NULL",
     ("gifts", "upgraded_at"): (
         "UPDATE gifts SET upgraded_at = received_at "

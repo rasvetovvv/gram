@@ -13,6 +13,7 @@ import { z } from "zod";
 import { socialApi } from "@/lib/social-api";
 import type { Community } from "@/lib/social-types";
 import { BottomSheet } from "../ui/bottom-sheet";
+import { VerifiedMark } from "../verified-mark";
 import styles from "./communities.module.css";
 
 const communitySchema = z
@@ -243,7 +244,10 @@ export function CommunitiesDirectory() {
                 <Link href={`/c/${community.slug}`} className={styles.communityIdentity}>
                   <CommunityAvatar community={community} />
                   <span className={styles.communityCopy}>
-                    <span className={styles.communityName}>{communityTitle(community)}</span>
+                    <span className={styles.communityName}>
+                      {communityTitle(community)}
+                      {community.is_verified ? <VerifiedMark size={14} /> : null}
+                    </span>
                     <span className={styles.communitySlug}>@{community.slug}</span>
                     <span className={styles.communityDescription}>{community.description}</span>
                     <span className={styles.communityCounts}>

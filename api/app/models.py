@@ -308,6 +308,12 @@ class Post(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     author_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    # Set when the post was published into a community rather than onto a profile. One model for
+    # both: a channel post that could not be liked, answered or counted was a different product
+    # wearing the same word, and every feature had to be built twice.
+    community_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("communities.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     content: Mapped[str] = mapped_column(Text)
     image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Up to four pictures, in the order the author arranged them. `image_url` stays the first
@@ -699,6 +705,8 @@ class Community(Base):
     location: Mapped[str | None] = mapped_column(String(80), nullable=True)
     website_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_private: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Granted by staff, like a person's tick: a channel cannot claim or buy it.
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     members_count: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -719,6 +727,13 @@ class CommunityMember(Base):
 
 
 class CommunityPost(Base):
+    """
+    Deprecated: community posts are `Post` rows with a `community_id` now.
+
+    The table is kept because its rows are the history of everything published before the two
+    models were merged; they are copied into `posts` once, when the new column appears.
+    """
+
     __tablename__ = "community_posts"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

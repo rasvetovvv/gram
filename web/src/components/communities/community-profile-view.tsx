@@ -1,38 +1,26 @@
 "use client";
 
-import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Tabs from "@radix-ui/react-tabs";
-import { ArrowLeft, CalendarDays, Check, Copy, Crown, FileText, Flag, Gift, Hash, ImageIcon, Link2, MapPin, Send, Share2, Sparkles, Star, Users } from "lucide-react";
+import { ArrowLeft, CalendarDays, Check, Copy, Crown, FileText, Flag, Gift, Hash, ImageIcon, Link2, MapPin, Share2, Sparkles, Star, Users } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-import { useForm, useWatch } from "react-hook-form";
-import { z } from "zod";
 import { socialApi } from "@/lib/social-api";
 import type { CommunityPerson } from "@/lib/social-types";
+import { VerifiedMark } from "../verified-mark";
+import { PostCard } from "../feed/post-card";
+import { PostComposer } from "../feed/post-composer";
 import { CommunityReportSheet } from "../chats/report-sheets";
 import { ChannelManageSheet } from "./channel-manage-sheet";
 import { CommunityAvatar, communityTitle } from "./communities-directory";
 import styles from "./communities.module.css";
 
-const postSchema = z.object({
-  content: z.string().trim().min(1, "Напишите текст публикации").max(2000, "Не больше 2 000 символов")
-});
 
-type PostForm = z.infer<typeof postSchema>;
 
 function messageFrom(error: unknown) {
   return error instanceof Error ? error.message : "Не удалось выполнить действие";
 }
 
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    day: "numeric",
-    month: "long",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
-}
 
 function PersonAvatar({ person, size = 42 }: { person: CommunityPerson; size?: number }) {
   return (
@@ -67,19 +55,6 @@ export function CommunityProfileView({ slug }: { slug: string }) {
     }
   });
 
-  const form = useForm<PostForm>({ resolver: zodResolver(postSchema), defaultValues: { content: "" } });
-  const postContent = useWatch({ control: form.control, name: "content" }) ?? "";
-  const createPost = useMutation({
-    mutationFn: ({ content }: PostForm) => socialApi.createCommunityPost(slug, content),
-    onSuccess: async () => {
-      form.reset();
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["community", slug, "posts"] }),
-        queryClient.invalidateQueries({ queryKey: ["community", slug] }),
-        queryClient.invalidateQueries({ queryKey: ["communities"] })
-      ]);
-    }
-  });
 
   async function shareCommunity() {
     const url = window.location.href;
@@ -118,7 +93,7 @@ export function CommunityProfileView({ slug }: { slug: string }) {
 
   const item = community.data;
   const title = communityTitle(item);
-  const mediaPosts = (posts.data ?? []).filter((post) => post.image_url);
+  const mediaPosts = (posts.data ?? []).filter((post) => post.image_urls?.length || post.media_url);
   // A community publishes as itself: the composer belongs to its owner alone, as on the
   // reference, where a member is offered no composer at all.
   const canPublish = Boolean(item.is_owner);
@@ -129,7 +104,13 @@ export function CommunityProfileView({ slug }: { slug: string }) {
     <main className={`${styles.page} ${styles.profilePage}`}>
       <div className={styles.profileTopbar}>
         <Link href="/communities" aria-label="Назад к сообществам"><ArrowLeft size={21} /></Link>
-        <span><strong>{title}</strong><small>{item.posts_count} публикаций</small></span>
+        <span>
+          <strong className="inline-flex items-center gap-1">
+            {title}
+            {item.is_verified ? <VerifiedMark size={14} /> : null}
+          </strong>
+          <small>{item.posts_count} публикаций</small>
+        </span>
         <button type="button" onClick={shareCommunity} aria-label="Поделиться сообществом"><Share2 size={19} /></button>
       </div>
 
@@ -181,7 +162,11 @@ export function CommunityProfileView({ slug }: { slug: string }) {
         </div>
 
         <div className={styles.profileCopy}>
-          <h1>{title}</h1>
+          {/* The tick belongs to the channel, not to whoever owns it. */}
+          <h1 className="flex items-center gap-1.5">
+            {title}
+            {item.is_verified ? <VerifiedMark size={19} /> : null}
+          </h1>
           <span>@{item.slug}</span>
           <p>{item.description}</p>
           {item.owner ? (
@@ -237,23 +222,30 @@ export function CommunityProfileView({ slug }: { slug: string }) {
         </div>
 
         {canPublish ? (
-          <form className={styles.postComposer} onSubmit={form.handleSubmit((values) => createPost.mutate(values))}>
-            <textarea
-              rows={3}
-              placeholder="Напишите участникам сообщества…"
-              aria-label="Текст публикации"
-              {...form.register("content")}
+          <section
+            className="border-b border-[var(--line)] px-3 py-3 sm:px-5"
+            aria-label="Новая запись канала"
+          >
+            {/*
+              The product's own composer: pictures, a link card and a pasted music link, the
+              same as a personal post, because a channel post is a post.
+            */}
+            <PostComposer
+              avatarUrl={item.avatar_url ?? null}
+              displayName={title}
+              placeholder="Напишите подписчикам канала…"
+              onPublish={async (content, imageUrls, link) => {
+                await socialApi.createCommunityPost(slug, content, {
+                  imageUrls,
+                  link: link ?? undefined
+                });
+                await Promise.all([
+                  queryClient.invalidateQueries({ queryKey: ["community", slug, "posts"] }),
+                  queryClient.invalidateQueries({ queryKey: ["community", slug] })
+                ]);
+              }}
             />
-            <div>
-              <span>
-                {form.formState.errors.content ? <small role="alert">{form.formState.errors.content.message}</small> : <small>{postContent.length}/2000</small>}
-                {createPost.isError ? <small role="alert">{messageFrom(createPost.error)}</small> : null}
-              </span>
-              <button type="submit" disabled={createPost.isPending || !postContent.trim()}>
-                <Send size={17} /> {createPost.isPending ? "Публикуем…" : "Опубликовать"}
-              </button>
-            </div>
-          </form>
+          </section>
         ) : item.is_member ? null : (
           <div className={styles.joinPrompt}>
             <Star size={22} />
@@ -272,16 +264,9 @@ export function CommunityProfileView({ slug }: { slug: string }) {
             <button type="button" onClick={() => posts.refetch()}>Повторить</button>
           </div>
         ) : posts.data.length ? (
-          <div className={styles.communityPosts}>
+          <div className="space-y-3 px-3 py-4 sm:px-5">
             {posts.data.map((post) => (
-              <article key={post.id}>
-                <div className={styles.postAuthor}>
-                  <PersonAvatar person={post.author} />
-                  <span><strong>{post.author.display_name}</strong><small>@{post.author.username} · {formatDate(post.created_at)}</small></span>
-                </div>
-                <p>{post.content}</p>
-                {post.image_url ? <div className={styles.postMedia} style={{ backgroundImage: `url("${post.image_url.replace(/["\\\n\r]/g, "")}")` }} role="img" aria-label="Изображение публикации" /> : null}
-              </article>
+              <PostCard key={post.id} post={post} showPinned />
             ))}
           </div>
         ) : (
@@ -360,7 +345,7 @@ export function CommunityProfileView({ slug }: { slug: string }) {
                   role="img"
                   aria-label={`Медиа публикации: ${post.content.slice(0, 60)}`}
                   className="block aspect-square rounded-[16px] bg-[#121216] bg-cover bg-center"
-                  style={{ backgroundImage: `url("${sanitizeUrl(post.image_url!)}")` }}
+                  style={{ backgroundImage: `url("${sanitizeUrl(post.image_urls?.[0] ?? post.media_url ?? "")}")` }}
                 />
               ))}
             </div>

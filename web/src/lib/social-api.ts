@@ -53,7 +53,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  // The same normalization the main client does: a timestamp with no offset is UTC, and read
+  // as local time it would be wrong by the reader's own offset.
+  return normalizeTimestamps(await response.json()) as T;
+}
+
+const NAIVE_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/;
+
+function normalizeTimestamps(value: unknown): unknown {
+  if (typeof value === "string") return NAIVE_TIMESTAMP.test(value) ? `${value}Z` : value;
+  if (Array.isArray(value)) return value.map(normalizeTimestamps);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        normalizeTimestamps(item)
+      ])
+    );
+  }
+  return value;
 }
 
 export const socialApi = {
@@ -122,9 +140,20 @@ export const socialApi = {
   /** Stories the channel itself published, as opposed to its owner's own. */
   communityStories: (slug: string) =>
     request<CommunityStory[]>(`/api/communities/${encodeURIComponent(slug)}/stories`),
-  createCommunityPost: (slug: string, content: string) =>
+  /** Publishing into a channel takes the same payload as a personal post. */
+  createCommunityPost: (
+    slug: string,
+    content: string,
+    extra?: { imageUrls?: string[]; link?: { url?: string; title?: string } }
+  ) =>
     request<CommunityPost>(`/api/communities/${encodeURIComponent(slug)}/posts`, {
       method: "POST",
-      body: JSON.stringify({ content })
+      body: JSON.stringify({
+        content,
+        image_url: extra?.imageUrls?.[0],
+        image_urls: extra?.imageUrls?.length ? extra.imageUrls : undefined,
+        link_url: extra?.link?.url || undefined,
+        link_title: extra?.link?.title || undefined
+      })
     })
 };

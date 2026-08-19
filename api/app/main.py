@@ -73,7 +73,6 @@ from app.models import (
     ChatMember,
     Community,
     CommunityMember,
-    CommunityPost,
     ContentReport,
     CreatorSettings,
     CreatorSubscription,
@@ -132,9 +131,8 @@ from app.schemas import (
     CommunityCompact,
     CommunityCreate,
     CommunityOut,
-    CommunityPostCreate,
-    CommunityPostOut,
     CommunityUpdate,
+    CommunityVerification,
     CreatorAnalyticsOut,
     CreatorSeriesPoint,
     CreatorSettingsOut,
@@ -1169,6 +1167,7 @@ async def render_post(  # noqa: PLR0913
     premium: set[uuid.UUID] | None = None,
     presence_hidden: set[uuid.UUID] | None = None,
     name_gifts: dict[uuid.UUID, GiftCompact] | None = None,
+    community: Community | None = None,
 ) -> FeedPost:
     """The three maps let a list pass one batched lookup each instead of one query per post."""
     premium_ids = premium if premium is not None else await premium_user_ids(session, [author.id])
@@ -1178,6 +1177,10 @@ async def render_post(  # noqa: PLR0913
         else await presence_hidden_ids(session, [author.id])
     )
     emblems = name_gifts if name_gifts is not None else await name_gift_map(session, [author.id])
+    # A channel post read one at a time — by permalink, after a like, after an edit — still has
+    # to know it belongs to a channel, or its card would suddenly be the owner's own.
+    if community is None and post.community_id is not None:
+        community = await session.get(Community, post.community_id)
     likes = int(
         await session.scalar(
             select(func.count()).select_from(PostLike).where(PostLike.post_id == post.id)
@@ -1297,6 +1300,10 @@ async def render_post(  # noqa: PLR0913
         starred_by_me=starred,
         can_edit=post.author_id == me.id,
         can_delete=post.author_id == me.id,
+        community_slug=community.slug if community else None,
+        community_title=community.title if community else None,
+        community_avatar_url=community.avatar_url if community else None,
+        community_verified=bool(community and community.is_verified),
     )
 
 
@@ -3032,6 +3039,9 @@ async def read_feed(
     if mode == "following":
         followed = select(Follow.following_id).where(Follow.follower_id == me.id)
         query = query.where(or_(Post.author_id == me.id, Post.author_id.in_(followed)))
+    # A community publishes on its own page, with its own subscribe button; folding its posts
+    # into a personal feed would make "подписаться на канал" and "читать человека" the same act.
+    query = query.where(Post.community_id.is_(None))
     # A block hides both ways, and a closed account is only read by the people it let in.
     hidden_authors = await unreadable_author_ids(session, me)
     if hidden_authors:
@@ -3198,9 +3208,12 @@ async def edit_post(
 async def pin_post(post_id: uuid.UUID, session: SessionDep, me: CurrentUser) -> FeedPost:
     """Keep this post at the top of one's profile, in place of whatever was pinned before."""
     post = await _own_post(session, post_id, me)
-    await session.execute(
-        update(Post).where(Post.author_id == me.id, Post.id != post.id).values(pinned_at=None)
+    where = (
+        Post.community_id == post.community_id
+        if post.community_id is not None
+        else and_(Post.author_id == me.id, Post.community_id.is_(None))
     )
+    await session.execute(update(Post).where(where, Post.id != post.id).values(pinned_at=None))
     post.pinned_at = utcnow()
     await session.commit()
     await session.refresh(post)
@@ -5875,8 +5888,8 @@ async def render_community(session: AsyncSession, community: Community, me: User
     posts_count = int(
         await session.scalar(
             select(func.count())
-            .select_from(CommunityPost)
-            .where(CommunityPost.community_id == community.id)
+            .select_from(Post)
+            .where(Post.community_id == community.id)
         )
         or 0
     )
@@ -5893,6 +5906,7 @@ async def render_community(session: AsyncSession, community: Community, me: User
         location=community.location,
         website_url=community.website_url,
         is_private=community.is_private,
+        is_verified=community.is_verified,
         members_count=community.members_count,
         is_member=member is not None,
         is_owner=community.owner_id == me.id,
@@ -5902,6 +5916,34 @@ async def render_community(session: AsyncSession, community: Community, me: User
         monthly_price=0,
         created_at=community.created_at,
     )
+
+
+@app.patch(
+    "/api/communities/{slug}/verification", response_model=CommunityOut, tags=["communities"]
+)
+async def verify_community(
+    slug: str, payload: CommunityVerification, session: SessionDep, me: CurrentUser
+) -> CommunityOut:
+    """
+    Grant or withdraw a channel's tick.
+
+    Staff only, like a person's verification: an owner who could tick their own channel would be
+    ticking nothing. The refusal says so rather than pretending the route does not exist.
+    """
+    if not me.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Галочку выдаёт только команда GRAM",
+        )
+    community = await session.scalar(
+        select(Community).where(func.lower(Community.slug) == slug.lower()).with_for_update()
+    )
+    if community is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
+    community.is_verified = payload.verified
+    await session.commit()
+    await session.refresh(community)
+    return await render_community(session, community, me)
 
 
 @app.get("/api/communities", response_model=list[CommunityOut], tags=["communities"])
@@ -6051,12 +6093,14 @@ async def leave_community(slug: str, session: SessionDep, me: CurrentUser) -> Co
     return await render_community(session, community, me)
 
 
-@app.get(
-    "/api/communities/{slug}/posts", response_model=list[CommunityPostOut], tags=["communities"]
-)
-async def community_posts(
-    slug: str, session: SessionDep, me: CurrentUser
-) -> list[CommunityPostOut]:
+@app.get("/api/communities/{slug}/posts", response_model=list[FeedPost], tags=["communities"])
+async def community_posts(slug: str, session: SessionDep, me: CurrentUser) -> list[FeedPost]:
+    """
+    A channel's posts, on the same contract as every other post.
+
+    They used to be their own thin shape — no likes, no comments, no views — which meant a
+    channel's readers could not answer anything it said. Pinned first, then newest.
+    """
     community = await session.scalar(
         select(Community).where(func.lower(Community.slug) == slug.lower())
     )
@@ -6067,20 +6111,26 @@ async def community_posts(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Это закрытое сообщество")
     rows = (
         await session.execute(
-            select(CommunityPost, User)
-            .join(User, CommunityPost.author_id == User.id)
-            .where(CommunityPost.community_id == community.id)
-            .order_by(CommunityPost.created_at.desc())
+            select(Post, User)
+            .join(User, Post.author_id == User.id)
+            .where(Post.community_id == community.id)
+            .order_by(Post.pinned_at.is_(None), Post.pinned_at.desc(), Post.created_at.desc())
         )
     ).all()
+    author_ids = [author.id for _, author in rows]
+    premium = await premium_user_ids(session, author_ids)
+    hidden = await presence_hidden_ids(session, author_ids)
+    emblems = await name_gift_map(session, author_ids)
     return [
-        CommunityPostOut(
-            id=post.id,
-            community_id=post.community_id,
-            author=compact_user(author),
-            content=post.content,
-            image_url=post.image_url,
-            created_at=post.created_at,
+        await render_post(
+            session,
+            post,
+            author,
+            me,
+            premium=premium,
+            presence_hidden=hidden,
+            name_gifts=emblems,
+            community=community,
         )
         for post, author in rows
     ]
@@ -6115,42 +6165,45 @@ async def read_community_stories(
 
 @app.post(
     "/api/communities/{slug}/posts",
-    response_model=CommunityPostOut,
+    response_model=FeedPost,
     status_code=status.HTTP_201_CREATED,
     tags=["communities"],
 )
 async def create_community_post(
-    slug: str, payload: CommunityPostCreate, session: SessionDep, me: CurrentUser
-) -> CommunityPostOut:
+    slug: str, payload: PostCreate, session: SessionDep, me: CurrentUser
+) -> FeedPost:
+    """
+    Publish into a channel.
+
+    The payload is the same as a personal post's — pictures, a link card, a pasted music link —
+    because a channel post is a post. Only its owner writes in it: members read, subscribe and
+    gift, and the reference offers them no composer at all.
+    """
     community = await session.scalar(
         select(Community).where(func.lower(Community.slug) == slug.lower())
     )
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
-    # A community publishes as itself, so only its owner writes in it. Members read, subscribe
-    # and gift; the reference offers them no composer at all, and ours used to let anyone post.
     if community.owner_id != me.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Публиковать в сообществе может только владелец",
         )
-    post = CommunityPost(
-        community_id=community.id,
+    gallery = [url for url in (payload.image_urls or []) if url][:MAX_POST_IMAGES]
+    post = Post(
         author_id=me.id,
+        community_id=community.id,
         content=payload.content,
-        image_url=payload.image_url,
+        image_url=gallery[0] if gallery else payload.image_url,
+        image_urls=gallery or ([payload.image_url] if payload.image_url else None),
+        link_url=payload.link_url,
+        link_title=(payload.link_title or None),
+        music=await resolve_post_music(payload.content),
     )
     session.add(post)
     await session.commit()
     await session.refresh(post)
-    return CommunityPostOut(
-        id=post.id,
-        community_id=community.id,
-        author=compact_user(me),
-        content=post.content,
-        image_url=post.image_url,
-        created_at=post.created_at,
-    )
+    return await render_post(session, post, me, me, community=community)
 
 
 @app.get("/api/usernames", response_model=list[UsernameAssetOut], tags=["usernames"])

@@ -14,7 +14,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import giftart
-from app.models import Message
+from app.models import Message, User
 
 DEMO_PASSWORD = "GramDemo!2026"  # noqa: S105 - documented local-only fixture
 
@@ -3222,3 +3222,115 @@ async def test_a_complaint_can_be_about_a_chat_a_message_or_a_community(
     assert (
         await client.post(f"/api/chats/{chat['id']}/report", json={"reason": "spam"})
     ).status_code == 403
+
+
+async def test_a_channel_post_is_a_post_in_every_way(client: AsyncClient) -> None:
+    """Likes, comments, views, pinning and editing — the same contract as a personal post."""
+    await register_partner(client, "reader_c")
+    await login_demo(client)
+    created = await client.post(
+        "/api/communities",
+        json={"slug": "field-notes", "title": "Field Notes", "description": "Наблюдения"},
+    )
+    assert created.status_code == 201, created.text
+
+    published = await client.post(
+        "/api/communities/field-notes/posts",
+        json={
+            "content": "Первая запись канала",
+            "image_urls": ["https://example.com/a.jpg"],
+            "link_url": "https://example.com/notes",
+            "link_title": "Заметки",
+        },
+    )
+    assert published.status_code == 201, published.text
+    post = published.json()
+    assert post["community_slug"] == "field-notes"
+    assert post["community_title"] == "Field Notes"
+    assert post["image_urls"] == ["https://example.com/a.jpg"]
+    assert post["link_url"] == "https://example.com/notes"
+    assert post["likes_count"] == 0
+    assert post["can_edit"] is True
+
+    # A channel is its own surface: its posts do not turn up in a personal feed or on the
+    # owner's profile, where they would read as something the person wrote themselves.
+    assert all(item["id"] != post["id"] for item in (await client.get("/api/feed")).json())
+    own_page = await client.get("/api/feed", params={"author": "leon"})
+    assert all(item["id"] != post["id"] for item in own_page.json())
+
+    second = await client.post(
+        "/api/communities/field-notes/posts", json={"content": "Вторая запись"}
+    )
+    assert second.status_code == 201
+    pinned = await client.post(f"/api/feed/{post['id']}/pin")
+    assert pinned.status_code == 200, pinned.text
+    listed = (await client.get("/api/communities/field-notes/posts")).json()
+    assert [item["id"] for item in listed] == [post["id"], second.json()["id"]]
+    assert listed[0]["is_pinned"] is True
+
+    edited = await client.patch(
+        f"/api/feed/{post['id']}", json={"content": "Первая запись канала, дополнено"}
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["edited_at"] is not None
+
+    # A member reads, answers and counts — but does not publish.
+    await client.post("/api/auth/logout")
+    await login_as(client, "reader_c")
+    assert (await client.post("/api/communities/field-notes/join")).status_code in {200, 201}
+    refused = await client.post(
+        "/api/communities/field-notes/posts", json={"content": "А можно мне?"}
+    )
+    assert refused.status_code == 403
+    assert (await client.post(f"/api/feed/{post['id']}/like")).status_code == 200
+    commented = await client.post(
+        f"/api/feed/{post['id']}/comments", json={"content": "Отличная идея"}
+    )
+    assert commented.status_code == 201, commented.text
+    assert (await client.post(f"/api/feed/{post['id']}/view")).json()["recorded"] is True
+
+    answered = next(
+        item
+        for item in (await client.get("/api/communities/field-notes/posts")).json()
+        if item["id"] == post["id"]
+    )
+    assert answered["likes_count"] == 1
+    assert answered["comments_count"] == 1
+    assert answered["views_count"] >= 1
+    assert answered["can_edit"] is False
+    thread = await client.get(f"/api/feed/{post['id']}/comments")
+    assert [item["content"] for item in thread.json()] == ["Отличная идея"]
+
+
+async def test_only_staff_grant_a_channel_its_tick(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """An owner who could tick their own channel would be ticking nothing."""
+    await login_demo(client)
+    created = await client.post(
+        "/api/communities",
+        json={"slug": "tick-test", "title": "Tick", "description": "Проверка"},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["is_verified"] is False
+    refused = await client.patch(
+        "/api/communities/tick-test/verification", json={"verified": True}
+    )
+    assert refused.status_code == 403
+    assert "команда GRAM" in refused.json()["detail"]
+
+    # Staff can, and the grant reaches every surface that draws the channel. The flag is set
+    # the only way it ever is: in the database, by the platform — never through the product.
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+    granted = await client.patch(
+        "/api/communities/tick-test/verification", json={"verified": True}
+    )
+    assert granted.status_code == 200, granted.text
+    assert granted.json()["is_verified"] is True
+    assert (await client.get("/api/communities/tick-test")).json()["is_verified"] is True
+    published = await client.post(
+        "/api/communities/tick-test/posts", json={"content": "С галочкой"}
+    )
+    assert published.status_code == 201, published.text
+    assert published.json()["community_verified"] is True

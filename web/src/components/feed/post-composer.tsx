@@ -50,12 +50,22 @@ export function PostComposer({
   avatarUrl,
   displayName,
   placeholder = "Что нового?",
-  onPublished
+  onPublished,
+  onPublish
 }: {
   avatarUrl?: string | null;
   displayName?: string;
   placeholder?: string;
   onPublished?: () => void;
+  /**
+   * Where the post goes, when it is not the author's own feed. A channel takes the same text,
+   * pictures and link — the destination is the only difference, so it is the only parameter.
+   */
+  onPublish?: (
+    content: string,
+    imageUrls: string[],
+    link: { url?: string; title?: string } | null | undefined
+  ) => Promise<unknown>;
 }) {
   const queryClient = useQueryClient();
   const { notify } = useToast();
@@ -77,18 +87,20 @@ export function PostComposer({
   });
 
   const publish = useMutation({
-    mutationFn: () =>
-      api.createPost(
-        content.trim(),
-        pictures,
-        link?.url.trim() ? { url: link.url.trim(), title: link.title.trim() } : null
-      ),
+    mutationFn: () => {
+      const trimmed = link?.url.trim()
+        ? { url: link.url.trim(), title: link.title.trim() }
+        : null;
+      return onPublish
+        ? onPublish(content.trim(), pictures, trimmed)
+        : api.createPost(content.trim(), pictures, trimmed);
+    },
     onSuccess: async () => {
       setContent("");
       setPictures([]);
       setLink(null);
       if (inputRef.current) inputRef.current.style.height = "auto";
-      await queryClient.invalidateQueries({ queryKey: ["feed"] });
+      if (!onPublish) await queryClient.invalidateQueries({ queryKey: ["feed"] });
       notify("Запись опубликована", { variant: "success" });
       onPublished?.();
     },
