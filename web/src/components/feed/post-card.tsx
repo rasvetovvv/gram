@@ -40,7 +40,9 @@ import { PostEditSheet } from "./post-edit-sheet";
 import { PostGallery } from "./post-gallery";
 import { PostLinkCard } from "./post-link-card";
 import { PostMusicCard, useRecordView } from "./post-music";
+import { PostPoll } from "./post-poll";
 import { PostReportSheet } from "./post-report-sheet";
+import { PostVideo } from "./post-video";
 import { PostStarsSheet } from "./post-stars-sheet";
 import { RichText } from "./rich-text";
 
@@ -347,11 +349,16 @@ export function PostCard({
           />
         ) : null}
 
+        {post.poll ? <PostPoll post={post} poll={post.poll} /> : null}
         {post.music ? <PostMusicCard music={post.music} /> : null}
         {post.link_url ? <PostLinkCard url={post.link_url} title={post.link_title} /> : null}
 
-        {/* One to four pictures, each opening the viewer. */}
-        <PostGallery urls={pictures} alt={post.content.slice(0, 80)} />
+        {/* One clip, in our own player; or one to four pictures, each opening the viewer. */}
+        {post.video_url ? (
+          <PostVideo src={post.video_url} poster={pictures[0]} />
+        ) : (
+          <PostGallery urls={pictures} alt={post.content.slice(0, 80)} />
+        )}
 
         <footer className="mt-2 flex items-center justify-between text-[var(--dim)]">
           <div className="-ml-1.5 flex items-center gap-0.5 sm:gap-1.5">

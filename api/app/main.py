@@ -53,6 +53,7 @@ from app.config import (
     ENABLE_INTERNAL_LEDGER_TOPUPS,
     MAX_PARKED_ACCOUNTS,
     MAX_UPLOAD_BYTES,
+    MAX_VIDEO_BYTES,
     MEDIA_ROOT,
     PARKED_COOKIE_PREFIX,
     PREFETCH_GIFT_ART,
@@ -95,6 +96,7 @@ from app.models import (
     PostCommentLike,
     PostLike,
     PostMute,
+    PostPollVote,
     PostRepost,
     PostView,
     PremiumEntitlement,
@@ -114,6 +116,7 @@ from app.models import (
 )
 from app.schemas import (
     MAX_POST_IMAGES,
+    MIN_POLL_OPTIONS,
     AccountDeleteRequest,
     AccountSlot,
     AuthResponse,
@@ -171,12 +174,14 @@ from app.schemas import (
     NotificationOut,
     OffersToggle,
     PasswordChange,
+    PollOption,
     PostCommentCreate,
     PostCommentEdit,
     PostCommentOut,
     PostCreate,
     PostEdit,
     PostMusic,
+    PostPollOut,
     PostReportCreate,
     PostViewReceipt,
     PremiumBenefit,
@@ -1264,6 +1269,30 @@ async def render_post(  # noqa: PLR0913
             )
         )
     )
+    poll = None
+    if post.poll_options:
+        tally = dict(
+            (
+                await session.execute(
+                    select(PostPollVote.option_index, func.count())
+                    .where(PostPollVote.post_id == post.id)
+                    .group_by(PostPollVote.option_index)
+                )
+            ).all()
+        )
+        mine = await session.scalar(
+            select(PostPollVote.option_index).where(
+                PostPollVote.post_id == post.id, PostPollVote.user_id == me.id
+            )
+        )
+        poll = PostPollOut(
+            options=[
+                PollOption(index=index, text=option, votes=int(tally.get(index, 0)))
+                for index, option in enumerate(post.poll_options)
+            ],
+            total_votes=sum(int(count) for count in tally.values()),
+            my_choice=mine,
+        )
     return FeedPost(
         id=post.id,
         author=compact_user(
@@ -1276,6 +1305,8 @@ async def render_post(  # noqa: PLR0913
         image_url=post.image_url,
         media_url=post.image_url,
         image_urls=list(post.image_urls or ([post.image_url] if post.image_url else [])),
+        video_url=post.video_url,
+        poll=poll,
         link_url=post.link_url,
         link_title=post.link_title,
         created_at=post.created_at,
@@ -2191,7 +2222,7 @@ async def _store_image(file: UploadFile, folder: str, owner_id: uuid.UUID) -> st
     payload = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(payload) > MAX_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Файл больше 5 МБ"
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Файл больше 5 МБ"
         )
     try:
         with Image.open(BytesIO(payload)) as image:
@@ -2214,6 +2245,48 @@ async def _store_image(file: UploadFile, folder: str, owner_id: uuid.UUID) -> st
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Слишком большое разрешение изображения",
+        )
+    target_dir = MEDIA_ROOT / folder
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{owner_id}-{uuid.uuid4().hex}.{extension}"
+    (target_dir / filename).write_bytes(payload)
+    return f"/media/{folder}/{filename}"
+
+
+# The container's own signature, read from the bytes rather than trusted from the name. MP4 and
+# friends put `ftyp` at offset 4; WebM and Matroska share the EBML magic.
+VIDEO_SIGNATURES: tuple[tuple[bytes, int, str], ...] = (
+    (b"ftyp", 4, "mp4"),
+    (bytes.fromhex("1a45dfa3"), 0, "webm"),
+)
+
+
+async def _store_video(file: UploadFile, folder: str, owner_id: uuid.UUID) -> str:
+    """
+    Keep an uploaded clip under `MEDIA_ROOT/<folder>` and return its URL.
+
+    Nothing is transcoded: the file is served back exactly as it arrived, which is why the
+    container is identified from its own bytes and anything else is refused. A renamed
+    executable does not become a video by being called one.
+    """
+    payload = await file.read(MAX_VIDEO_BYTES + 1)
+    if len(payload) > MAX_VIDEO_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Видео больше {MAX_VIDEO_BYTES // (1024 * 1024)} МБ",
+        )
+    extension = next(
+        (
+            ext
+            for magic, offset, ext in VIDEO_SIGNATURES
+            if payload[offset : offset + len(magic)] == magic
+        ),
+        None,
+    )
+    if extension is None:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Поддерживаются MP4 и WEBM",
         )
     target_dir = MEDIA_ROOT / folder
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -3080,6 +3153,8 @@ async def create_post(payload: PostCreate, session: SessionDep, me: CurrentUser)
         # `image_url` is the first picture, which is what older readers of this row expect.
         image_url=gallery[0] if gallery else payload.image_url,
         image_urls=gallery or ([payload.image_url] if payload.image_url else None),
+        video_url=payload.video_url,
+        poll_options=_poll_options(payload),
         link_url=payload.link_url,
         link_title=(payload.link_title or None),
         music=await resolve_post_music(payload.content),
@@ -3120,6 +3195,79 @@ async def upload_post_media(
     """
     del session
     return UploadedMedia(url=await _store_image(file, "posts", me.id))
+
+
+@app.post(
+    "/api/feed/video",
+    response_model=UploadedMedia,
+    status_code=status.HTTP_201_CREATED,
+    tags=["feed"],
+)
+async def upload_post_video(
+    session: SessionDep, me: CurrentUser, file: Annotated[UploadFile, File()]
+) -> UploadedMedia:
+    """One clip for a post being written, stored as it arrived and served back the same way."""
+    del session
+    return UploadedMedia(url=await _store_video(file, "posts", me.id))
+
+
+def _poll_options(payload: PostCreate) -> list[str] | None:
+    """Trim the answers and refuse a poll that is really one answer twice."""
+    if not payload.poll_options:
+        return None
+    options = [option.strip() for option in payload.poll_options if option.strip()]
+    if len(options) < MIN_POLL_OPTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="В опросе нужно минимум два варианта",
+        )
+    if len({option.lower() for option in options}) != len(options):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Варианты опроса не должны повторяться",
+        )
+    return options
+
+
+@app.post("/api/feed/{post_id}/poll/{option_index}", response_model=FeedPost, tags=["feed"])
+async def vote_in_poll(
+    post_id: uuid.UUID, option_index: int, session: SessionDep, me: CurrentUser
+) -> FeedPost:
+    """
+    Answer a poll, once.
+
+    A vote is not changeable: the reference's poll is a snapshot, and results that move as
+    people reconsider are a different thing. The second attempt is refused by name rather than
+    silently ignored, so the client can say why nothing happened.
+    """
+    row = (
+        await session.execute(
+            select(Post, User).join(User, Post.author_id == User.id).where(Post.id == post_id)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
+    post, author = row
+    if not post.poll_options:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="У публикации нет опроса"
+        )
+    if not 0 <= option_index < len(post.poll_options):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Такого варианта нет")
+    await require_content_access(session, author, me)
+    await refuse_if_blocked_with(session, author.id, me)
+    existing = await session.scalar(
+        select(PostPollVote).where(
+            PostPollVote.post_id == post.id, PostPollVote.user_id == me.id
+        )
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Вы уже ответили на этот опрос"
+        )
+    session.add(PostPollVote(post_id=post.id, user_id=me.id, option_index=option_index))
+    await session.commit()
+    return await render_post(session, post, author, me)
 
 
 @app.post("/api/feed/{post_id}/view", response_model=PostViewReceipt, tags=["feed"])
@@ -6196,6 +6344,8 @@ async def create_community_post(
         content=payload.content,
         image_url=gallery[0] if gallery else payload.image_url,
         image_urls=gallery or ([payload.image_url] if payload.image_url else None),
+        video_url=payload.video_url,
+        poll_options=_poll_options(payload),
         link_url=payload.link_url,
         link_title=(payload.link_title or None),
         music=await resolve_post_music(payload.content),

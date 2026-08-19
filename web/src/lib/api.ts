@@ -361,7 +361,9 @@ export const api = {
   createPost: (
     content: string,
     imageUrls?: string[],
-    link?: { url: string; title?: string } | null
+    link?: { url: string; title?: string } | null,
+    videoUrl?: string | null,
+    pollOptions?: string[] | null
   ) =>
     request<Post>("/api/feed", {
       method: "POST",
@@ -369,6 +371,8 @@ export const api = {
         content,
         image_url: imageUrls?.[0],
         image_urls: imageUrls?.length ? imageUrls : undefined,
+        video_url: videoUrl || undefined,
+        poll_options: pollOptions?.length ? pollOptions : undefined,
         link_url: link?.url || undefined,
         link_title: link?.title || undefined
       })
@@ -378,6 +382,12 @@ export const api = {
     const body = new FormData();
     body.append("file", file);
     return request<{ url: string }>("/api/feed/media", { method: "POST", body });
+  },
+  /** The same for one clip; the container is checked from its own bytes, not its name. */
+  uploadPostVideo: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<{ url: string }>("/api/feed/video", { method: "POST", body });
   },
   deletePost: (id: string) => request<{ detail: string }>(`/api/feed/${id}`, { method: "DELETE" }),
   /** Rewrites one's own post; the server re-reads the text for a music link and marks «ред.». */
@@ -390,6 +400,9 @@ export const api = {
         link_title: link?.title || undefined
       })
     }),
+  /** Answers a poll. One vote per person, and the server refuses the second. */
+  voteInPoll: (id: string, optionIndex: number) =>
+    request<Post>(`/api/feed/${id}/poll/${optionIndex}`, { method: "POST" }),
   pinPost: (id: string, pinned: boolean) =>
     request<Post>(`/api/feed/${id}/pin`, { method: pinned ? "POST" : "DELETE" }),
   /** Switches notifications about one post on or off, without leaving the conversation. */

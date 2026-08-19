@@ -319,6 +319,12 @@ class Post(Base):
     # Up to four pictures, in the order the author arranged them. `image_url` stays the first
     # of them, so every older reader of this row keeps working.
     image_urls: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # One clip, played by our own player rather than the browser's default controls.
+    video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # A poll's options, in the order the author wrote them: `["Да", "Нет"]`. The question is the
+    # post's own text, as in the reference — a poll is a post that asks something, not a widget
+    # with a title of its own. Votes are rows, so nothing here is a running total that can lie.
+    poll_options: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     # An outbound link the author attached on purpose, drawn as a card under the text.
     link_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     link_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -416,6 +422,26 @@ class PostRepost(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     post_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"))
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PostPollVote(Base):
+    """
+    One person's answer to one poll.
+
+    Unique per post, and not changeable: a poll whose results move as people reconsider is a
+    survey, and the reference's is a snapshot. Refusing the second vote says so out loud.
+    """
+
+    __tablename__ = "post_poll_votes"
+    __table_args__ = (UniqueConstraint("post_id", "user_id", name="uq_post_poll_vote"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    post_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("posts.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    option_index: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

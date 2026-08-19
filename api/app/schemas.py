@@ -387,6 +387,16 @@ class PostCreate(BaseModel):
     image_url: Annotated[str | None, Field(max_length=500)] = None
     # Several pictures arrive as a list; the first one also fills `image_url`.
     image_urls: Annotated[list[str] | None, Field(max_length=MAX_POST_IMAGES)] = None
+    # One clip. Pictures and a clip are exclusive in the composer, but the field is independent
+    # so an older client that sends both is not refused.
+    video_url: Annotated[str | None, Field(max_length=500)] = None
+    # Two to four answers. The question is the post's own text.
+    poll_options: (
+        Annotated[
+            list[Annotated[str, Field(min_length=1, max_length=MAX_POLL_OPTION_LENGTH)]] | None,
+            Field(min_length=MIN_POLL_OPTIONS, max_length=MAX_POLL_OPTIONS),
+        ]
+    ) = None
     link_url: Annotated[str | None, Field(max_length=500)] = None
     link_title: Annotated[str | None, Field(max_length=120)] = None
 
@@ -412,6 +422,32 @@ class PostCreate(BaseModel):
         return value.strip()
 
 
+MIN_POLL_OPTIONS = 2
+MAX_POLL_OPTIONS = 4
+MAX_POLL_OPTION_LENGTH = 60
+
+
+class PollOption(ApiModel):
+    """One answer and how many people chose it."""
+
+    index: int
+    text: str
+    votes: int
+
+
+class PostPollOut(ApiModel):
+    """
+    A poll as a reader sees it.
+
+    `my_choice` is what decides whether the client draws buttons or results: counts are public
+    once anyone has voted, and hiding them from the person who just voted would be theatre.
+    """
+
+    options: list[PollOption]
+    total_votes: int
+    my_choice: int | None = None
+
+
 class PostMusic(ApiModel):
     """A resolved music link, shaped like the card that draws it."""
 
@@ -430,6 +466,8 @@ class FeedPost(ApiModel):
     image_url: str | None
     media_url: str | None
     image_urls: list[str] = Field(default_factory=list)
+    video_url: str | None = None
+    poll: PostPollOut | None = None
     link_url: str | None = None
     link_title: str | None = None
     created_at: datetime

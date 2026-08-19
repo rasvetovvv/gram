@@ -129,6 +129,16 @@ export type PremiumEntitlement = {
   /** Set when somebody else paid for it, so the sheet can name them. */
   gifted_by?: User | null;
 };
+/** One answer in a poll and how many people chose it. */
+export type PollOption = { index: number; text: string; votes: number };
+
+/** A poll as a reader sees it; `my_choice` is what decides buttons versus results. */
+export type PostPoll = {
+  options: PollOption[];
+  total_votes: number;
+  my_choice?: number | null;
+};
+
 /** A resolved music link, shaped like the card that draws it. */
 export type PostMusic = {
   title: string;
@@ -146,6 +156,10 @@ export type Post = {
   media_url?: string | null;
   /** Up to four pictures, in the order the author arranged them. */
   image_urls?: string[];
+  /** One clip, played by our own player rather than the browser's default controls. */
+  video_url?: string | null;
+  /** The question this post asks, if it asks one. */
+  poll?: PostPoll | null;
   /** An outbound link the author attached; opening it asks for confirmation first. */
   link_url?: string | null;
   link_title?: string | null;

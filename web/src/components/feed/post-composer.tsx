@@ -14,6 +14,7 @@ import {
   MoreHorizontal,
   Music2,
   Paperclip,
+  Plus,
   Save,
   ShieldAlert,
   Smile,
@@ -26,6 +27,9 @@ import { UserAvatar } from "../user-avatar";
 
 const MAX_LENGTH = 560;
 const MAX_IMAGES = 4;
+/** The server's own bounds for a poll, so the composer cannot offer what it would refuse. */
+const MIN_POLL_OPTIONS = 2;
+const MAX_POLL_OPTIONS = 4;
 
 const EMOJI = ["🙂", "😂", "🔥", "❤️", "👍", "🎉", "✨", "😮", "😢", "🙏", "👀", "💯", "🌙", "☕", "📷", "🎧"];
 
@@ -64,7 +68,9 @@ export function PostComposer({
   onPublish?: (
     content: string,
     imageUrls: string[],
-    link: { url?: string; title?: string } | null | undefined
+    link: { url?: string; title?: string } | null | undefined,
+    videoUrl: string | null,
+    pollOptions: string[] | null
   ) => Promise<unknown>;
 }) {
   const queryClient = useQueryClient();
@@ -76,6 +82,17 @@ export function PostComposer({
   const [pictures, setPictures] = useState<string[]>([]);
   // One outbound link, shown as a card and confirmed before a reader follows it.
   const [link, setLink] = useState<{ url: string; title: string } | null>(null);
+  /*
+   * One clip, uploaded up front like the pictures. Pictures and a clip are exclusive: a post
+   * that carried both would have to choose which to draw, and the reference never asks.
+   */
+  const [video, setVideo] = useState<string | null>(null);
+  const videoPicker = useRef<HTMLInputElement>(null);
+  /*
+   * A poll's answers. Two are the minimum the server accepts and four the maximum; the question
+   * is the post's own text, as in the reference, so there is no separate title to fill in.
+   */
+  const [poll, setPoll] = useState<string[] | null>(null);
 
   const upload = useMutation({
     mutationFn: (files: File[]) =>
@@ -86,18 +103,31 @@ export function PostComposer({
       notify("Не удалось загрузить", { variant: "error", detail: error.message })
   });
 
+  const uploadVideo = useMutation({
+    mutationFn: (file: File) => api.uploadPostVideo(file),
+    onSuccess: (uploaded) => {
+      setVideo(uploaded.url);
+      setPictures([]);
+    },
+    onError: (error: Error) =>
+      notify("Не удалось загрузить видео", { variant: "error", detail: error.message })
+  });
+
   const publish = useMutation({
     mutationFn: () => {
       const trimmed = link?.url.trim()
         ? { url: link.url.trim(), title: link.title.trim() }
         : null;
+      const answers = poll?.map((option) => option.trim()).filter(Boolean) ?? null;
       return onPublish
-        ? onPublish(content.trim(), pictures, trimmed)
-        : api.createPost(content.trim(), pictures, trimmed);
+        ? onPublish(content.trim(), pictures, trimmed, video, answers)
+        : api.createPost(content.trim(), pictures, trimmed, video, answers);
     },
     onSuccess: async () => {
       setContent("");
       setPictures([]);
+      setVideo(null);
+      setPoll(null);
       setLink(null);
       if (inputRef.current) inputRef.current.style.height = "auto";
       if (!onPublish) await queryClient.invalidateQueries({ queryKey: ["feed"] });
@@ -131,12 +161,18 @@ export function PostComposer({
   }
 
   const tooLong = content.length > MAX_LENGTH;
-  // A picture is worth publishing on its own, so it counts as content.
+  // A picture or a clip is worth publishing on its own, so either counts as content.
   const canPublish =
-    (content.trim().length >= 2 || pictures.length > 0 || Boolean(link?.url.trim())) &&
+    (content.trim().length >= 2 ||
+      pictures.length > 0 ||
+      Boolean(video) ||
+      Boolean(link?.url.trim())) &&
+    // An unfinished poll blocks publishing: half a question is worse than no question.
+    (!poll || poll.filter((option) => option.trim()).length >= MIN_POLL_OPTIONS) &&
     !tooLong &&
     !publish.isPending &&
-    !upload.isPending;
+    !upload.isPending &&
+    !uploadVideo.isPending;
 
   return (
     <div className="flex gap-3">
@@ -168,6 +204,34 @@ export function PostComposer({
           }}
         />
 
+        <input
+          ref={videoPicker}
+          type="file"
+          accept="video/mp4,video/webm"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) uploadVideo.mutate(file);
+          }}
+        />
+
+        {video ? (
+          <div className="relative mb-1 overflow-hidden rounded-[14px] bg-black">
+            <video src={video} className="block max-h-64 w-full object-contain" controls />
+            <button
+              type="button"
+              aria-label="Убрать видео"
+              onClick={() => setVideo(null)}
+              className="absolute right-2 top-2 grid size-7 place-items-center rounded-full bg-black/70 text-white transition hover:bg-black"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ) : uploadVideo.isPending ? (
+          <div className="skeleton mb-1 h-40 rounded-[14px]" />
+        ) : null}
+
         {pictures.length ? (
           <div className="mb-1 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {pictures.map((url) => (
@@ -189,6 +253,58 @@ export function PostComposer({
         ) : upload.isPending ? (
           <div className="mb-1 flex gap-2">
             <span className="skeleton size-20 rounded-[12px]" />
+          </div>
+        ) : null}
+
+        {poll ? (
+          <div className="mb-1 grid gap-1.5 rounded-[14px] bg-[var(--surface-raised)] p-2.5">
+            {poll.map((option, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <input
+                  value={option}
+                  autoFocus={index === 0}
+                  maxLength={60}
+                  placeholder={`Вариант ${index + 1}`}
+                  aria-label={`Вариант опроса ${index + 1}`}
+                  onChange={(event) =>
+                    setPoll((current) =>
+                      (current ?? []).map((item, position) =>
+                        position === index ? event.target.value : item
+                      )
+                    )
+                  }
+                  className="field min-w-0 flex-1 px-3 text-[15px]"
+                />
+                {poll.length > MIN_POLL_OPTIONS ? (
+                  <button
+                    type="button"
+                    aria-label={`Убрать вариант ${index + 1}`}
+                    onClick={() =>
+                      setPoll((current) =>
+                        (current ?? []).filter((_item, position) => position !== index)
+                      )
+                    }
+                    className="icon-button !size-8"
+                  >
+                    <X size={14} />
+                  </button>
+                ) : null}
+              </div>
+            ))}
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                disabled={poll.length >= MAX_POLL_OPTIONS}
+                onClick={() => setPoll((current) => [...(current ?? []), ""])}
+                className="quiet-button !h-8 !px-3 !text-[13px]"
+              >
+                <Plus size={13} />
+                Добавить вариант
+              </button>
+              <span className="text-[12px] text-[var(--dim)]">
+                Вопрос — это текст записи. Голос нельзя изменить.
+              </span>
+            </div>
           </div>
         ) : null}
 
@@ -222,12 +338,23 @@ export function PostComposer({
             <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <ComposerAction
                 icon={ImagePlus}
-                label={pictures.length >= MAX_IMAGES ? "Больше четырёх нельзя" : "Добавить фото"}
+                label={
+                  video
+                    ? "Сначала уберите видео"
+                    : pictures.length >= MAX_IMAGES
+                      ? "Больше четырёх нельзя"
+                      : "Добавить фото"
+                }
                 active={pictures.length > 0}
                 onClick={() => picker.current?.click()}
-                soon={pictures.length >= MAX_IMAGES}
+                soon={Boolean(video) || pictures.length >= MAX_IMAGES}
               />
-              <ComposerAction icon={Film} label="Добавить видео" soon />
+              <ComposerAction
+                icon={Film}
+                label={video ? "Убрать видео" : "Добавить видео"}
+                active={Boolean(video)}
+                onClick={() => (video ? setVideo(null) : videoPicker.current?.click())}
+              />
               <ComposerAction icon={Music2} label="Песня" soon />
               <Popover.Root>
                 <Popover.Trigger asChild>
@@ -268,7 +395,12 @@ export function PostComposer({
                 active={Boolean(link)}
                 onClick={() => setLink(link ? null : { url: "", title: "" })}
               />
-              <ComposerAction icon={BarChart3} label="Опрос" soon />
+              <ComposerAction
+                icon={BarChart3}
+                label={poll ? "Убрать опрос" : "Опрос"}
+                active={Boolean(poll)}
+                onClick={() => setPoll(poll ? null : ["", ""])}
+              />
               <ComposerMore />
             </div>
 

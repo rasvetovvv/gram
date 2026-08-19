@@ -3334,3 +3334,93 @@ async def test_only_staff_grant_a_channel_its_tick(
     )
     assert published.status_code == 201, published.text
     assert published.json()["community_verified"] is True
+
+
+def _tiny_mp4() -> bytes:
+    """The smallest thing a container check accepts: an `ftyp` box at offset 4."""
+    return b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
+
+
+async def test_a_post_carries_one_clip_and_refuses_anything_else(client: AsyncClient) -> None:
+    """The container is read from the bytes, so a renamed file is not a video."""
+    await login_demo(client)
+    uploaded = await client.post(
+        "/api/feed/video",
+        files={"file": ("clip.mp4", _tiny_mp4(), "video/mp4")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    url = uploaded.json()["url"]
+    assert url.startswith("/media/posts/")
+    assert url.endswith(".mp4")
+
+    published = await client.post("/api/feed", json={"content": "С видео", "video_url": url})
+    assert published.status_code == 201, published.text
+    assert published.json()["video_url"] == url
+    assert (await client.get(f"/api/feed/{published.json()['id']}")).json()["video_url"] == url
+
+    # A picture, an archive or a script renamed to .mp4 is refused on its content.
+    for payload in (b"GIF89a" + b"\x00" * 32, b"PK\x03\x04" + b"\x00" * 32, b"#!/bin/sh\n"):
+        refused = await client.post(
+            "/api/feed/video", files={"file": ("clip.mp4", payload, "video/mp4")}
+        )
+        assert refused.status_code == 415, refused.status_code
+
+    # And the ceiling is the ceiling.
+    too_big = b"\x00\x00\x00\x18ftypisom" + b"\x00" * (64 * 1024 * 1024)
+    assert (
+        await client.post("/api/feed/video", files={"file": ("big.mp4", too_big, "video/mp4")})
+    ).status_code == 413
+
+
+async def test_a_post_can_ask_a_question_and_be_answered_once(client: AsyncClient) -> None:
+    """Counts come from rows, a vote is final, and a poll of one answer is not a poll."""
+    await register_partner(client, "voter_one")
+    await register_partner(client, "voter_two")
+    await login_demo(client)
+    asked = await client.post(
+        "/api/feed",
+        json={"content": "Ночь или утро?", "poll_options": ["Ночь", "Утро", "  "]},
+    )
+    assert asked.status_code == 201, asked.text
+    poll = asked.json()["poll"]
+    assert [option["text"] for option in poll["options"]] == ["Ночь", "Утро"]
+    assert poll["total_votes"] == 0
+    assert poll["my_choice"] is None
+    post_id = asked.json()["id"]
+
+    # Two answers that are the same answer, and a poll with one option, are both refused.
+    assert (
+        await client.post(
+            "/api/feed", json={"content": "Опрос", "poll_options": ["Да", "да"]}
+        )
+    ).status_code == 422
+    assert (
+        await client.post("/api/feed", json={"content": "Опрос", "poll_options": ["Да"]})
+    ).status_code == 422
+
+    voted = await client.post(f"/api/feed/{post_id}/poll/0")
+    assert voted.status_code == 200, voted.text
+    assert voted.json()["poll"]["my_choice"] == 0
+    assert voted.json()["poll"]["total_votes"] == 1
+    # A vote is final: the reference's poll is a snapshot, not a survey.
+    again = await client.post(f"/api/feed/{post_id}/poll/1")
+    assert again.status_code == 409
+    assert "уже ответили" in again.json()["detail"]
+    assert (await client.post(f"/api/feed/{post_id}/poll/7")).status_code == 404
+
+    for username, choice in (("voter_one", 1), ("voter_two", 1)):
+        await client.post("/api/auth/logout")
+        await login_as(client, username)
+        assert (await client.post(f"/api/feed/{post_id}/poll/{choice}")).status_code == 200
+
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    counted = (await client.get(f"/api/feed/{post_id}")).json()["poll"]
+    assert [option["votes"] for option in counted["options"]] == [1, 2]
+    assert counted["total_votes"] == 3
+    assert counted["my_choice"] == 0
+
+    # A post without a poll has nothing to answer.
+    plain = (await client.post("/api/feed", json={"content": "Без опроса"})).json()
+    assert plain["poll"] is None
+    assert (await client.post(f"/api/feed/{plain['id']}/poll/0")).status_code == 400

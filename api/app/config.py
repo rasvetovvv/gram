@@ -44,6 +44,9 @@ PARKED_COOKIE_PREFIX = "gram_alt_"
 MAX_PARKED_ACCOUNTS = 4
 MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", str(Path(__file__).resolve().parents[1] / "media")))
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+# A clip is not a picture. Nothing is transcoded — the file is served as it arrived — so the
+# ceiling is what a phone records in about half a minute and what a reader can afford to load.
+MAX_VIDEO_BYTES = 64 * 1024 * 1024
 DEMO_EMAIL = os.getenv("DEMO_EMAIL", "leon@gram.local")
 DEMO_USERNAME = os.getenv("DEMO_USERNAME", "leon")
 DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "GramDemo!2026")

@@ -144,7 +144,12 @@ export const socialApi = {
   createCommunityPost: (
     slug: string,
     content: string,
-    extra?: { imageUrls?: string[]; link?: { url?: string; title?: string } }
+    extra?: {
+      imageUrls?: string[];
+      videoUrl?: string | null;
+      pollOptions?: string[] | null;
+      link?: { url?: string; title?: string };
+    }
   ) =>
     request<CommunityPost>(`/api/communities/${encodeURIComponent(slug)}/posts`, {
       method: "POST",
@@ -152,6 +157,8 @@ export const socialApi = {
         content,
         image_url: extra?.imageUrls?.[0],
         image_urls: extra?.imageUrls?.length ? extra.imageUrls : undefined,
+        video_url: extra?.videoUrl || undefined,
+        poll_options: extra?.pollOptions?.length ? extra.pollOptions : undefined,
         link_url: extra?.link?.url || undefined,
         link_title: extra?.link?.title || undefined
       })
