@@ -30,10 +30,16 @@ export function PostEditSheet({
   const [content, setContent] = useState(post.content);
   const [linkUrl, setLinkUrl] = useState(post.link_url ?? "");
   const [linkTitle, setLinkTitle] = useState(post.link_title ?? "");
+  const [sensitive, setSensitive] = useState(Boolean(post.sensitive));
 
   const save = useMutation({
     mutationFn: () =>
-      api.editPost(post.id, content.trim(), { url: linkUrl.trim(), title: linkTitle.trim() }),
+      api.editPost(
+        post.id,
+        content.trim(),
+        { url: linkUrl.trim(), title: linkTitle.trim() },
+        sensitive
+      ),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["feed"] }),
@@ -49,7 +55,8 @@ export function PostEditSheet({
   const unchanged =
     content.trim() === post.content &&
     linkUrl.trim() === (post.link_url ?? "") &&
-    linkTitle.trim() === (post.link_title ?? "");
+    linkTitle.trim() === (post.link_title ?? "") &&
+    sensitive === Boolean(post.sensitive);
 
   return (
     <BottomSheet
@@ -84,6 +91,32 @@ export function PostEditSheet({
             onChange={(event) => setContent(event.target.value)}
           />
         </label>
+
+        {post.image_urls?.length || post.video_url ? (
+          <label className="mt-3 flex items-center gap-3 rounded-[16px] bg-[var(--surface-raised)] p-3">
+            <span className="min-w-0 flex-1">
+              <span className="block text-[0.95rem] font-bold">Материалы 18+</span>
+              <span className="block text-[12px] leading-4 text-[var(--muted)]">
+                Вложения придут закрытыми — читатель решит, смотреть ли.
+              </span>
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={sensitive}
+              aria-label="Материалы 18+"
+              onClick={() => setSensitive((current) => !current)}
+              className="relative h-6 w-11 flex-none rounded-full transition"
+              style={{ background: sensitive ? "var(--stars)" : "rgba(255,255,255,.16)" }}
+            >
+              <span
+                aria-hidden
+                className="absolute top-0.5 size-5 rounded-full bg-white transition-all"
+                style={{ left: sensitive ? "22px" : "2px" }}
+              />
+            </button>
+          </label>
+        ) : null}
 
         <div className="mt-3 grid gap-2 rounded-[16px] bg-[var(--surface-raised)] p-3">
           <span className="text-[0.95rem] font-bold">Ссылка под записью</span>

@@ -1307,6 +1307,7 @@ async def render_post(  # noqa: PLR0913
         image_urls=list(post.image_urls or ([post.image_url] if post.image_url else [])),
         video_url=post.video_url,
         poll=poll,
+        sensitive=post.sensitive,
         link_url=post.link_url,
         link_title=post.link_title,
         created_at=post.created_at,
@@ -3155,6 +3156,7 @@ async def create_post(payload: PostCreate, session: SessionDep, me: CurrentUser)
         image_urls=gallery or ([payload.image_url] if payload.image_url else None),
         video_url=payload.video_url,
         poll_options=_poll_options(payload),
+        sensitive=payload.sensitive,
         link_url=payload.link_url,
         link_title=(payload.link_title or None),
         music=await resolve_post_music(payload.content),
@@ -3343,6 +3345,8 @@ async def edit_post(
     """
     post = await _own_post(session, post_id, me)
     post.content = payload.content
+    if payload.sensitive is not None:
+        post.sensitive = payload.sensitive
     post.link_url = payload.link_url
     post.link_title = payload.link_title or None
     post.music = await resolve_post_music(payload.content)
@@ -6346,6 +6350,7 @@ async def create_community_post(
         image_urls=gallery or ([payload.image_url] if payload.image_url else None),
         video_url=payload.video_url,
         poll_options=_poll_options(payload),
+        sensitive=payload.sensitive,
         link_url=payload.link_url,
         link_title=(payload.link_title or None),
         music=await resolve_post_music(payload.content),

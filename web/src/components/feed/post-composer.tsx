@@ -6,6 +6,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
   Camera,
+  Check,
   Code2,
   FileText,
   Film,
@@ -34,13 +35,11 @@ const MAX_POLL_OPTIONS = 4;
 const EMOJI = ["🙂", "😂", "🔥", "❤️", "👍", "🎉", "✨", "😮", "😢", "🙏", "👀", "💯", "🌙", "☕", "📷", "🎧"];
 
 /** The reference's "Ещё" menu. Only the surfaces GRAM actually supports are enabled. */
-const MORE_ITEMS = [
-  { icon: Camera, label: "Камера" },
+/** What the menu still cannot do, and says so rather than pretending. */
+const MORE_SOON = [
   { icon: Paperclip, label: "Прикрепить файл" },
-  { icon: Code2, label: "Блок кода" },
   { icon: Save, label: "Сохранить черновик" },
-  { icon: FileText, label: "Черновики" },
-  { icon: ShieldAlert, label: "Контент 18+" }
+  { icon: FileText, label: "Черновики" }
 ];
 
 /**
@@ -70,7 +69,8 @@ export function PostComposer({
     imageUrls: string[],
     link: { url?: string; title?: string } | null | undefined,
     videoUrl: string | null,
-    pollOptions: string[] | null
+    pollOptions: string[] | null,
+    sensitive: boolean
   ) => Promise<unknown>;
 }) {
   const queryClient = useQueryClient();
@@ -93,6 +93,13 @@ export function PostComposer({
    * is the post's own text, as in the reference, so there is no separate title to fill in.
    */
   const [poll, setPoll] = useState<string[] | null>(null);
+  /*
+   * The author's own 18+ mark. Nothing infers it from the pictures: a cover that appears by
+   * itself would be a guess about someone else's work.
+   */
+  const [sensitive, setSensitive] = useState(false);
+  // Same picker, asking the phone for its camera instead of its library.
+  const camera = useRef<HTMLInputElement>(null);
 
   const upload = useMutation({
     mutationFn: (files: File[]) =>
@@ -120,14 +127,15 @@ export function PostComposer({
         : null;
       const answers = poll?.map((option) => option.trim()).filter(Boolean) ?? null;
       return onPublish
-        ? onPublish(content.trim(), pictures, trimmed, video, answers)
-        : api.createPost(content.trim(), pictures, trimmed, video, answers);
+        ? onPublish(content.trim(), pictures, trimmed, video, answers, sensitive)
+        : api.createPost(content.trim(), pictures, trimmed, video, answers, sensitive);
     },
     onSuccess: async () => {
       setContent("");
       setPictures([]);
       setVideo(null);
       setPoll(null);
+      setSensitive(false);
       setLink(null);
       if (inputRef.current) inputRef.current.style.height = "auto";
       if (!onPublish) await queryClient.invalidateQueries({ queryKey: ["feed"] });
@@ -141,6 +149,29 @@ export function PostComposer({
   function grow(node: HTMLTextAreaElement) {
     node.style.height = "auto";
     node.style.height = `${node.scrollHeight}px`;
+  }
+
+  /**
+   * Wrap the selection in a fenced block, or open an empty one.
+   *
+   * The fence is the same thing the card reads back, so what the author sees in the input is
+   * what a reader gets: no hidden markup, and nothing to strip if they change their mind.
+   */
+  function wrapCode() {
+    const node = inputRef.current;
+    const start = node?.selectionStart ?? content.length;
+    const end = node?.selectionEnd ?? content.length;
+    const selected = content.slice(start, end);
+    const opener = start === 0 || content[start - 1] === "\n" ? "" : "\n";
+    const block = `${opener}\`\`\`\n${selected}\n\`\`\``;
+    const next = `${content.slice(0, start)}${block}${content.slice(end)}`.slice(0, MAX_LENGTH);
+    setContent(next);
+    const caret = start + opener.length + 4;
+    requestAnimationFrame(() => {
+      node?.focus();
+      node?.setSelectionRange(caret, caret + selected.length);
+      if (node) grow(node);
+    });
   }
 
   function insertEmoji(emoji: string) {
@@ -196,6 +227,19 @@ export function PostComposer({
           type="file"
           accept="image/png,image/jpeg,image/webp"
           multiple
+          className="hidden"
+          onChange={(event) => {
+            const files = [...(event.target.files ?? [])];
+            event.target.value = "";
+            if (files.length) upload.mutate(files);
+          }}
+        />
+
+        <input
+          ref={camera}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          capture="environment"
           className="hidden"
           onChange={(event) => {
             const files = [...(event.target.files ?? [])];
@@ -333,6 +377,23 @@ export function PostComposer({
           </div>
         ) : null}
 
+        {sensitive ? (
+          <div className="mb-1 flex items-center gap-2 rounded-[14px] bg-[var(--surface-raised)] px-3 py-2">
+            <ShieldAlert size={15} className="flex-none text-[var(--stars)]" />
+            <span className="min-w-0 flex-1 text-[13px] leading-4 text-[var(--muted)]">
+              Вложения придут закрытыми: читатель сам решит, смотреть ли.
+            </span>
+            <button
+              type="button"
+              className="icon-button !size-7"
+              aria-label="Убрать отметку 18+"
+              onClick={() => setSensitive(false)}
+            >
+              <X size={13} />
+            </button>
+          </div>
+        ) : null}
+
         <div className="mt-1 border-t border-[var(--line)] pt-2.5">
           <div className="flex items-center gap-1">
             <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -401,7 +462,12 @@ export function PostComposer({
                 active={Boolean(poll)}
                 onClick={() => setPoll(poll ? null : ["", ""])}
               />
-              <ComposerMore />
+              <ComposerMore
+                onCamera={() => camera.current?.click()}
+                onCode={wrapCode}
+                sensitive={sensitive}
+                onSensitive={() => setSensitive((current) => !current)}
+              />
             </div>
 
             {content.length > MAX_LENGTH - 80 ? (
@@ -459,7 +525,17 @@ function ComposerAction({
   );
 }
 
-function ComposerMore() {
+function ComposerMore({
+  onCamera,
+  onCode,
+  sensitive,
+  onSensitive
+}: {
+  onCamera: () => void;
+  onCode: () => void;
+  sensitive: boolean;
+  onSensitive: () => void;
+}) {
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
@@ -480,7 +556,30 @@ function ComposerMore() {
           collisionPadding={12}
           className="z-[95] min-w-[232px] rounded-[18px] bg-[#202026] p-1.5 shadow-[0_18px_50px_rgba(0,0,0,.55)]"
         >
-          {MORE_ITEMS.map(({ icon: Icon, label }) => (
+          <DropdownMenu.Item
+            onSelect={onCamera}
+            className="flex min-h-11 cursor-pointer items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold outline-none focus:bg-white/[0.06]"
+          >
+            <Camera size={18} />
+            <span className="flex-1">Камера</span>
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={onCode}
+            className="flex min-h-11 cursor-pointer items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold outline-none focus:bg-white/[0.06]"
+          >
+            <Code2 size={18} />
+            <span className="flex-1">Блок кода</span>
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={onSensitive}
+            className="flex min-h-11 cursor-pointer items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold outline-none focus:bg-white/[0.06]"
+          >
+            <ShieldAlert size={18} className={sensitive ? "text-[var(--stars)]" : undefined} />
+            <span className="flex-1">{sensitive ? "Снять отметку 18+" : "Контент 18+"}</span>
+            {sensitive ? <Check size={15} /> : null}
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator className="mx-2 my-1.5 h-px bg-[var(--line)]" />
+          {MORE_SOON.map(({ icon: Icon, label }) => (
             <DropdownMenu.Item
               key={label}
               disabled

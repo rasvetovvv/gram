@@ -160,6 +160,8 @@ export type Post = {
   video_url?: string | null;
   /** The question this post asks, if it asks one. */
   poll?: PostPoll | null;
+  /** The author marked the media 18+: it arrives covered and the reader chooses to look. */
+  sensitive?: boolean;
   /** An outbound link the author attached; opening it asks for confirmation first. */
   link_url?: string | null;
   link_title?: string | null;

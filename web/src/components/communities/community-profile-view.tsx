@@ -234,11 +234,12 @@ export function CommunityProfileView({ slug }: { slug: string }) {
               avatarUrl={item.avatar_url ?? null}
               displayName={title}
               placeholder="Напишите подписчикам канала…"
-              onPublish={async (content, imageUrls, link, videoUrl, pollOptions) => {
+              onPublish={async (content, imageUrls, link, videoUrl, pollOptions, sensitive) => {
                 await socialApi.createCommunityPost(slug, content, {
                   imageUrls,
                   videoUrl,
                   pollOptions,
+                  sensitive,
                   link: link ?? undefined
                 });
                 await Promise.all([

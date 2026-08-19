@@ -4,6 +4,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
+  EyeOff,
   BellOff,
   Bookmark,
   Copy,
@@ -75,6 +76,8 @@ export function PostCard({
   // `seq` remounts the sheet on every open so it starts from what the post says now, while the
   // sheet itself stays mounted through its own close — unmounting an open Radix dialog leaves
   // the page underneath unclickable.
+  // Uncovering 18+ media is this reader's decision about this card, and it is not remembered.
+  const [revealed, setRevealed] = useState(false);
   const [edit, setEdit] = useState({ open: false, seq: 0 });
   const [report, setReport] = useState({ open: false, seq: 0 });
   const [stars, setStars] = useState({ open: false, seq: 0 });
@@ -353,12 +356,31 @@ export function PostCard({
         {post.music ? <PostMusicCard music={post.music} /> : null}
         {post.link_url ? <PostLinkCard url={post.link_url} title={post.link_title} /> : null}
 
-        {/* One clip, in our own player; or one to four pictures, each opening the viewer. */}
-        {post.video_url ? (
-          <PostVideo src={post.video_url} poster={pictures[0]} />
-        ) : (
-          <PostGallery urls={pictures} alt={post.content.slice(0, 80)} />
-        )}
+        {/*
+          One clip, in our own player; or one to four pictures, each opening the viewer. A post
+          its author marked 18+ arrives covered: the reader asks to see it, and the choice is
+          theirs alone — nothing here is remembered anywhere.
+        */}
+        {post.video_url || pictures.length ? (
+          post.sensitive && !revealed ? (
+            <button
+              type="button"
+              data-keep-click
+              onClick={() => setRevealed(true)}
+              className="mt-2 grid min-h-40 w-full place-items-center gap-1.5 rounded-[16px] bg-[var(--surface-raised)] px-4 py-8 text-center transition hover:brightness-110"
+            >
+              <EyeOff size={22} className="text-[var(--muted)]" />
+              <span className="text-[15px] font-bold">Материалы 18+</span>
+              <span className="text-[13px] text-[var(--muted)]">
+                Автор отметил вложения как чувствительные. Нажмите, чтобы посмотреть.
+              </span>
+            </button>
+          ) : post.video_url ? (
+            <PostVideo src={post.video_url} poster={pictures[0]} />
+          ) : (
+            <PostGallery urls={pictures} alt={post.content.slice(0, 80)} />
+          )
+        ) : null}
 
         <footer className="mt-2 flex items-center justify-between text-[var(--dim)]">
           <div className="-ml-1.5 flex items-center gap-0.5 sm:gap-1.5">

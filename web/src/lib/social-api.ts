@@ -148,6 +148,7 @@ export const socialApi = {
       imageUrls?: string[];
       videoUrl?: string | null;
       pollOptions?: string[] | null;
+      sensitive?: boolean;
       link?: { url?: string; title?: string };
     }
   ) =>
@@ -159,6 +160,7 @@ export const socialApi = {
         image_urls: extra?.imageUrls?.length ? extra.imageUrls : undefined,
         video_url: extra?.videoUrl || undefined,
         poll_options: extra?.pollOptions?.length ? extra.pollOptions : undefined,
+        sensitive: extra?.sensitive || undefined,
         link_url: extra?.link?.url || undefined,
         link_title: extra?.link?.title || undefined
       })

@@ -363,7 +363,8 @@ export const api = {
     imageUrls?: string[],
     link?: { url: string; title?: string } | null,
     videoUrl?: string | null,
-    pollOptions?: string[] | null
+    pollOptions?: string[] | null,
+    sensitive?: boolean
   ) =>
     request<Post>("/api/feed", {
       method: "POST",
@@ -373,6 +374,7 @@ export const api = {
         image_urls: imageUrls?.length ? imageUrls : undefined,
         video_url: videoUrl || undefined,
         poll_options: pollOptions?.length ? pollOptions : undefined,
+        sensitive: sensitive || undefined,
         link_url: link?.url || undefined,
         link_title: link?.title || undefined
       })
@@ -391,13 +393,19 @@ export const api = {
   },
   deletePost: (id: string) => request<{ detail: string }>(`/api/feed/${id}`, { method: "DELETE" }),
   /** Rewrites one's own post; the server re-reads the text for a music link and marks «ред.». */
-  editPost: (id: string, content: string, link?: { url?: string; title?: string }) =>
+  editPost: (
+    id: string,
+    content: string,
+    link?: { url?: string; title?: string },
+    sensitive?: boolean
+  ) =>
     request<Post>(`/api/feed/${id}`, {
       method: "PATCH",
       body: JSON.stringify({
         content,
         link_url: link?.url || undefined,
-        link_title: link?.title || undefined
+        link_title: link?.title || undefined,
+        sensitive
       })
     }),
   /** Answers a poll. One vote per person, and the server refuses the second. */

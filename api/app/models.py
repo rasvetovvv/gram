@@ -321,6 +321,9 @@ class Post(Base):
     image_urls: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     # One clip, played by our own player rather than the browser's default controls.
     video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # The author marked it themselves. The post stays in every list it belongs to; only its
+    # pictures and clip arrive covered, and the reader decides whether to look.
+    sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
     # A poll's options, in the order the author wrote them: `["Да", "Нет"]`. The question is the
     # post's own text, as in the reference — a poll is a post that asks something, not a widget
     # with a title of its own. Votes are rows, so nothing here is a running total that can lie.

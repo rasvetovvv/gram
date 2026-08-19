@@ -3424,3 +3424,43 @@ async def test_a_post_can_ask_a_question_and_be_answered_once(client: AsyncClien
     plain = (await client.post("/api/feed", json={"content": "Без опроса"})).json()
     assert plain["poll"] is None
     assert (await client.post(f"/api/feed/{plain['id']}/poll/0")).status_code == 400
+
+
+async def test_an_author_marks_their_own_attachments_as_sensitive(client: AsyncClient) -> None:
+    """The mark is the author's, it travels with the post, and an edit can lift it."""
+    await login_demo(client)
+    plain = await client.post("/api/feed", json={"content": "Обычная запись"})
+    assert plain.status_code == 201, plain.text
+    assert plain.json()["sensitive"] is False
+
+    marked = await client.post(
+        "/api/feed",
+        json={
+            "content": "Не для всех",
+            "image_urls": ["https://example.com/a.jpg"],
+            "sensitive": True,
+        },
+    )
+    assert marked.status_code == 201, marked.text
+    assert marked.json()["sensitive"] is True
+    post_id = marked.json()["id"]
+    # It travels: a reader gets the mark, not a guess about the pictures.
+    await register_partner(client, "looker")
+    await client.post("/api/auth/logout")
+    await login_as(client, "looker")
+    seen = next(
+        item for item in (await client.get("/api/feed")).json() if item["id"] == post_id
+    )
+    assert seen["sensitive"] is True
+    assert seen["image_urls"] == ["https://example.com/a.jpg"]
+
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    lifted = await client.patch(
+        f"/api/feed/{post_id}", json={"content": "Не для всех", "sensitive": False}
+    )
+    assert lifted.status_code == 200, lifted.text
+    assert lifted.json()["sensitive"] is False
+    # An edit that says nothing about the mark leaves it alone.
+    again = await client.patch(f"/api/feed/{post_id}", json={"content": "Совсем другое"})
+    assert again.json()["sensitive"] is False

@@ -390,6 +390,8 @@ class PostCreate(BaseModel):
     # One clip. Pictures and a clip are exclusive in the composer, but the field is independent
     # so an older client that sends both is not refused.
     video_url: Annotated[str | None, Field(max_length=500)] = None
+    # The author's own 18+ mark. Nothing infers it: a picture nobody flagged is not flagged.
+    sensitive: bool = False
     # Two to four answers. The question is the post's own text.
     poll_options: (
         Annotated[
@@ -468,6 +470,8 @@ class FeedPost(ApiModel):
     image_urls: list[str] = Field(default_factory=list)
     video_url: str | None = None
     poll: PostPollOut | None = None
+    # The author marked the media as 18+: the card covers it until the reader asks.
+    sensitive: bool = False
     link_url: str | None = None
     link_title: str | None = None
     created_at: datetime
@@ -508,9 +512,10 @@ class FeedPost(ApiModel):
 
 
 class PostEdit(BaseModel):
-    """A rewrite of one's own post: the text, and the link card it carries."""
+    """A rewrite of one's own post: the text, the link card, and the 18+ mark."""
 
     content: Annotated[str, Field(min_length=1, max_length=4000)]
+    sensitive: bool | None = None
     link_url: Annotated[str | None, Field(max_length=500)] = None
     link_title: Annotated[str | None, Field(max_length=120)] = None
 
