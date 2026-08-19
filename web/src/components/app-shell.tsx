@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { ComposeDialog } from "./compose-dialog";
+import { GiftsDeepLink } from "./gifts/gifts-deep-link";
 import { GiftsSheet } from "./gifts/gifts-sheet";
 import { LiveNotifications } from "./live-notifications";
 import { SiteAppearance } from "./site-appearance";
@@ -28,6 +29,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <ComposeDialog />
       <PremiumSheetHost />
       <GiftsSheet />
+      <GiftsDeepLink />
       <SiteAppearance />
       <LiveNotifications />
     </div>

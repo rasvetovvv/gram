@@ -824,9 +824,11 @@ async def test_a_received_gift_is_plain_and_only_its_owner_can_upgrade_it(
     minted = sent.json()["gifts"][0]
     gift_id = minted["id"]
     assert minted["upgraded"] is False
-    # The buyer hid their name, so the item never names them, not even to the sender.
-    assert minted["sender"] is None
+    # Hiding the name hides it from the recipient. The buyer still sees that they gave it —
+    # they are not hiding it from themselves, and a gift you sent must say so when you open it.
     assert minted["sender_hidden"] is True
+    assert minted["sent_by_me"] is True
+    assert minted["sender"]["username"] == "leon"
     assert minted["message"] == "С днём рождения!"
     # An anonymous gift arrives without an actor attached to its notification.
     await client.post("/api/auth/logout")
@@ -840,6 +842,10 @@ async def test_a_received_gift_is_plain_and_only_its_owner_can_upgrade_it(
     )
     assert arrival["actor"] is None
     assert arrival["text"].startswith("Кто-то")
+    # And the recipient's own view of the item still does not name the buyer.
+    theirs = (await client.get(f"/api/gifts/{gift_id}")).json()
+    assert theirs["sender"] is None
+    assert theirs["sent_by_me"] is False
 
     assert (await client.get(f"/api/gifts/{gift_id}")).json()["upgraded"] is False
     # The recipient pays the fee and the roll happens against their own item.
@@ -2859,7 +2865,7 @@ async def test_a_profile_may_only_feature_its_own_community(client: AsyncClient)
         "/api/users/me", json={"featured_community_slug": "my-own-place"}
     )
     assert refused.status_code == 422
-    assert "своё сообщество" in refused.json()["detail"]
+    assert "свои сообщества" in refused.json()["detail"]
     assert (await client.get("/api/communities", params={"mine": "true"})).json() == []
     # The picker never offers someone else's channel, however visible it is in the catalogue.
     everything = {item["slug"] for item in (await client.get("/api/communities")).json()}

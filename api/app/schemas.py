@@ -145,6 +145,9 @@ class UserProfile(UserCompact):
     profile_song_artist: str | None = None
     profile_song_url: str | None = None
     featured_community_slug: str | None = None
+    # Up to three of the owner's own communities, in their order. The single slug above is the
+    # first of them.
+    featured_community_slugs: list[str] = Field(default_factory=list)
     role_title: str | None = None
     streak_days: int = 0
     last_seen_at: datetime | None = None
@@ -250,6 +253,8 @@ class ProfileUpdate(BaseModel):
     avatar_url: Annotated[str | None, Field(max_length=500)] = None
     cover_url: Annotated[str | None, Field(max_length=500)] = None
     related_usernames: Annotated[list[str] | None, Field(max_length=12)] = None
+    # Which of the owner's communities the profile shows; every slug has to be theirs.
+    featured_community_slugs: Annotated[list[CommunitySlug] | None, Field(max_length=3)] = None
     interests: Annotated[list[str] | None, Field(max_length=12)] = None
     onboarding_complete: bool | None = None
     website_url: Annotated[str | None, Field(max_length=500)] = None
@@ -1250,6 +1255,9 @@ class GiftOut(ApiModel):
     # Who sent it and what they wrote. `sender` is withheld when the buyer hid their name.
     sender: UserCompact | None = None
     sender_hidden: bool = False
+    # True when the viewer is the one who gave it, which is the only case where a hidden name
+    # is still returned — to the person who hid it.
+    sent_by_me: bool = False
     message: str | None = None
     # A plain gift is the design's own artwork; upgrading rolls model, backdrop and symbol.
     upgraded_at: datetime | None = None

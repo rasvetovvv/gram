@@ -930,6 +930,10 @@ async def render_profile(
         profile_song_artist=details.profile_song_artist if details else None,
         profile_song_url=details.profile_song_url if details else None,
         featured_community_slug=details.featured_community_slug if details else None,
+        featured_community_slugs=list(
+            (details.featured_community_slugs if details else None)
+            or ([details.featured_community_slug] if details and details.featured_community_slug else [])
+        ),
         role_title=details.role_title if details else None,
         streak_days=details.streak_days if details else 0,
         last_seen_at=last_seen_at,
@@ -1382,9 +1386,11 @@ async def render_gift(session: AsyncSession, gift: Gift, owner: User, me: User) 
         )
         for transfer, source, destination in transfer_rows
     )
+    # A hidden name is hidden from the recipient, not from the person who chose to hide it:
+    # opening a gift you gave has to say that you gave it.
     sender = (
         await session.get(User, gift.sender_id)
-        if gift.sender_id and not gift.sender_hidden
+        if gift.sender_id and (not gift.sender_hidden or gift.sender_id == me.id)
         else None
     )
     design = DESIGN_BY_SLUG.get(design_slug(gift.slug))
@@ -1423,6 +1429,7 @@ async def render_gift(session: AsyncSession, gift: Gift, owner: User, me: User) 
         category=design.category if design else None,
         sender=compact_user(sender) if sender else None,
         sender_hidden=gift.sender_hidden,
+        sent_by_me=bool(gift.sender_id and gift.sender_id == me.id),
         message=gift.message,
         upgraded_at=gift.upgraded_at,
         upgraded=gift.upgraded_at is not None,
@@ -2026,6 +2033,7 @@ async def update_current_profile(  # noqa: C901, PLR0912, PLR0915
         "profile_song_artist",
         "profile_song_url",
         "featured_community_slug",
+        "featured_community_slugs",
         "role_title",
         "streak_days",
     }
@@ -2102,19 +2110,38 @@ async def update_current_profile(  # noqa: C901, PLR0912, PLR0915
         setattr(me, field, value)
     if related_usernames is not None or "related_usernames" in payload.model_fields_set:
         me.related_usernames = related_usernames or []
+    # A profile may advertise several communities; the single slug stays the first of them, so
+    # whichever field the client sends, both end up saying the same thing.
+    chosen_slugs = detail_fields.get("featured_community_slugs")
+    if chosen_slugs is not None:
+        deduped: list[str] = []
+        for slug in chosen_slugs:
+            if slug not in deduped:
+                deduped.append(slug)
+        detail_fields["featured_community_slugs"] = deduped
+        detail_fields["featured_community_slug"] = deduped[0] if deduped else None
     featured_community_slug = detail_fields.get("featured_community_slug")
-    if featured_community_slug is not None:
-        owned = await session.scalar(
-            select(Community.id).where(
-                Community.slug == featured_community_slug, Community.owner_id == me.id
-            )
+    if featured_community_slug is not None and "featured_community_slugs" not in detail_fields:
+        detail_fields["featured_community_slugs"] = [featured_community_slug]
+    to_verify = [
+        slug for slug in (detail_fields.get("featured_community_slugs") or []) if slug is not None
+    ]
+    if to_verify:
+        owned = set(
+            (
+                await session.scalars(
+                    select(Community.slug).where(
+                        Community.slug.in_(to_verify), Community.owner_id == me.id
+                    )
+                )
+            ).all()
         )
-        if owned is None:
+        if len(owned) != len(to_verify):
             # Existence is not enough: a profile advertising someone else's community would
             # read as an endorsement nobody gave.
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="В профиле можно показать только своё сообщество",
+                detail="В профиле можно показать только свои сообщества",
             )
     if detail_fields:
         details = await session.get(UserProfileDetails, me.id)

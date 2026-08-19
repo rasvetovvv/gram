@@ -30,3 +30,5 @@ api/media/
 
 # TypeScript incremental build state, rewritten on every typecheck
 web/tsconfig.tsbuildinfo
+# Throwaway database for browser probes when the docker stack is down.
+api/probe.db

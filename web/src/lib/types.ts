@@ -61,6 +61,8 @@ export type User = {
   profile_song_artist?: string | null;
   profile_song_url?: string | null;
   featured_community_slug?: string | null;
+  /** Up to three of the owner's own communities, in the order they chose. */
+  featured_community_slugs?: string[];
   role_title?: string | null;
   profile_color?: string;
   streak_days?: number;
@@ -348,6 +350,8 @@ export type Gift = {
   is_pinned?: boolean;
   /** The owner said the item is not for sale, so offers on it are refused. */
   offers_disabled?: boolean;
+  /** I am the one who gave it: opening it says so, even if I hid my name from the owner. */
+  sent_by_me?: boolean;
 };
 
 export type GiftModel = {
@@ -502,6 +506,8 @@ export type ProfileUpdateInput = {
   profile_song_artist?: string | null;
   profile_song_url?: string | null;
   featured_community_slug?: string | null;
+  /** Up to three of the owner's own communities, in the order they chose. */
+  featured_community_slugs?: string[];
   role_title?: string | null;
   profile_color?: string | null;
   streak_days?: number;

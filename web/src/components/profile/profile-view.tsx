@@ -4,7 +4,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Popover from "@radix-ui/react-popover";
 import * as Tabs from "@radix-ui/react-tabs";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -133,16 +133,31 @@ export function ProfileView({ username }: { username: string }) {
   const feedQuery = useQuery({ queryKey: ["feed", canonicalUsername], queryFn: () => api.feed({ author: canonicalUsername, limit: 100 }), enabled });
   const storiesQuery = useQuery({ queryKey: ["profile-stories", canonicalUsername], queryFn: () => api.profileStories(canonicalUsername), enabled });
   const repliesQuery = useQuery({ queryKey: ["profile-replies", canonicalUsername], queryFn: () => api.profileReplies(canonicalUsername), enabled });
-  const communityQuery = useQuery({
-    queryKey: ["profile-community", profile?.featured_community_slug],
-    queryFn: () => api.community(profile!.featured_community_slug!),
-    // Someone the owner blocked sees none of the page's content, the channel card included.
-    enabled: Boolean(profile?.featured_community_slug) && contentOpen
+  /*
+   * A profile may advertise a few of its owner's communities, so the cards are one query per
+   * slug rather than one query for "the" community. Someone the owner blocked sees none of the
+   * page's content, these cards included.
+   */
+  const featuredSlugs = (
+    profile?.featured_community_slugs?.length
+      ? profile.featured_community_slugs
+      : profile?.featured_community_slug
+        ? [profile.featured_community_slug]
+        : []
+  ).slice(0, 3);
+  const communityQueries = useQueries({
+    queries: featuredSlugs.map((slug) => ({
+      queryKey: ["profile-community", slug],
+      queryFn: () => api.community(slug),
+      enabled: contentOpen
+    }))
   });
-  const communityPostsQuery = useQuery({
-    queryKey: ["profile-community-posts", profile?.featured_community_slug],
-    queryFn: () => api.communityPosts(profile!.featured_community_slug!),
-    enabled: Boolean(profile?.featured_community_slug) && contentOpen
+  const communityPostsQueries = useQueries({
+    queries: featuredSlugs.map((slug) => ({
+      queryKey: ["profile-community-posts", slug],
+      queryFn: () => api.communityPosts(slug),
+      enabled: contentOpen
+    }))
   });
 
   const isMe = Boolean(profile && (profile.is_me || meQuery.data?.id === profile.id));
@@ -433,7 +448,25 @@ export function ProfileView({ username }: { username: string }) {
         ) : null}
       </section>
 
-      {communityQuery.data ? <FeaturedCommunityCard community={communityQuery.data} latestPost={communityPostsQuery.data?.[0]?.content} /> : null}
+      {/* One label over the group: repeating «КАНАЛ» above each card read as three headings. */}
+      {communityQueries.some((query) => query.data) ? (
+        <section className="mx-4 mb-3">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-[.08em] text-[#52525c]">
+            {communityQueries.filter((query) => query.data).length > 1 ? "Каналы" : "Канал"}
+          </div>
+          <div className="grid gap-2">
+            {communityQueries.map((query, index) =>
+              query.data ? (
+                <FeaturedCommunityCard
+                  key={query.data.slug}
+                  community={query.data}
+                  latestPost={communityPostsQueries[index]?.data?.[0]?.content}
+                />
+              ) : null
+            )}
+          </div>
+        </section>
+      ) : null}
       {profile.profile_song_url ? <ProfileSong profile={profile} audioRef={audioRef} playing={songPlaying} toggle={toggleSong} onEnded={() => setSongPlaying(false)} /> : null}
       {stories.length ? <><StoryPreviewRow stories={storyViews} onOpen={() => setTab("stories")} /><ProfileRule /></> : null}
 
@@ -704,7 +737,7 @@ function ProfileMeta({ profile }: { profile: User }) {
 }
 
 function FeaturedCommunityCard({ community, latestPost }: { community: Community; latestPost?: string }) {
-  return <section className="mx-4 mb-3"><div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[.08em] text-[#52525c]"><span>Канал</span><span className="rounded-full bg-[var(--surface-raised)] px-2 py-0.5 text-[11px] normal-case tracking-normal text-[var(--muted)]">{compactNumber(community.members_count)} подписчиков</span></div><Link href={`/c/${community.slug}`} className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-[24px] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-raised)]"><div className="relative size-12 overflow-hidden rounded-full bg-[var(--surface-raised)]">{community.avatar_url ? <Image src={community.avatar_url} alt={community.title} fill sizes="48px" className="object-cover" /> : <span className="grid h-full place-items-center font-black text-[var(--primary-strong)]">{community.title.slice(0,1)}</span>}</div><span className="min-w-0"><span className="flex items-center gap-1.5"><strong className="truncate text-[15px] font-bold">{community.title}</strong>{community.owner.verified ? <VerifiedMark /> : null}</span><span className="mt-0.5 block truncate text-[13px] text-[var(--dim)]">{latestPost ?? community.description}</span></span><time className="self-start text-[12px] text-[var(--dim)]">{relativeTime(community.created_at)}</time></Link></section>;
+  return <Link href={`/c/${community.slug}`} className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-[24px] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-raised)]"><div className="relative size-12 overflow-hidden rounded-full bg-[var(--surface-raised)]">{community.avatar_url ? <Image src={community.avatar_url} alt={community.title} fill sizes="48px" className="object-cover" /> : <span className="grid h-full place-items-center font-black text-[var(--primary-strong)]">{community.title.slice(0,1)}</span>}</div><span className="min-w-0"><span className="flex items-center gap-1.5"><strong className="truncate text-[15px] font-bold">{community.title}</strong>{community.owner.verified ? <VerifiedMark /> : null}</span><span className="mt-0.5 block truncate text-[13px] text-[var(--dim)]">{latestPost ?? community.description}</span></span><time className="self-start text-[12px] text-[var(--dim)]">{relativeTime(community.created_at)}</time></Link>;
 }
 
 /**

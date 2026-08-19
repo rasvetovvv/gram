@@ -163,6 +163,9 @@ class UserProfileDetails(Base):
     profile_song_artist: Mapped[str | None] = mapped_column(String(120), nullable=True)
     profile_song_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     featured_community_slug: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    # A profile may advertise a few of its owner's communities, in the order they chose. The
+    # single column above stays the first of them, so every older reader keeps working.
+    featured_community_slugs: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     role_title: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # Authored by the profile owner and shown to every visitor, not a viewer-private memo.
     profile_note: Mapped[str | None] = mapped_column(String(200), nullable=True)

@@ -35,7 +35,7 @@ const desktopItems = [
   { href: "/chats", label: "Сообщения", icon: MessageCircle },
   { href: "/communities", label: "Сообщества", icon: UsersRound },
   { href: "/market", label: "Маркет", icon: Store },
-  { href: "/gifts", label: "Подарки", icon: Gift },
+  { href: "/gifts", label: "Подарки", icon: Gift, sheet: "gifts" as const },
   { href: "/studio", label: "Студия", icon: WandSparkles },
   { href: "/stars", label: "Звёзды", icon: Star },
   { href: "/profile", label: "Профиль", icon: UserRound },
@@ -81,6 +81,7 @@ export function DesktopNavigation() {
   const { me, unread, unreadChats } = useNavigationData();
   const logout = useLogout();
   const openPremium = useUiStore((state) => state.openPremium);
+  const openGifts = useUiStore((state) => state.openGifts);
   const profileHref = me ? `/u/${me.username}` : "/login";
   // Only these two rows carry a live count; the rest have nothing to accumulate.
   const badges: Record<string, number> = { "/notifications": unread, "/chats": unreadChats };
@@ -98,19 +99,34 @@ export function DesktopNavigation() {
           <span className="brand-copy text-base font-extrabold">GRAM</span>
         </Link>
         <nav className="mt-6 flex flex-col gap-1" aria-label="Основная навигация">
-          {desktopItems.map(({ href, label, icon: Icon }) => {
+          {desktopItems.map(({ href, label, icon: Icon, ...item }) => {
             const selected = active(pathname, href);
             const destination = href === "/profile" ? profileHref : href;
             const count = badges[href] ?? 0;
+            const style = {
+              color: selected || count ? "var(--ink)" : "var(--muted)",
+              background: selected ? "var(--surface-raised)" : undefined,
+            };
+            // A sheet is not a destination: it opens over whatever the reader is on.
+            if ("sheet" in item)
+              return (
+                <button
+                  key={href}
+                  type="button"
+                  onClick={() => openGifts()}
+                  className={`${NAV_ROW} border-0 bg-transparent text-left`}
+                  style={style}
+                >
+                  <Icon size={20} strokeWidth={1.9} className="flex-none" />
+                  <span className="nav-copy">{label}</span>
+                </button>
+              );
             return (
               <Link
                 key={href}
                 href={destination}
                 className={NAV_ROW}
-                style={{
-                  color: selected || count ? "var(--ink)" : "var(--muted)",
-                  background: selected ? "var(--surface-raised)" : undefined,
-                }}
+                style={style}
                 aria-current={selected ? "page" : undefined}
               >
                 <Icon size={20} strokeWidth={selected ? 2.3 : 1.9} className="flex-none" />

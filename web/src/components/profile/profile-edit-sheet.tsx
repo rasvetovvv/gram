@@ -63,11 +63,94 @@ const schema = z.object({
   profile_song_title: z.string().trim().max(120, "Не больше 120 символов"),
   profile_song_artist: z.string().trim().max(120, "Не больше 120 символов"),
   profile_song_url: z.string().trim().max(500, "Ссылка слишком длинная"),
-  featured_community_slug: z.string().trim().max(80, "Не больше 80 символов"),
+  // Comma-joined slugs and handles: the pickers below are the only things that write them.
+  featured_communities: z.string(),
+  visible_usernames: z.string(),
 });
 type EditForm = z.infer<typeof schema>;
 
 /** Account editing lives in one sheet with six sections, like the reference. */
+/** `"a,b"` → `["a", "b"]`, with `@` and casing normalised the way handles are stored. */
+function splitHandles(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim().replace(/^@+/, "").toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * A grid of things to put on the profile — communities, handles — that toggles on tap.
+ *
+ * A `<select>` could only ever hold one, which is what made "поставить пару сообществ"
+ * impossible. The count is capped, and the cap is stated rather than silently enforced.
+ */
+function ChoiceGrid({
+  options,
+  selected,
+  max,
+  onChange
+}: {
+  options: { value: string; title: string; subtitle: string; imageUrl: string | null }[];
+  selected: string[];
+  max: number;
+  onChange: (next: string[]) => void;
+}) {
+  const full = selected.length >= max;
+  return (
+    <div className="grid gap-1.5">
+      {options.map((option) => {
+        const active = selected.includes(option.value);
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="checkbox"
+            aria-checked={active}
+            disabled={!active && full}
+            onClick={() =>
+              onChange(
+                active
+                  ? selected.filter((item) => item !== option.value)
+                  : [...selected, option.value]
+              )
+            }
+            className="flex items-center gap-3 rounded-[14px] bg-[var(--surface-raised)] p-2 text-left transition hover:brightness-110 disabled:opacity-45"
+            style={active ? { boxShadow: "inset 0 0 0 1.5px var(--primary-strong)" } : undefined}
+          >
+            <span className="grid size-9 flex-none place-items-center overflow-hidden rounded-full bg-black/25 text-[13px] font-black text-[var(--primary-strong)]">
+              {option.imageUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={option.imageUrl} alt="" className="size-full object-cover" />
+              ) : (
+                option.title.replace(/^@/, "").slice(0, 1).toUpperCase()
+              )}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[0.9rem] font-semibold">{option.title}</span>
+              <span className="block truncate text-[12px] text-[var(--muted)]">
+                {option.subtitle}
+              </span>
+            </span>
+            <span
+              aria-hidden
+              className="grid size-5 flex-none place-items-center rounded-md border"
+              style={{
+                borderColor: active ? "var(--primary-strong)" : "var(--line-strong)",
+                background: active ? "var(--primary-strong)" : "transparent"
+              }}
+            >
+              {active ? <Check size={13} /> : null}
+            </span>
+          </button>
+        );
+      })}
+      <p className="m-0 text-[12px] text-[var(--muted)]">
+        Выбрано {selected.length} из {max}.
+      </p>
+    </div>
+  );
+}
+
 export function ProfileEditSheet({
   open,
   onOpenChange,
@@ -93,6 +176,15 @@ export function ProfileEditSheet({
     queryFn: api.myCommunities,
     enabled: open,
   });
+  // Same rule for handles: the profile can list the ones this account actually holds.
+  const handles = useQuery({
+    queryKey: ["usernames"],
+    queryFn: api.usernames,
+    enabled: open,
+  });
+  const ownedHandles = (handles.data ?? [])
+    .filter((asset) => asset.is_owned_by_me && !asset.is_primary_handle)
+    .map((asset) => asset.username.toLowerCase());
   const form = useForm<EditForm>({
     resolver: zodResolver(schema),
     defaultValues: {
@@ -110,7 +202,8 @@ export function ProfileEditSheet({
       profile_song_title: "",
       profile_song_artist: "",
       profile_song_url: "",
-      featured_community_slug: "",
+      featured_communities: "",
+      visible_usernames: "",
     },
   });
   const profile = me.data;
@@ -132,9 +225,16 @@ export function ProfileEditSheet({
       profile_song_title: profile.profile_song_title ?? "",
       profile_song_artist: profile.profile_song_artist ?? "",
       profile_song_url: profile.profile_song_url ?? "",
-      featured_community_slug: profile.featured_community_slug ?? "",
+      featured_communities: (
+        profile.featured_community_slugs ??
+        (profile.featured_community_slug ? [profile.featured_community_slug] : [])
+      ).join(","),
+      visible_usernames: (profile.related_usernames ?? []).join(","),
     });
   }, [form, profile]);
+
+  const chosenCommunities = useWatch({ control: form.control, name: "featured_communities" });
+  const chosenHandles = useWatch({ control: form.control, name: "visible_usernames" });
 
   const save = useMutation({
     mutationFn: (values: EditForm) =>
@@ -157,8 +257,8 @@ export function ProfileEditSheet({
         profile_song_title: values.profile_song_title || null,
         profile_song_artist: values.profile_song_artist || null,
         profile_song_url: values.profile_song_url || null,
-        featured_community_slug:
-          values.featured_community_slug.replace(/^@/, "") || null,
+        featured_community_slugs: splitHandles(values.featured_communities),
+        related_usernames: splitHandles(values.visible_usernames),
       }),
     onSuccess: async (updated) => {
       await Promise.all([
@@ -480,28 +580,57 @@ export function ProfileEditSheet({
                     ))}
                   </div>
                   <Field
-                    label="Канал в профиле"
-                    hint="Показать можно только своё сообщество — карточкой в шапке"
-                    error={form.formState.errors.featured_community_slug?.message}
+                    label="Сообщества в профиле"
+                    hint="До трёх своих сообществ — карточками под шапкой. Чужие поставить нельзя."
                   >
                     {mine.data?.length ? (
-                      <select
-                        className="field px-4"
-                        aria-label="Канал в профиле"
-                        {...form.register("featured_community_slug")}
-                      >
-                        <option value="">Не показывать</option>
-                        {mine.data.map((community) => (
-                          <option key={community.slug} value={community.slug}>
-                            {community.title ?? community.name} · @{community.slug}
-                          </option>
-                        ))}
-                      </select>
+                      <ChoiceGrid
+                        options={mine.data.map((community) => ({
+                          value: community.slug,
+                          title: community.title ?? community.name,
+                          subtitle: `@${community.slug}`,
+                          imageUrl: community.avatar_url ?? null
+                        }))}
+                        selected={splitHandles(chosenCommunities ?? "")}
+                        max={3}
+                        onChange={(next) =>
+                          form.setValue("featured_communities", next.join(","), {
+                            shouldDirty: true
+                          })
+                        }
+                      />
                     ) : (
                       <p className="m-0 text-[13px] text-[var(--muted)]">
                         У вас пока нет своего сообщества.{" "}
                         <Link href="/communities" className="font-semibold text-[var(--link)]">
                           Создать
+                        </Link>
+                      </p>
+                    )}
+                  </Field>
+                  <Field
+                    label="Юзернеймы в профиле"
+                    hint="Выберите, какие из ваших имён увидят другие. Основное имя показывается всегда."
+                  >
+                    {ownedHandles.length ? (
+                      <ChoiceGrid
+                        options={ownedHandles.map((handle) => ({
+                          value: handle,
+                          title: `@${handle}`,
+                          subtitle: "ваш юзернейм",
+                          imageUrl: null
+                        }))}
+                        selected={splitHandles(chosenHandles ?? "")}
+                        max={12}
+                        onChange={(next) =>
+                          form.setValue("visible_usernames", next.join(","), { shouldDirty: true })
+                        }
+                      />
+                    ) : (
+                      <p className="m-0 text-[13px] text-[var(--muted)]">
+                        Дополнительных имён пока нет.{" "}
+                        <Link href="/market" className="font-semibold text-[var(--link)]">
+                          Купить в маркете
                         </Link>
                       </p>
                     )}

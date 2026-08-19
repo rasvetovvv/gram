@@ -674,6 +674,35 @@ function GiftDialog({
                   <span className="text-[var(--muted)]">Загрузка…</span>
                 )}
               </DetailRow>
+              {/*
+                Who gave it, and not only when they left a note. A gift is a gift because
+                somebody chose it: reading the row said "коллекционный предмет" and nothing
+                about the person. Opening one I gave says so, even if I hid my name from its
+                owner — I am not hiding it from myself.
+              */}
+              {gift.sender || gift.sender_hidden || gift.sent_by_me ? (
+                <DetailRow label="Подарил">
+                  {gift.sent_by_me ? (
+                    <span className="flex items-center gap-1.5">
+                      <strong>Вы</strong>
+                      {gift.sender_hidden ? (
+                        <span className="text-[12px] text-[var(--muted)]">
+                          (имя скрыто от владельца)
+                        </span>
+                      ) : null}
+                    </span>
+                  ) : gift.sender ? (
+                    <Link
+                      href={`/u/${gift.sender.username}`}
+                      className="font-bold text-[var(--link)]"
+                    >
+                      @{gift.sender.username}
+                    </Link>
+                  ) : (
+                    <span className="text-[var(--muted)]">Имя скрыто</span>
+                  )}
+                </DetailRow>
+              ) : null}
               <DetailRow label="Модель">
                 <strong>{gift.model ?? "Original"}</strong>
                 <Rarity
