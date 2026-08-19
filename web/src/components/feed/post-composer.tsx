@@ -28,6 +28,8 @@ import { UserAvatar } from "../user-avatar";
 
 const MAX_LENGTH = 560;
 const MAX_IMAGES = 4;
+/** What the server recognises as a track, so the field can tell a link from a paste of text. */
+const MUSIC_LINK = /https?:\/\/(?:www\.|on\.|m\.)?soundcloud\.com\/\S+/i;
 /** The server's own bounds for a poll, so the composer cannot offer what it would refuse. */
 const MIN_POLL_OPTIONS = 2;
 const MAX_POLL_OPTIONS = 4;
@@ -100,6 +102,12 @@ export function PostComposer({
   const [sensitive, setSensitive] = useState(false);
   // Same picker, asking the phone for its camera instead of its library.
   const camera = useRef<HTMLInputElement>(null);
+  /*
+   * A track is attached by putting its link in the text: the server resolves it and the card
+   * draws the cover, the title and the artist. This row is only a place to paste one, so the
+   * author does not have to know that the link is what does the work.
+   */
+  const [trackField, setTrackField] = useState(false);
 
   const upload = useMutation({
     mutationFn: (files: File[]) =>
@@ -377,6 +385,34 @@ export function PostComposer({
           </div>
         ) : null}
 
+        {trackField ? (
+          <div className="mb-1 grid gap-1 rounded-[14px] bg-[var(--surface-raised)] p-2.5">
+            <input
+              autoFocus
+              inputMode="url"
+              placeholder="https://soundcloud.com/…"
+              aria-label="Ссылка на трек"
+              onChange={(event) => {
+                const link = event.target.value.trim();
+                if (!MUSIC_LINK.test(link)) return;
+                // The link joins the text, which is where the server looks for it.
+                setContent((current) =>
+                  `${current}${current.trim() && !current.endsWith("\n") ? "\n" : ""}${link}`.slice(
+                    0,
+                    MAX_LENGTH
+                  )
+                );
+                setTrackField(false);
+                requestAnimationFrame(() => inputRef.current?.focus());
+              }}
+              className="field min-w-0 px-3 text-[15px]"
+            />
+            <span className="text-[12px] leading-4 text-[var(--dim)]">
+              Ссылка попадёт в текст, а GRAM превратит её в карточку с обложкой и названием.
+            </span>
+          </div>
+        ) : null}
+
         {sensitive ? (
           <div className="mb-1 flex items-center gap-2 rounded-[14px] bg-[var(--surface-raised)] px-3 py-2">
             <ShieldAlert size={15} className="flex-none text-[var(--stars)]" />
@@ -416,7 +452,12 @@ export function PostComposer({
                 active={Boolean(video)}
                 onClick={() => (video ? setVideo(null) : videoPicker.current?.click())}
               />
-              <ComposerAction icon={Music2} label="Песня" soon />
+              <ComposerAction
+                icon={Music2}
+                label={trackField ? "Убрать поле трека" : "Добавить трек"}
+                active={trackField || MUSIC_LINK.test(content)}
+                onClick={() => setTrackField((current) => !current)}
+              />
               <Popover.Root>
                 <Popover.Trigger asChild>
                   <button
