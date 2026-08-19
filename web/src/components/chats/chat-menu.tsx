@@ -4,6 +4,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Ban,
+  Flag,
   Bell,
   BellOff,
   Brush,
@@ -62,12 +63,14 @@ export function ChatMenu({
   onSelectMessages,
   onOpenInfo,
   onAppearance,
-  onWallpaper
+  onWallpaper,
+  onReport
 }: {
   chat: Chat;
   onSearch: () => void;
   onSendGift: () => void;
   onSelectMessages: () => void;
+  onReport: () => void;
   onOpenInfo: () => void;
   onAppearance: () => void;
   onWallpaper: () => void;
@@ -218,6 +221,9 @@ export function ChatMenu({
           <MenuRow icon={Languages} label="Перевод чата" onSelect={soon("Перевод чата")} />
 
           <DropdownMenu.Separator className={RULE} />
+
+          {/* A complaint about the conversation itself, on the same terms as one about a post. */}
+          <MenuRow icon={Flag} label="Пожаловаться" onSelect={onReport} />
 
           {isGroup ? (
             <MenuRow icon={LogOut} label="Покинуть группу" danger onSelect={() => leave.mutate()} />

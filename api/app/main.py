@@ -74,6 +74,7 @@ from app.models import (
     Community,
     CommunityMember,
     CommunityPost,
+    ContentReport,
     CreatorSettings,
     CreatorSubscription,
     Follow,
@@ -95,7 +96,6 @@ from app.models import (
     PostCommentLike,
     PostLike,
     PostMute,
-    PostReport,
     PostRepost,
     PostView,
     PremiumEntitlement,
@@ -110,7 +110,6 @@ from app.models import (
     UsernameStatus,
     UserPreferences,
     UserProfileDetails,
-    UserReport,
     UserSettings,
     utcnow,
 )
@@ -3242,6 +3241,43 @@ async def unmute_post(post_id: uuid.UUID, session: SessionDep, me: CurrentUser) 
     return DetailResponse(detail="Уведомления включены")
 
 
+async def file_report(
+    session: AsyncSession,
+    me: User,
+    kind: str,
+    target_id: str,
+    payload: PostReportCreate,
+) -> DetailResponse:
+    """
+    Store a complaint, whatever it is about.
+
+    Stored, not swallowed: a second complaint from the same person replaces their reason
+    rather than adding a row, so a count means "how many people", not "how many clicks".
+    """
+    existing = await session.scalar(
+        select(ContentReport).where(
+            ContentReport.target_kind == kind,
+            ContentReport.target_id == target_id,
+            ContentReport.reporter_id == me.id,
+        )
+    )
+    if existing is None:
+        session.add(
+            ContentReport(
+                target_kind=kind,
+                target_id=target_id,
+                reporter_id=me.id,
+                reason=payload.reason,
+                comment=payload.comment,
+            )
+        )
+    else:
+        existing.reason = payload.reason
+        existing.comment = payload.comment
+    await session.commit()
+    return DetailResponse(detail="Жалоба отправлена")
+
+
 @app.post(
     "/api/feed/{post_id}/report",
     response_model=DetailResponse,
@@ -3265,25 +3301,7 @@ async def report_post(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя пожаловаться на свою публикацию",
         )
-    existing = await session.scalar(
-        select(PostReport).where(
-            PostReport.post_id == post_id, PostReport.reporter_id == me.id
-        )
-    )
-    if existing is None:
-        session.add(
-            PostReport(
-                post_id=post_id,
-                reporter_id=me.id,
-                reason=payload.reason,
-                comment=payload.comment,
-            )
-        )
-    else:
-        existing.reason = payload.reason
-        existing.comment = payload.comment
-    await session.commit()
-    return DetailResponse(detail="Жалоба отправлена")
+    return await file_report(session, me, "post", str(post_id), payload)
 
 
 @app.post(
@@ -3303,25 +3321,7 @@ async def report_user(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя пожаловаться на себя"
         )
-    existing = await session.scalar(
-        select(UserReport).where(
-            UserReport.subject_id == subject.id, UserReport.reporter_id == me.id
-        )
-    )
-    if existing is None:
-        session.add(
-            UserReport(
-                subject_id=subject.id,
-                reporter_id=me.id,
-                reason=payload.reason,
-                comment=payload.comment,
-            )
-        )
-    else:
-        existing.reason = payload.reason
-        existing.comment = payload.comment
-    await session.commit()
-    return DetailResponse(detail="Жалоба отправлена")
+    return await file_report(session, me, "user", str(subject.id), payload)
 
 
 async def post_notification_allowed(
@@ -3676,6 +3676,67 @@ async def toggle_bookmark(post_id: uuid.UUID, session: SessionDep, me: CurrentUs
 @app.post("/api/feed/{post_id}/repost", response_model=ToggleState, tags=["feed"])
 async def toggle_repost(post_id: uuid.UUID, session: SessionDep, me: CurrentUser) -> ToggleState:
     return await _toggle_post_relation(session, PostRepost, post_id, me)
+
+
+@app.post(
+    "/api/chats/{chat_id}/report",
+    response_model=DetailResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["chats"],
+)
+async def report_chat(
+    chat_id: uuid.UUID, payload: PostReportCreate, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """A complaint about a conversation — only one this account is actually in."""
+    await require_chat_member(session, chat_id, me.id)
+    return await file_report(session, me, "chat", str(chat_id), payload)
+
+
+@app.post(
+    "/api/chats/{chat_id}/messages/{message_id}/report",
+    response_model=DetailResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["chats"],
+)
+async def report_message(
+    chat_id: uuid.UUID,
+    message_id: uuid.UUID,
+    payload: PostReportCreate,
+    session: SessionDep,
+    me: CurrentUser,
+) -> DetailResponse:
+    """A complaint about one message. One's own words are not a complaint."""
+    await require_chat_member(session, chat_id, me.id)
+    message = await session.get(Message, message_id)
+    if message is None or message.chat_id != chat_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщение не найдено")
+    if message.sender_id == me.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя пожаловаться на своё сообщение",
+        )
+    return await file_report(session, me, "message", str(message_id), payload)
+
+
+@app.post(
+    "/api/communities/{slug}/report",
+    response_model=DetailResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["communities"],
+)
+async def report_community(
+    slug: str, payload: PostReportCreate, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """A complaint about a community, named by its slug because that is its address."""
+    community = await session.scalar(select(Community).where(Community.slug == slug))
+    if community is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
+    if community.owner_id == me.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя пожаловаться на своё сообщество",
+        )
+    return await file_report(session, me, "community", slug, payload)
 
 
 async def render_chat_summary(session: AsyncSession, chat: Chat, me: User) -> ChatSummary:

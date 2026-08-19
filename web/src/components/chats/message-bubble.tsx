@@ -172,6 +172,7 @@ export function MessageBubble({
   onEdit,
   onForward,
   onSelect,
+  onReport,
   selectable = false,
   selected = false,
   onToggleSelect,
@@ -182,12 +183,21 @@ export function MessageBubble({
   onEdit: (message: Message) => void;
   onForward: (message: Message) => void;
   onSelect: (message: Message) => void;
+  onReport: (message: Message) => void;
   /** Selection mode swaps the action list for a checkbox, as the reference does. */
   selectable?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
 }) {
-  const actions = useMessageActions({ message, chatId, onReply, onEdit, onForward, onSelect });
+  const actions = useMessageActions({
+    message,
+    chatId,
+    onReply,
+    onEdit,
+    onForward,
+    onSelect,
+    onReport
+  });
   const reaction = useReaction(chatId, message.id);
   const reduceMotion = useReducedMotion();
   const time = new Intl.DateTimeFormat("ru-RU", {

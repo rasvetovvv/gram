@@ -3,13 +3,14 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Tabs from "@radix-ui/react-tabs";
-import { ArrowLeft, CalendarDays, Check, Copy, Crown, FileText, Gift, Hash, ImageIcon, Link2, MapPin, Send, Share2, Sparkles, Star, Users } from "lucide-react";
+import { ArrowLeft, CalendarDays, Check, Copy, Crown, FileText, Flag, Gift, Hash, ImageIcon, Link2, MapPin, Send, Share2, Sparkles, Star, Users } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 import { socialApi } from "@/lib/social-api";
 import type { CommunityPerson } from "@/lib/social-types";
+import { CommunityReportSheet } from "../chats/report-sheets";
 import { ChannelManageSheet } from "./channel-manage-sheet";
 import { CommunityAvatar, communityTitle } from "./communities-directory";
 import styles from "./communities.module.css";
@@ -47,6 +48,7 @@ function PersonAvatar({ person, size = 42 }: { person: CommunityPerson; size?: n
 export function CommunityProfileView({ slug }: { slug: string }) {
   const queryClient = useQueryClient();
   const [managing, setManaging] = useState(false);
+  const [reporting, setReporting] = useState(false);
   const [shareNotice, setShareNotice] = useState<string | null>(null);
   const [tab, setTab] = useState("posts");
   const community = useQuery({ queryKey: ["community", slug], queryFn: () => socialApi.community(slug) });
@@ -161,6 +163,18 @@ export function CommunityProfileView({ slug }: { slug: string }) {
                 onClick={() => membership.mutate(item.is_member)}
               >
                 {membership.isPending ? "Сохраняем…" : item.is_member ? "Отписаться" : item.is_paid ? `Подписаться · ${item.monthly_price} ★` : "Подписаться"}
+              </button>
+            )}
+            {/* A complaint about somebody else's community, on the same terms as one about a post. */}
+            {item.is_owner ? null : (
+              <button
+                type="button"
+                className={styles.reportButton}
+                aria-label="Пожаловаться на сообщество"
+                title="Пожаловаться на сообщество"
+                onClick={() => setReporting(true)}
+              >
+                <Flag size={16} />
               </button>
             )}
           </div>
@@ -390,7 +404,14 @@ export function CommunityProfileView({ slug }: { slug: string }) {
 
       {item.is_owner ? (
         <ChannelManageSheet community={item} open={managing} onOpenChange={setManaging} />
-      ) : null}
+      ) : (
+        <CommunityReportSheet
+          slug={item.slug}
+          title={title}
+          open={reporting}
+          onOpenChange={setReporting}
+        />
+      )}
     </main>
   );
 }

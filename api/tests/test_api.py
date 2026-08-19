@@ -3158,3 +3158,67 @@ async def test_premium_unlocks_the_cover_arrangement_and_the_name_marker(
     cleared = await client.patch("/api/users/me/showcase", json={"name_gift_id": None})
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["name_gift"] is None
+
+
+async def test_a_complaint_can_be_about_a_chat_a_message_or_a_community(
+    client: AsyncClient,
+) -> None:
+    """Every target is reported on the same terms: one row per person, reason replaceable."""
+    await register_partner(client, "noisy")
+    await login_demo(client)
+    chat = (await client.post("/api/chats/direct/noisy")).json()
+    await client.post(f"/api/chats/{chat['id']}/messages", json={"content": "Привет"})
+    community = await client.post(
+        "/api/communities",
+        json={
+            "slug": "loud-place",
+            "name": "Шумное место",
+            "title": "Шумное место",
+            "description": "Для проверки жалоб",
+        },
+    )
+    assert community.status_code == 201, community.text
+    # One's own community is not a complaint.
+    assert (
+        await client.post("/api/communities/loud-place/report", json={"reason": "spam"})
+    ).status_code == 400
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "noisy")
+    theirs = (await client.get(f"/api/chats/{chat['id']}/messages")).json()[-1]
+    filed = await client.post(
+        f"/api/chats/{chat['id']}/report", json={"reason": "abuse", "comment": "Грубит"}
+    )
+    assert filed.status_code == 201, filed.text
+    assert filed.json()["detail"] == "Жалоба отправлена"
+    # Complaining twice replaces the reason instead of stacking.
+    assert (
+        await client.post(f"/api/chats/{chat['id']}/report", json={"reason": "spam"})
+    ).status_code == 201
+    message_report = await client.post(
+        f"/api/chats/{chat['id']}/messages/{theirs['id']}/report", json={"reason": "abuse"}
+    )
+    assert message_report.status_code == 201, message_report.text
+    assert (
+        await client.post("/api/communities/loud-place/report", json={"reason": "fraud"})
+    ).status_code == 201
+
+    # One's own words are not a complaint, and a reason has to be one of the six.
+    mine = (
+        await client.post(f"/api/chats/{chat['id']}/messages", json={"content": "Ответ"})
+    ).json()
+    assert (
+        await client.post(
+            f"/api/chats/{chat['id']}/messages/{mine['id']}/report", json={"reason": "abuse"}
+        )
+    ).status_code == 400
+    assert (
+        await client.post(f"/api/chats/{chat['id']}/report", json={"reason": "не нравится"})
+    ).status_code == 422
+
+    # A chat this account is not in cannot be reported at all.
+    await register_partner(client, "outsider")
+    await login_as(client, "outsider")
+    assert (
+        await client.post(f"/api/chats/{chat['id']}/report", json={"reason": "spam"})
+    ).status_code == 403

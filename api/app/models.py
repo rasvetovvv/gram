@@ -432,40 +432,27 @@ class PostMute(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
-class PostReport(Base):
+class ContentReport(Base):
     """
-    A complaint about a post, kept as a row rather than answered by a toast.
+    A complaint, whatever it is about.
 
-    One per person per post: complaining twice is the same complaint, and the second one
-    updates the reason instead of stacking.
+    Posts, accounts, conversations, single messages and communities are all reported on the
+    same terms, so they are one table with a `target_kind` rather than five tables that would
+    drift apart. One row per person per target: complaining twice is the same complaint, and
+    the second one replaces the reason instead of stacking.
+
+    `target_id` is a string because not every target is a uuid — a community is named by its
+    slug, and pretending otherwise would mean a join that cannot exist.
     """
 
-    __tablename__ = "post_reports"
-    __table_args__ = (UniqueConstraint("post_id", "reporter_id", name="uq_post_report"),)
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    post_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("posts.id", ondelete="CASCADE"), index=True
-    )
-    reporter_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    reason: Mapped[str] = mapped_column(String(40))
-    comment: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class UserReport(Base):
-    """A complaint about an account, on the same terms as one about a post."""
-
-    __tablename__ = "user_reports"
+    __tablename__ = "content_reports"
     __table_args__ = (
-        UniqueConstraint("subject_id", "reporter_id", name="uq_user_report"),
-        CheckConstraint("subject_id <> reporter_id", name="ck_user_report_not_self"),
+        UniqueConstraint("target_kind", "target_id", "reporter_id", name="uq_content_report"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    subject_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
+    target_kind: Mapped[str] = mapped_column(String(20), index=True)
+    target_id: Mapped[str] = mapped_column(String(64), index=True)
     reporter_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     reason: Mapped[str] = mapped_column(String(40))
     comment: Mapped[str | None] = mapped_column(String(300), nullable=True)

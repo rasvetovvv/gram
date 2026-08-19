@@ -383,6 +383,27 @@ export const api = {
       body: JSON.stringify({ reason, comment: comment?.trim() || undefined })
     }),
   /** A complaint about an account, on the same terms as one about a post. */
+  /** A complaint about a conversation, one message in it, or a community. */
+  reportChat: (chatId: string, reason: PostReportReason, comment?: string) =>
+    request<{ detail: string }>(`/api/chats/${chatId}/report`, {
+      method: "POST",
+      body: JSON.stringify({ reason, comment: comment?.trim() || undefined })
+    }),
+  reportMessage: (
+    chatId: string,
+    messageId: string,
+    reason: PostReportReason,
+    comment?: string
+  ) =>
+    request<{ detail: string }>(`/api/chats/${chatId}/messages/${messageId}/report`, {
+      method: "POST",
+      body: JSON.stringify({ reason, comment: comment?.trim() || undefined })
+    }),
+  reportCommunity: (slug: string, reason: PostReportReason, comment?: string) =>
+    request<{ detail: string }>(`/api/communities/${encodeURIComponent(slug)}/report`, {
+      method: "POST",
+      body: JSON.stringify({ reason, comment: comment?.trim() || undefined })
+    }),
   reportUser: (username: string, reason: PostReportReason, comment?: string) =>
     request<{ detail: string }>(`/api/users/${encodeURIComponent(username)}/report`, {
       method: "POST",

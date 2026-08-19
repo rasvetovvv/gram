@@ -27,6 +27,7 @@ import { AdminMark } from "../admin-mark";
 import { VerifiedMark } from "../verified-mark";
 import { useToast } from "../ui/toast";
 import { ChatAppearanceSheet, ChatWallpaperSheet } from "./chat-appearance-sheet";
+import { ChatReportSheet } from "./report-sheets";
 import { ChatGiftSheet } from "./chat-gift-sheet";
 import { ChatInfoPanel } from "./chat-info-panel";
 import { ChatList } from "./chat-list";
@@ -157,6 +158,8 @@ export function ChatView() {
   });
 
   const [giftOpen, setGiftOpen] = useState(false);
+  // A complaint about the conversation, or about one message in it.
+  const [report, setReport] = useState<{ open: boolean; messageId?: string }>({ open: false });
   /**
    * The info panel, the in-chat search, the appearance sheets and message selection all belong
    * to one conversation, so they carry its id and are derived away on switch — the same trick
@@ -449,6 +452,7 @@ export function ChatView() {
                   onOpenInfo={() => setUi({ info: true })}
                   onAppearance={() => setUi({ appearance: true })}
                   onWallpaper={() => setUi({ wallpaper: true })}
+                  onReport={() => setReport({ open: true, messageId: undefined })}
                 />
               </div>
               )}
@@ -520,6 +524,7 @@ export function ChatView() {
                           setUi({ selecting: true, picked: [item.id], forwarding: true })
                         }
                         onSelect={(item) => setUi({ selecting: true, picked: [item.id] })}
+                        onReport={(item) => setReport({ open: true, messageId: item.id })}
                         selectable={ui.selecting && !message.service}
                         selected={ui.picked.includes(message.id)}
                         onToggleSelect={() => togglePicked(message.id)}
@@ -599,6 +604,19 @@ export function ChatView() {
               />
             )}
             <ChatGiftSheet chat={activeChat} open={giftOpen} onOpenChange={setGiftOpen} />
+            <ChatReportSheet
+              chatId={activeChat.id}
+              messageId={report.messageId}
+              subject={
+                report.messageId
+                  ? "Сообщение в чате"
+                  : activeChat.is_group
+                    ? `Группа «${activeChat.title ?? "без названия"}»`
+                    : `Переписка с @${activeChat.participant?.username ?? ""}`
+              }
+              open={report.open}
+              onOpenChange={(next) => setReport((current) => ({ ...current, open: next }))}
+            />
             <ChatInfoPanel
               chat={activeChat}
               open={ui.info}

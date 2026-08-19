@@ -106,7 +106,12 @@
 .communityCover[data-seed="3"] { background-color: #392d17; }
 .profileIdentityRow { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-top: -42px; padding: 0 20px; }
 .profileIdentityRow .avatar { width: 98px; height: 98px; border: 5px solid #0b0c0f; font-size: 1.25rem; }
-.profileActions { display: flex; align-items: center; gap: 8px; padding-bottom: 5px; }
+/* Wraps rather than overflows: this row holds share, join and report, and a long
+   «Подписаться · 25 ★» plus two more controls does not fit a phone in one line. */
+.profileActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 5px; }
+/* A complaint is a rare action, so it keeps the icon and gives its width to the others. */
+.reportButton { display: inline-grid; width: 40px; min-height: 40px; flex: none; place-items: center; padding: 0; border: 0; border-radius: 13px; background: #27272a; color: #d0ced7; cursor: pointer; }
+.reportButton:hover { background: #2f2f34; }
 .profileCopy { padding: 15px 20px 0; }
 .profileCopy h1 { font-size: clamp(1.55rem, 6vw, 2rem); }
 .profileCopy > span { display: block; margin-top: 4px; color: #8b8f98; font-size: .86rem; }
@@ -171,6 +176,7 @@
   .profileIdentityRow { align-items: flex-start; flex-direction: column; }
   .profileActions { width: 100%; padding-bottom: 0; }
   .profileActions button { flex: 1; }
+  .profileActions .reportButton { width: 40px; flex: none; }
   .shareButton { font-size: 0; }
   .shareButton svg { width: 18px; }
   .joinPrompt { align-items: flex-start; flex-direction: column; }

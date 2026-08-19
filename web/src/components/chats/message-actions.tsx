@@ -49,7 +49,8 @@ export function useMessageActions({
   onReply,
   onEdit,
   onForward,
-  onSelect
+  onSelect,
+  onReport
 }: {
   message: Message;
   chatId: string;
@@ -58,6 +59,7 @@ export function useMessageActions({
   /** Both open the selection the chat already owns, with this message already picked. */
   onForward: (message: Message) => void;
   onSelect: (message: Message) => void;
+  onReport: (message: Message) => void;
 }): Action[] {
   const queryClient = useQueryClient();
   const { notify } = useToast();
@@ -127,7 +129,14 @@ export function useMessageActions({
       ? isGift
         ? []
         : [{ key: "edit", label: "Изменить", icon: Pencil, run: () => onEdit(message) }]
-      : [{ key: "report", label: "Пожаловаться", icon: Flag, run: soon("Жалобы") }]),
+      : [
+          {
+            key: "report",
+            label: "Пожаловаться",
+            icon: Flag,
+            run: () => onReport(message)
+          }
+        ]),
     { key: "hide", label: "Удалить у себя", icon: Trash2, danger: true, run: () => remove.mutate("me") },
     ...(message.is_mine
       ? [
