@@ -3464,3 +3464,56 @@ async def test_an_author_marks_their_own_attachments_as_sensitive(client: AsyncC
     # An edit that says nothing about the mark leaves it alone.
     again = await client.patch(f"/api/feed/{post_id}", json={"content": "Совсем другое"})
     assert again.json()["sensitive"] is False
+
+
+async def test_a_repost_appears_for_the_people_who_read_the_reposter(
+    client: AsyncClient,
+) -> None:
+    """A repost is how a reader passes something on, so it has to show up somewhere."""
+    await register_partner(client, "passer")
+    await register_partner(client, "follower_r")
+    await login_demo(client)
+    written = await client.post("/api/feed", json={"content": "Стоит передать"})
+    assert written.status_code == 201, written.text
+    post_id = written.json()["id"]
+
+    await client.post("/api/auth/logout")
+    await login_as(client, "passer")
+    passed = await client.post(f"/api/feed/{post_id}/repost")
+    assert passed.status_code == 200, passed.text
+    assert passed.json()["active"] is True
+    # On the reposter's own page, attributed to them rather than passed off as their writing.
+    own = await client.get("/api/feed", params={"author": "passer"})
+    mine = next(item for item in own.json() if item["id"] == post_id)
+    assert mine["reposted_by"]["username"] == "passer"
+    assert mine["reposted_at"] is not None
+    assert mine["author"]["username"] == "leon"
+
+    # And in the feed of someone who reads them.
+    await client.post("/api/auth/logout")
+    await login_as(client, "follower_r")
+    assert (await client.post("/api/users/passer/follow")).status_code == 200
+    followed = await client.get("/api/feed", params={"mode": "following"})
+    seen = next(item for item in followed.json() if item["id"] == post_id)
+    assert seen["reposted_by"]["username"] == "passer"
+    # Once, even though the author is followed too.
+    assert (await client.post("/api/users/leon/follow")).status_code == 200
+    both = (await client.get("/api/feed", params={"mode": "following"})).json()
+    assert len([item for item in both if item["id"] == post_id]) == 1
+
+    # Undoing it takes the post back out.
+    await client.post("/api/auth/logout")
+    await login_as(client, "passer")
+    assert (await client.post(f"/api/feed/{post_id}/repost")).json()["active"] is False
+    after = await client.get("/api/feed", params={"author": "passer"})
+    assert all(item["id"] != post_id for item in after.json())
+
+    # A post nobody reposted says so by omission, not by an empty object.
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    plain = next(
+        item
+        for item in (await client.get("/api/feed", params={"author": "leon"})).json()
+        if item["id"] == post_id
+    )
+    assert plain["reposted_by"] is None

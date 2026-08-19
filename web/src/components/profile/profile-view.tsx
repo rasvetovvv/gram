@@ -162,7 +162,12 @@ export function ProfileView({ username }: { username: string }) {
 
   const isMe = Boolean(profile && (profile.is_me || meQuery.data?.id === profile.id));
   const gifts = useMemo(() => (giftsQuery.data ?? []) as RichGift[], [giftsQuery.data]);
-  const posts = (feedQuery.data ?? []).filter((post) => post.author.username.toLowerCase() === canonicalUsername.toLowerCase());
+  /*
+   * The server already answers "what is on this page": the person's own posts and whatever they
+   * reposted. Filtering by author here threw the reposts away — a repost is someone else's post
+   * by definition — so the button moved a counter and showed nothing.
+   */
+  const posts = useMemo(() => feedQuery.data ?? [], [feedQuery.data]);
   const stories = storiesQuery.data ?? [];
   const replies = repliesQuery.data ?? [];
   const featuredGift = gifts.find((gift) => gift.id === profile?.featured_gift_id || gift.id === profile?.featured_gift?.id) ?? (profile?.featured_gift as RichGift | null | undefined);

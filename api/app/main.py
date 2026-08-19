@@ -1173,6 +1173,8 @@ async def render_post(  # noqa: PLR0913
     presence_hidden: set[uuid.UUID] | None = None,
     name_gifts: dict[uuid.UUID, GiftCompact] | None = None,
     community: Community | None = None,
+    reposted_by: User | None = None,
+    reposted_at: datetime | None = None,
 ) -> FeedPost:
     """The three maps let a list pass one batched lookup each instead of one query per post."""
     premium_ids = premium if premium is not None else await premium_user_ids(session, [author.id])
@@ -1332,6 +1334,8 @@ async def render_post(  # noqa: PLR0913
         starred_by_me=starred,
         can_edit=post.author_id == me.id,
         can_delete=post.author_id == me.id,
+        reposted_by=compact_user(reposted_by) if reposted_by else None,
+        reposted_at=reposted_at,
         community_slug=community.slug if community else None,
         community_title=community.title if community else None,
         community_avatar_url=community.avatar_url if community else None,
@@ -3101,6 +3105,7 @@ async def read_feed(
     limit: Annotated[int, Query(ge=1, le=100)] = 30,
 ) -> list[FeedPost]:
     query = select(Post, User).join(User, Post.author_id == User.id)
+    author_user: User | None = None
     if author:
         author_user = await resolve_user(session, author)
         if author_user is None:
@@ -3127,7 +3132,28 @@ async def read_feed(
         else (Post.created_at.desc(),)
     )
     rows = (await session.execute(query.order_by(*order).limit(limit))).all()
-    author_ids = [author.id for _, author in rows]
+    entries = [(post, post_author, None, None) for post, post_author in rows]
+    entries += await _reposted_entries(
+        session,
+        me,
+        author_user=author_user,
+        mode=mode,
+        hashtag=hashtag,
+        hidden_authors=hidden_authors,
+        already=[post.id for post, *_ in entries],
+        limit=limit,
+    )
+    # Newest first by whatever put it in the list — the post's own date, or the moment somebody
+    # passed it on. An author's own pin still leads their page.
+    entries.sort(
+        key=lambda entry: (
+            0 if author and entry[2] is None and entry[0].pinned_at is not None else 1,
+            -_as_utc(entry[3] or entry[0].created_at).timestamp(),
+        )
+    )
+    if not author:
+        entries = entries[:limit]
+    author_ids = [post_author.id for _, post_author, _, _ in entries]
     premium = await premium_user_ids(session, author_ids)
     hidden = await presence_hidden_ids(session, author_ids)
     emblems = await name_gift_map(session, author_ids)
@@ -3135,14 +3161,69 @@ async def read_feed(
         await render_post(
             session,
             post,
-            author,
+            post_author,
             me,
             premium=premium,
             presence_hidden=hidden,
             name_gifts=emblems,
+            reposted_by=reposter,
+            reposted_at=reposted_at,
         )
-        for post, author in rows
+        for post, post_author, reposter, reposted_at in entries
     ]
+
+
+async def _reposted_entries(  # noqa: PLR0913
+    session: AsyncSession,
+    me: User,
+    *,
+    author_user: User | None,
+    mode: str,
+    hashtag: str | None,
+    hidden_authors: set[uuid.UUID],
+    already: list[uuid.UUID],
+    limit: int,
+) -> list[tuple[Post, User, User | None, datetime | None]]:
+    """
+    Posts that belong in this list because somebody passed them on.
+
+    A repost is how a reader shares someone else's words, so it has to appear somewhere: on the
+    reposter's own page, and in the feed of the people who read them. Until now it only moved a
+    counter, which made the button look broken. A hashtag search is deliberately left out: it
+    answers "who wrote about this", not "who mentioned it".
+    """
+    if hashtag:
+        return []
+    if author_user is not None:
+        whose = PostRepost.user_id == author_user.id
+    elif mode == "following":
+        followed = select(Follow.following_id).where(Follow.follower_id == me.id)
+        whose = or_(PostRepost.user_id == me.id, PostRepost.user_id.in_(followed))
+    else:
+        # «Для вас» is a discovery feed: a repost by a stranger says nothing to this reader, so
+        # only the posts themselves compete there.
+        return []
+    reposter = aliased(User)
+    rows = (
+        await session.execute(
+            select(PostRepost, Post, User, reposter)
+            .join(Post, PostRepost.post_id == Post.id)
+            .join(User, Post.author_id == User.id)
+            .join(reposter, PostRepost.user_id == reposter.id)
+            .where(Post.community_id.is_(None), whose)
+            .order_by(PostRepost.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    seen = set(already)
+    found: list[tuple[Post, User, User | None, datetime | None]] = []
+    for repost, post, post_author, reposter_user in rows:
+        # Not twice in one list, and never across a block or into a closed account.
+        if post.id in seen or post.author_id in hidden_authors:
+            continue
+        seen.add(post.id)
+        found.append((post, post_author, reposter_user, repost.created_at))
+    return found
 
 
 @app.post("/api/feed", response_model=FeedPost, status_code=status.HTTP_201_CREATED, tags=["feed"])

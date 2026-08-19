@@ -502,6 +502,10 @@ class FeedPost(ApiModel):
     # than from a client-side guess about who owns what.
     can_edit: bool = False
     can_delete: bool = False
+    # Set when this post is in a list because somebody reposted it, rather than because they
+    # wrote it. The card then says so above the author's own name, as the reference does.
+    reposted_by: UserCompact | None = None
+    reposted_at: datetime | None = None
     # Set when the post was published into a community. A channel post is published *as* the
     # channel, so the card needs its name, its picture and whether it is verified — the person
     # who pressed the button is not the author anyone should read.

@@ -190,6 +190,9 @@ export type Post = {
   starred_by_me?: boolean;
   can_edit?: boolean;
   can_delete?: boolean;
+  /** Set when this post is in a list because somebody reposted it, not because they wrote it. */
+  reposted_by?: User | null;
+  reposted_at?: string | null;
   /** Set when the post was published into a community: the card is then the channel's. */
   community_slug?: string | null;
   community_title?: string | null;

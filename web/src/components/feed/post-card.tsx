@@ -208,6 +208,22 @@ export function PostCard({
         />
       </Link>
       <div className="min-w-0 flex-1">
+        {/*
+          Who put this in front of the reader, when it was not the author. It goes above the
+          name, the way the reference does it, so the card still reads as the author's words.
+        */}
+        {post.reposted_by ? (
+          <Link
+            href={`/u/${post.reposted_by.username}`}
+            className="mb-1 inline-flex items-center gap-1.5 text-[12px] font-semibold text-[var(--dim)] hover:underline"
+          >
+            <Repeat2 size={13} />
+            {/* `is_me` is a profile's field, not a compact user's, so the comparison is here. */}
+            {me && me.id === post.reposted_by.id
+              ? "Вы сделали репост"
+              : `${post.reposted_by.display_name} сделал(а) репост`}
+          </Link>
+        ) : null}
         {showPinned && post.is_pinned ? (
           <span className="mb-1 inline-flex items-center gap-1.5 text-[12px] font-semibold text-[var(--dim)]">
             <Pin size={12} />
