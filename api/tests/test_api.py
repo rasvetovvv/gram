@@ -184,12 +184,19 @@ async def test_gift_showcase_offer_provenance_and_username_purchase(client: Asyn
     await login_demo(client)
     gifts = (await client.get("/api/gifts", params={"owner": "leon"})).json()
     assert len(gifts) >= 2
-    showcased = await client.patch(
+    # The marker beside the name is a premium arrangement, so a free account is told so.
+    refused = await client.patch(
         "/api/users/me/showcase",
         json={"featured_gift_id": gifts[0]["id"], "name_gift_id": gifts[1]["id"]},
     )
+    assert refused.status_code == 402, refused.text
+    assert "Premium" in refused.json()["detail"]
+    showcased = await client.patch(
+        "/api/users/me/showcase", json={"featured_gift_id": gifts[0]["id"]}
+    )
     assert showcased.status_code == 200, showcased.text
     assert showcased.json()["featured_gift"]["id"] == gifts[0]["id"]
+    assert [item["id"] for item in showcased.json()["cover_gifts"]] == [gifts[0]["id"]]
     detail = await client.get(f"/api/gifts/{gifts[0]['id']}")
     assert detail.json()["traits"]
     assert detail.json()["value_stars"] > 0
@@ -2739,7 +2746,11 @@ async def test_a_name_slot_gift_travels_with_its_owner_into_the_feed(
     post = (await client.post("/api/feed", json={"content": "С подарком у имени"})).json()
     assert post["author"]["name_gift"] is None
 
-    await client.patch("/api/users/me/showcase", json={"name_gift_id": gifts[1]["id"]})
+    # The marker beside the name comes with Premium, so the account buys it first.
+    await client.post("/api/stars/top-up", json={"amount": 1000})
+    assert (await client.post("/api/premium/purchase", json={"plan": "monthly"})).status_code == 200
+    named = await client.patch("/api/users/me/showcase", json={"name_gift_id": gifts[1]["id"]})
+    assert named.status_code == 200, named.text
     listed = next(
         item for item in (await client.get("/api/feed")).json() if item["id"] == post["id"]
     )
@@ -3100,3 +3111,44 @@ async def test_a_closed_account_answers_a_follow_request(client: AsyncClient) ->
     opened = await client.get("/api/feed", params={"author": "leon"})
     assert opened.status_code == 200
     assert any(item["id"] == post_id for item in opened.json())
+
+
+async def test_premium_unlocks_the_cover_arrangement_and_the_name_marker(
+    client: AsyncClient,
+) -> None:
+    """One gift on the cover is anyone's; the rest, and the one by the name, are Premium."""
+    await login_demo(client)
+    gifts = (await client.get("/api/gifts", params={"owner": "leon"})).json()
+    assert len(gifts) >= 3
+    first = await client.put(f"/api/gifts/{gifts[0]['id']}/showcase", json={"slot": "featured"})
+    assert first.status_code == 200, first.text
+    for slot in ("cover2", "cover3", "cover4", "name"):
+        refused = await client.put(f"/api/gifts/{gifts[1]['id']}/showcase", json={"slot": slot})
+        assert refused.status_code == 402, f"{slot}: {refused.status_code}"
+
+    await client.post("/api/stars/top-up", json={"amount": 1000})
+    assert (await client.post("/api/premium/purchase", json={"plan": "monthly"})).status_code == 200
+
+    for gift, slot in ((gifts[1], "cover2"), (gifts[2], "cover3")):
+        filled = await client.put(f"/api/gifts/{gift['id']}/showcase", json={"slot": slot})
+        assert filled.status_code == 200, filled.text
+    arranged = (await client.get("/api/users/leon")).json()
+    assert [item["id"] for item in arranged["cover_gifts"]] == [
+        gifts[0]["id"],
+        gifts[1]["id"],
+        gifts[2]["id"],
+    ]
+
+    # One gift cannot be in two places: moving it to the name slot takes it off the cover.
+    moved = await client.put(f"/api/gifts/{gifts[0]['id']}/showcase", json={"slot": "name"})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["name_gift"]["id"] == gifts[0]["id"]
+    assert [item["id"] for item in moved.json()["cover_gifts"]] == [
+        gifts[1]["id"],
+        gifts[2]["id"],
+    ]
+
+    # Emptying a slot is never gated: an account that stops paying must still be able to tidy up.
+    cleared = await client.patch("/api/users/me/showcase", json={"name_gift_id": None})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["name_gift"] is None

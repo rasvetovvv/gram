@@ -20,6 +20,7 @@ import { api } from "@/lib/api";
 import type { Chat, Notification } from "@/lib/types";
 import { nameColor } from "@/lib/profile-color";
 import { NotificationSettings } from "../profile/settings-switches";
+import { FollowRequests } from "./follow-requests";
 import { BottomSheet } from "../ui/bottom-sheet";
 import { UserAvatar } from "../user-avatar";
 
@@ -33,6 +34,11 @@ const KIND: Record<
 > = {
   message: { icon: MessageCircle, background: "var(--primary)", verb: "написал(а) вам" },
   follow: { icon: UserPlus, background: "var(--link)", verb: "подписался(ась) на вас" },
+  follow_request: {
+    icon: UserPlus,
+    background: "var(--link)",
+    verb: "хочет подписаться на вас"
+  },
   like: { icon: Heart, background: "#ec4899", verb: "поставил(а) лайк" },
   comment: {
     icon: MessageCircle,
@@ -140,6 +146,7 @@ export function NotificationView() {
     if (!item.read) markOne.mutate(item.id);
     // A notice is a pointer to something: a message leads to its chat, a like or a comment to
     // the post it happened on, a person to their page.
+    if (item.kind === "follow_request") return;
     if (item.kind === "message" && item.entity_id) router.push(`/chats?chat=${item.entity_id}`);
     else if ((item.kind === "like" || item.kind === "comment") && item.entity_id)
       router.push(`/post/${item.entity_id}`);
@@ -168,6 +175,8 @@ export function NotificationView() {
         <h2 className="m-0 text-[19px] font-bold">Уведомления</h2>
         <NotificationSettings />
       </BottomSheet>
+
+      <FollowRequests />
 
       <div className="space-y-2 px-2 py-2 sm:px-3">
         <div className="flex items-center justify-between px-2 pb-0.5">

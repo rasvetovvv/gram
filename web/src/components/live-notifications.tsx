@@ -20,6 +20,7 @@ const POLL_MS = 10_000;
 /** Short phrases for the kinds whose action is fixed; anything else keeps the server text. */
 const PHRASES: Partial<Record<Notification["kind"], string>> = {
   follow: "подписался(ась) на вас",
+  follow_request: "хочет подписаться на вас",
   like: "поставил(а) лайк",
   comment: "прокомментировал(а) вашу публикацию",
   subscription: "оформил(а) платную подписку",

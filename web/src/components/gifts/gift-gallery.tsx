@@ -5,6 +5,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
+  Ban,
+  HandCoins,
   Check,
   Eye,
   EyeOff,
@@ -549,6 +551,22 @@ function GiftDialog({
       setFeedback(slot === "featured" ? "Убран из шапки" : "Убран из имени");
     },
   });
+  const offersClosed = useMutation({
+    mutationFn: (disabled: boolean) => api.setGiftOffersDisabled(gift.id, disabled),
+    onSuccess: async (updated) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["gifts"] }),
+        queryClient.invalidateQueries({ queryKey: ["gift", gift.id] }),
+        queryClient.invalidateQueries({ queryKey: ["gift-offers", gift.id] }),
+      ]);
+      setFeedback(
+        updated.offers_disabled
+          ? "Больше никто не предложит цену за этот подарок"
+          : "Предложения снова открыты",
+      );
+    },
+    onError: (error: Error) => setFeedback(error.message),
+  });
   const visibility = useMutation({
     mutationFn: (hidden: boolean) => api.setGiftVisibility(gift.id, hidden),
     onSuccess: async (updated) => {
@@ -825,6 +843,26 @@ function GiftDialog({
                   {gift.hidden_in_profile ? <Eye size={17} /> : <EyeOff size={17} />}
                   {gift.hidden_in_profile ? "Показать в профиле" : "Скрыть из профиля"}
                 </button>
+                {/*
+                  Declining offers one at a time tells a buyer to try again. Saying once that
+                  the item is not for sale is the honest version, and the server refuses them.
+                */}
+                <button
+                  className="quiet-button mt-2 w-full"
+                  onClick={() => offersClosed.mutate(!gift.offers_disabled)}
+                  disabled={offersClosed.isPending}
+                >
+                  {gift.offers_disabled ? <HandCoins size={17} /> : <Ban size={17} />}
+                  {gift.offers_disabled
+                    ? "Разрешить предложения цены"
+                    : "Не предлагать мне цену"}
+                </button>
+                {gift.offers_disabled ? (
+                  <p className="mb-0 mt-2 text-xs text-[var(--muted)]">
+                    Новые предложения по этому подарку отклоняются автоматически. Выставить его
+                    на маркет по своей цене это не мешает.
+                  </p>
+                ) : null}
                 {gift.hidden_in_profile ? (
                   <p className="mb-0 mt-2 text-xs text-[var(--muted)]">
                     Виден только вам. Историю владения и продажу это не затрагивает.

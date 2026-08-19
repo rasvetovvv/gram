@@ -919,6 +919,7 @@ async def render_profile(
         stars_balance=wallet.balance if wallet else None,
         featured_gift=gifts.get("featured"),
         name_gift=gifts.get("name"),
+        cover_gifts=[gifts[slot] for slot in COVER_SLOTS if slot in gifts],
         interests=preferences.interests if preferences else [],
         onboarding_complete=preferences.onboarding_complete if preferences else True,
         website_url=details.website_url if details else None,
@@ -2691,6 +2692,38 @@ async def blocked_pair_ids(session: AsyncSession, me_id: uuid.UUID) -> set[uuid.
     return ids
 
 
+async def unreadable_author_ids(session: AsyncSession, me: User) -> set[uuid.UUID]:
+    """
+    Authors whose posts must not appear in a mixed list for this reader.
+
+    Two reasons, both the authors' own decisions: a block in either direction, and a closed
+    account this reader has not been let into. The author page answers 403 for the second case,
+    but a feed cannot — it would have to explain a refusal about thirty different people — so
+    the posts are simply not there, which is what "закрытый аккаунт" means.
+    """
+    walled_off = await blocked_pair_ids(session, me.id)
+    closed = set(
+        (
+            await session.scalars(
+                select(UserSettings.user_id).where(UserSettings.private_account.is_(True))
+            )
+        ).all()
+    )
+    if closed:
+        allowed = set(
+            (
+                await session.scalars(
+                    select(Follow.following_id).where(
+                        Follow.follower_id == me.id, Follow.following_id.in_(closed)
+                    )
+                )
+            ).all()
+        )
+        closed -= allowed
+        closed.discard(me.id)
+    return walled_off | closed
+
+
 async def refuse_if_blocked_with(session: AsyncSession, other_id: uuid.UUID, me: User) -> None:
     """Refuse an action aimed at someone a block stands between — in either direction."""
     if other_id == me.id:
@@ -2845,8 +2878,8 @@ async def read_bookmarks(session: SessionDep, me: CurrentUser) -> list[FeedPost]
             .join(PostBookmark, PostBookmark.post_id == Post.id)
             .join(User, Post.author_id == User.id)
             .where(PostBookmark.user_id == me.id)
-            # Saved before the block, and no longer mine to read after it.
-            .where(Post.author_id.notin_(await blocked_pair_ids(session, me.id)))
+            # Saved before the block or before the account closed, and no longer mine to read.
+            .where(Post.author_id.notin_(await unreadable_author_ids(session, me)))
             .order_by(PostBookmark.created_at.desc())
         )
     ).all()
@@ -2973,10 +3006,10 @@ async def read_feed(
     if mode == "following":
         followed = select(Follow.following_id).where(Follow.follower_id == me.id)
         query = query.where(or_(Post.author_id == me.id, Post.author_id.in_(followed)))
-    # A block hides both ways: their posts leave my feed, mine leave theirs.
-    walled_off = await blocked_pair_ids(session, me.id)
-    if walled_off:
-        query = query.where(Post.author_id.notin_(walled_off))
+    # A block hides both ways, and a closed account is only read by the people it let in.
+    hidden_authors = await unreadable_author_ids(session, me)
+    if hidden_authors:
+        query = query.where(Post.author_id.notin_(hidden_authors))
     # One author's page opens with whatever they pinned; a mixed feed has no owner to pin it.
     order = (
         (Post.pinned_at.is_(None), Post.created_at.desc())
@@ -7070,6 +7103,27 @@ async def read_gift(gift_id: uuid.UUID, session: SessionDep, me: CurrentUser) ->
     return await render_gift(session, row.Gift, row.User, me)
 
 
+# The cover holds four, in this order. The first is anyone's to arrange; the others, and the
+# marker beside the name, are what a premium account gets for its personalization.
+COVER_SLOTS = ("featured", "cover2", "cover3", "cover4")
+PREMIUM_SLOTS = frozenset({"cover2", "cover3", "cover4", "name"})
+
+
+async def _require_premium_slot(session: AsyncSession, me: User, slot: str) -> None:
+    """A free account arranges one gift on its cover; the rest come with Premium."""
+    if slot not in PREMIUM_SLOTS:
+        return
+    if me.id in await premium_user_ids(session, [me.id]):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail=(
+            "Подарок рядом с именем и вторая, третья и четвёртая витрины в шапке — "
+            "возможности GRAM Premium"
+        ),
+    )
+
+
 async def _set_showcase_slot(
     session: AsyncSession, me: User, slot: str, gift_id: uuid.UUID | None
 ) -> None:
@@ -7082,6 +7136,8 @@ async def _set_showcase_slot(
         if existing:
             await session.delete(existing)
         return
+    # Emptying a slot is always allowed; filling a premium one is not.
+    await _require_premium_slot(session, me, slot)
     gift = await session.scalar(select(Gift).where(Gift.id == gift_id).with_for_update())
     if gift is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Подарок не найден")
@@ -7111,6 +7167,23 @@ async def update_profile_showcase(
         await _set_showcase_slot(session, me, "featured", payload.featured_gift_id)
     if "name_gift_id" in payload.model_fields_set:
         await _set_showcase_slot(session, me, "name", payload.name_gift_id)
+    await session.commit()
+    return await render_profile(session, me, me)
+
+
+@app.delete("/api/users/me/showcase/{slot}", response_model=UserProfile, tags=["gifts"])
+async def clear_showcase_slot(
+    slot: Annotated[str, Path(pattern="^(featured|cover2|cover3|cover4|name)$")],
+    session: SessionDep,
+    me: CurrentUser,
+) -> UserProfile:
+    """
+    Take a gift off display.
+
+    Never gated: an account whose Premium lapsed must still be able to tidy its own cover, and
+    a slot it cannot refill is one it must at least be able to empty.
+    """
+    await _set_showcase_slot(session, me, slot, None)
     await session.commit()
     return await render_profile(session, me, me)
 

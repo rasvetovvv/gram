@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { giftStickerUrl, giftSymbolUrl } from "@/lib/api";
 import { GiftLottie } from "./gift-lottie";
@@ -137,7 +137,7 @@ export function GiftArt({
   upgraded = true
 }: GiftArtProps) {
   const reduceMotion = useReducedMotion();
-  const [playing, setPlaying] = useState(false);
+  const [playing, setPlaying] = useState<string | null>(null);
   const centre = accent || "#1c1c26";
   const edge = backdropEdge || "#08080a";
   const tier: GiftRarityName = rarity ?? "rare";
@@ -149,7 +149,14 @@ export function GiftArt({
   const worn = upgraded ? model : null;
   const still = giftStickerUrl(design ?? "", worn, "png", size > 128 ? 256 : 128);
   const motion = animated && !reduceMotion ? giftStickerUrl(design ?? "", worn, "tgs") : null;
-  if (!motion && playing) setPlaying(false);
+  /*
+   * Which animation is actually on screen, by url rather than a bare boolean. Remembering the
+   * url means hover can end and start again without resetting anything during render, and a
+   * gift whose model changes cannot show the previous animation as if it were ready.
+   */
+  const showMotion = motion !== null && playing === motion;
+  // Stable per animation url, so the player is not rebuilt on unrelated parent renders.
+  const onPlaying = useCallback(() => setPlaying(motion), [motion]);
   // A bare sticker uses its whole box: the padding exists to keep artwork off a backdrop's
   // edge, and with no backdrop it only makes the gift look smaller than its neighbours.
   const inset = bare ? 0 : Math.round(size * 0.12);
@@ -169,44 +176,16 @@ export function GiftArt({
       {symbol ? <PatternLayer url={symbol} color={patternColor || "#ffffff"} size={size} /> : null}
       <span className="absolute grid place-items-center" style={{ inset }}>
         {/*
-          The still stays mounted underneath while the player loads. Swapping straight to Lottie
-          made a gift blink out for the fraction of a second the animation took to fetch and
-          parse, which read as the artwork breaking on hover.
+          One still, mounted for the life of the tile and never swapped for another element.
+          It used to live inside the "is it animating" branch, so pointing at a gift replaced
+          the <img> with a different tree — React threw the loaded picture away and the artwork
+          blinked before the animation arrived. Now the player fades in over a picture that was
+          never taken down, and both sides of the crossfade use the same transition.
+
+          A plain <img>: the proxy already sizes and caches these, so Next's optimiser would
+          only add a second cache in front of one that is already local.
         */}
-        {motion ? (
-          <span className="relative grid size-full place-items-center">
-            {still ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={still}
-                alt=""
-                width={size - inset * 2}
-                height={size - inset * 2}
-                decoding="async"
-                style={{
-                  ...(fill
-                    ? { width: "100%", height: "100%" }
-                    : { width: size - inset * 2, height: size - inset * 2 }),
-                  objectFit: "contain",
-                  opacity: playing ? 0 : 1
-                }}
-              />
-            ) : null}
-            <span
-              className="absolute inset-0 grid place-items-center transition-opacity duration-150"
-              style={{ opacity: playing ? 1 : 0 }}
-            >
-              <GiftLottie
-                src={motion}
-                size={size - inset * 2}
-                fill={fill}
-                onReady={() => setPlaying(true)}
-              />
-            </span>
-          </span>
-        ) : still ? (
-          // A plain <img>: the proxy already sizes and caches these, so Next's optimiser would
-          // only add a second cache in front of one that is already local.
+        {still ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={still}
@@ -215,12 +194,23 @@ export function GiftArt({
             height={size - inset * 2}
             loading="lazy"
             decoding="async"
-            style={
-              fill
-                ? { width: "100%", height: "100%", objectFit: "contain" }
-                : { width: size - inset * 2, height: size - inset * 2, objectFit: "contain" }
-            }
+            className="transition-opacity duration-150"
+            style={{
+              ...(fill
+                ? { width: "100%", height: "100%" }
+                : { width: size - inset * 2, height: size - inset * 2 }),
+              objectFit: "contain",
+              opacity: showMotion ? 0 : 1
+            }}
           />
+        ) : null}
+        {motion ? (
+          <span
+            className="absolute inset-0 grid place-items-center transition-opacity duration-150"
+            style={{ opacity: showMotion ? 1 : 0 }}
+          >
+            <GiftLottie src={motion} size={size - inset * 2} fill={fill} onReady={onPlaying} />
+          </span>
         ) : null}
       </span>
       {sparkles ? <Sparkles count={sparkles} size={size} /> : null}

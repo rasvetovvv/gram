@@ -9,6 +9,7 @@ import type { User } from "@/lib/types";
 import { nameColor } from "@/lib/profile-color";
 import { UserAvatar } from "../user-avatar";
 import { PremiumMark } from "../premium-mark";
+import { AdminMark } from "../admin-mark";
 import { VerifiedMark } from "../verified-mark";
 
 /**
@@ -248,7 +249,7 @@ function PickerBody({
                   >
                     {user.display_name}
                   </span>
-                  {user.verified ? <VerifiedMark size={15} /> : null}
+                  {user.verified ? <VerifiedMark size={15} /> : null}{user.is_admin ? <AdminMark size={14} /> : null}
                   {user.is_premium ? (
                     <PremiumMark size={14} profileColor={user.profile_color} />
                   ) : null}

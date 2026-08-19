@@ -24,6 +24,8 @@ export type User = {
   joined_at: string;
   is_verified?: boolean;
   verified: boolean;
+  /** Staff. Drawn as the V badge before the name; granted by GRAM and not claimable. */
+  is_admin?: boolean;
   verification_tier?: "signal" | "creator" | "founder" | "official" | null;
   is_online: boolean;
   last_seen_at?: string | null;
@@ -45,6 +47,8 @@ export type User = {
   onboarding_complete?: boolean;
   featured_gift?: GiftSummary | null;
   name_gift?: GiftSummary | null;
+  /** Up to four gifts over the cover, in slot order: the first is free, the rest are Premium. */
+  cover_gifts?: GiftSummary[];
   stars_balance?: number;
   subscription_price_stars?: number | null;
   paid_subscription_enabled?: boolean;
@@ -68,6 +72,10 @@ export type User = {
   /** A closed account: the profile is readable, the content tabs are not. */
   is_private?: boolean;
   can_view_content?: boolean;
+  /** I asked to follow a closed account and am waiting; pressing again withdraws the request. */
+  follow_requested?: boolean;
+  /** Only on my own profile: how many people are waiting for an answer. */
+  follow_requests_count?: number;
 };
 
 
@@ -280,6 +288,8 @@ export type UsernameAsset = {
   last_action_at?: string | null;
   is_primary_handle?: boolean;
   is_owned_by_me?: boolean;
+  /** The owner is keeping this handle and refuses offers on it. */
+  offers_disabled?: boolean;
 };
 
 export type Gift = {
@@ -336,6 +346,8 @@ export type Gift = {
   hidden_in_profile?: boolean;
   /** Pinned items lead the collection, newest pin first. */
   is_pinned?: boolean;
+  /** The owner said the item is not for sale, so offers on it are refused. */
+  offers_disabled?: boolean;
 };
 
 export type GiftModel = {
@@ -420,9 +432,15 @@ export type GiftSummary = Pick<
 >;
 
 /** The account's own switches: who may see it, and what may interrupt it. */
+/** Who may open a direct chat with me. Enforced by the server, not merely hidden in the UI. */
+export type MessagePrivacy = "everyone" | "following" | "nobody";
+
+export type FollowRequestEntry = { id: string; user: User; created_at: string };
+
 export type AccountSettings = {
   show_online: boolean;
   private_account: boolean;
+  who_can_message: MessagePrivacy;
   status_emoji: string | null;
   status_text: string | null;
   notify_likes: boolean;
@@ -563,6 +581,8 @@ export type FollowResult = {
   is_following: boolean;
   followers_count: number;
   following_count: number;
+  /** A closed account turned the follow into a request that is now waiting for an answer. */
+  requested?: boolean;
 };
 
 export type Subscription = {
@@ -703,7 +723,18 @@ export type CommunityPost = {
 
 export type Notification = {
   id: string;
-  kind: "message" | "follow" | "like" | "comment" | "gift" | "username" | "subscription" | "community" | "stars" | "system";
+  kind:
+    | "message"
+    | "follow"
+    | "follow_request"
+    | "like"
+    | "comment"
+    | "gift"
+    | "username"
+    | "subscription"
+    | "community"
+    | "stars"
+    | "system";
   text: string;
   created_at: string;
   read: boolean;

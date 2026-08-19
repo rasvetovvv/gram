@@ -13,6 +13,7 @@ import type {
   CommunityPost,
   CreatorAnalytics,
   CreatorSettings,
+  FollowRequestEntry,
   FollowResult,
   Gift,
   GiftCategory,
@@ -50,6 +51,9 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000
 
 /** The reference's own three orders over one thread. */
 export type CommentSort = "new" | "old" | "top";
+
+/** Where a gift can be put on display: four places on the cover, and beside the name. */
+export type ShowcaseSlot = "featured" | "cover2" | "cover3" | "cover4" | "name";
 
 /** The reference's own list of reasons a post can be reported for. */
 export type PostReportReason = "spam" | "abuse" | "adult" | "fraud" | "violence" | "other";
@@ -277,6 +281,12 @@ export const api = {
   unfollow: (username: string) =>
     request<FollowResult>(`/api/users/${userPath(username)}/follow`, { method: "DELETE" }),
   mySettings: () => request<AccountSettings>("/api/users/me/settings"),
+  /** Who is waiting to be let into a closed account. */
+  followRequests: () => request<FollowRequestEntry[]>("/api/users/me/follow-requests"),
+  acceptFollowRequest: (id: string) =>
+    request<FollowResult>(`/api/users/me/follow-requests/${id}`, { method: "POST" }),
+  declineFollowRequest: (id: string) =>
+    request<{ detail: string }>(`/api/users/me/follow-requests/${id}`, { method: "DELETE" }),
   updateMySettings: (patch: Partial<AccountSettings>) =>
     request<AccountSettings>("/api/users/me/settings", {
       method: "PATCH",
@@ -646,10 +656,24 @@ export const api = {
     request<GiftOffer>(`/api/gifts/offers/${offerId}/decline`, { method: "POST" }),
   cancelGiftOffer: (offerId: string) =>
     request<GiftOffer>(`/api/gifts/offers/${offerId}/cancel`, { method: "POST" }),
-  setGiftShowcase: (id: string, slot: "featured" | "name") =>
+  setGiftShowcase: (id: string, slot: ShowcaseSlot) =>
     request<User>(`/api/gifts/${id}/showcase`, {
       method: "PUT",
       body: JSON.stringify({ slot })
+    }),
+  /** Empties one showcase slot without touching the others; never gated by Premium. */
+  clearShowcaseSlot: (slot: ShowcaseSlot) =>
+    request<User>(`/api/users/me/showcase/${slot}`, { method: "DELETE" }),
+  /** Says once that an item is not for sale, so its owner stops being asked a price. */
+  setGiftOffersDisabled: (id: string, offersDisabled: boolean) =>
+    request<Gift>(`/api/gifts/${id}/offers`, {
+      method: "PATCH",
+      body: JSON.stringify({ offers_disabled: offersDisabled })
+    }),
+  setUsernameOffersDisabled: (id: string, offersDisabled: boolean) =>
+    request<UsernameAsset>(`/api/usernames/${id}/offers`, {
+      method: "PATCH",
+      body: JSON.stringify({ offers_disabled: offersDisabled })
     }),
 
   notifications: () => request<Notification[]>("/api/notifications"),

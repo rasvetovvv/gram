@@ -12,6 +12,7 @@ import { compactNumber } from "@/lib/utils";
 import { useToast } from "./ui/toast";
 import { UserAvatar } from "./user-avatar";
 import { PremiumMark } from "./premium-mark";
+import { AdminMark } from "./admin-mark";
 import { VerifiedMark } from "./verified-mark";
 
 /**
@@ -149,6 +150,7 @@ function SuggestedRow({ person }: { person: User }) {
               {person.display_name}
             </span>
             {person.verified ? <VerifiedMark size={14} /> : null}
+            {person.is_admin ? <AdminMark size={13} /> : null}
             {person.is_premium ? (
               <PremiumMark size={13} profileColor={person.profile_color} />
             ) : null}

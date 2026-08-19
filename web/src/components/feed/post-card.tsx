@@ -29,6 +29,7 @@ import { nameColor } from "@/lib/profile-color";
 import { cn, relativeTime } from "@/lib/utils";
 import { GiftDetailTrigger, type RichGift } from "../gifts/gift-gallery";
 import { GiftImage, giftArtProps } from "../gifts/gift-image";
+import { AdminMark } from "../admin-mark";
 import { PremiumMark } from "../premium-mark";
 import { AnimatedCounter } from "../ui/animated-counter";
 import { ConfirmDialog } from "../ui/confirm-dialog";
@@ -196,6 +197,7 @@ export function PostCard({
         ) : null}
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1 leading-tight">
+            {post.author.is_admin ? <AdminMark size={15} /> : null}
             <Link
               className="inline-flex min-w-0 items-center text-[15px] font-semibold hover:underline"
               href={`/u/${post.author.username}`}

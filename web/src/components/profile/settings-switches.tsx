@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, Lock, Smile } from "lucide-react";
 import { useState } from "react";
 import { api } from "@/lib/api";
-import type { AccountSettings } from "@/lib/types";
+import type { AccountSettings, MessagePrivacy } from "@/lib/types";
 import { useToast } from "../ui/toast";
 
 /**
@@ -84,6 +84,64 @@ function Loading({ rows = 2 }: { rows?: number }) {
   );
 }
 
+/**
+ * A choice of three, where a switch would lie: "кто может мне писать" is not on-or-off.
+ * The chosen row explains what it does, so the consequence is visible before it is saved.
+ */
+function Choice<T extends string>({
+  label,
+  value,
+  options,
+  disabled,
+  onChange
+}: {
+  label: string;
+  value: T;
+  options: { value: T; title: string; hint: string }[];
+  disabled?: boolean;
+  onChange: (next: T) => void;
+}) {
+  return (
+    <div className="grid gap-1.5 rounded-[16px] bg-[var(--surface-raised)] p-3">
+      <span className="text-[0.95rem] font-bold">{label}</span>
+      <div role="radiogroup" aria-label={label} className="grid gap-1">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={value === option.value}
+            disabled={disabled}
+            onClick={() => onChange(option.value)}
+            className="flex items-center gap-3 rounded-[13px] px-2.5 py-2 text-left transition disabled:opacity-50"
+            style={value === option.value ? { background: "rgba(255,255,255,.06)" } : undefined}
+          >
+            <span className="min-w-0 flex-1">
+              <span className="block text-[0.9rem] font-semibold">{option.title}</span>
+              <span className="block text-[0.78rem] leading-4 text-[var(--muted)]">
+                {option.hint}
+              </span>
+            </span>
+            <span
+              aria-hidden
+              className="grid size-[18px] flex-none place-items-center rounded-full border"
+              style={{
+                borderColor:
+                  value === option.value ? "var(--primary-strong)" : "var(--line-strong)",
+                background: value === option.value ? "var(--primary-strong)" : "transparent"
+              }}
+            >
+              {value === option.value ? (
+                <span className="size-1.5 rounded-full bg-white" />
+              ) : null}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function PrivacySettings() {
   const { settings, loading, update } = useSettings();
   return (
@@ -104,10 +162,29 @@ export function PrivacySettings() {
           />
           <Toggle
             label="Закрытый аккаунт"
-            hint="Профиль остаётся открытым, а посты, истории и ответы видят только подписчики."
+            hint="Профиль остаётся открытым, а посты, истории и ответы видят только подписчики. Заявки на подписку приходят в уведомления."
             checked={settings.private_account}
             disabled={update.isPending}
             onChange={(next) => update.mutate({ private_account: next })}
+          />
+          <Choice<MessagePrivacy>
+            label="Кто может мне писать"
+            value={settings.who_can_message}
+            disabled={update.isPending}
+            onChange={(next) => update.mutate({ who_can_message: next })}
+            options={[
+              { value: "everyone", title: "Все", hint: "Любой может начать диалог." },
+              {
+                value: "following",
+                title: "Только те, кого я читаю",
+                hint: "Остальным при попытке написать скажут об этом."
+              },
+              {
+                value: "nobody",
+                title: "Никто",
+                hint: "Новые диалоги не открываются; уже начатые продолжают работать."
+              }
+            ]}
           />
           <p className="m-0 flex items-start gap-2 rounded-[14px] bg-white/[0.04] p-3 text-[0.8rem] leading-5 text-[var(--muted)]">
             <Lock size={14} className="mt-0.5 flex-none" />

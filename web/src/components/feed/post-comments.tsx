@@ -11,6 +11,7 @@ import { nameColor } from "@/lib/profile-color";
 import { plural, relativeTime } from "@/lib/utils";
 import { GiftDetailTrigger, type RichGift } from "../gifts/gift-gallery";
 import { GiftImage, giftArtProps } from "../gifts/gift-image";
+import { AdminMark } from "../admin-mark";
 import { PremiumMark } from "../premium-mark";
 import { useToast } from "../ui/toast";
 import { UserAvatar } from "../user-avatar";
@@ -286,6 +287,7 @@ function CommentRow({
       </Link>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1 leading-5">
+          {comment.author.is_admin ? <AdminMark size={13} /> : null}
           <Link
             href={`/u/${comment.author.username}`}
             className="inline-flex min-w-0 items-center text-sm font-bold hover:underline"

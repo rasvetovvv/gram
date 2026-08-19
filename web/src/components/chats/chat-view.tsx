@@ -23,6 +23,7 @@ import { nameColor } from "@/lib/profile-color";
 import { presenceShort } from "@/lib/presence";
 import { UserAvatar } from "../user-avatar";
 import { PremiumMark } from "../premium-mark";
+import { AdminMark } from "../admin-mark";
 import { VerifiedMark } from "../verified-mark";
 import { useToast } from "../ui/toast";
 import { ChatAppearanceSheet, ChatWallpaperSheet } from "./chat-appearance-sheet";
@@ -431,6 +432,7 @@ export function ChatView() {
                       </span>
                       {/* A group's title carries no member's marks. */}
                       {!activeChat.is_group && activeChat.participant?.verified ? <VerifiedMark size={16} /> : null}
+                      {!activeChat.is_group && activeChat.participant?.is_admin ? <AdminMark size={15} /> : null}
                       {!activeChat.is_group && activeChat.participant?.is_premium ? (
                         <PremiumMark size={15} profileColor={activeChat.participant.profile_color} />
                       ) : null}

@@ -53,6 +53,16 @@ export function GiftLottie({
   // Gating the first load on the observer meant a player mounted inside a sheet that animates
   // in could be reported offscreen once and never asked again, leaving an empty box.
   const [visible, setVisible] = useState(true);
+  /*
+   * The callback is held in a ref rather than watched as a dependency. A parent that passes an
+   * inline arrow gives a new identity on every render, and with `onReady` in the effect's
+   * dependency list that tore the player down and rebuilt it each time — which is what made a
+   * hovered gift flicker.
+   */
+  const ready = useRef(onReady);
+  useEffect(() => {
+    ready.current = onReady;
+  }, [onReady]);
 
   useEffect(() => {
     const node = host.current;
@@ -89,7 +99,7 @@ export function GiftLottie({
           rendererSettings: { progressiveLoad: true, preserveAspectRatio: "xMidYMid meet" }
         });
         if (reduceMotion) animation.goToAndStop(0, true);
-        onReady?.();
+        ready.current?.();
       } catch {
         // A sticker that will not load leaves the coloured backdrop behind it visible, which
         // is a better failure than an empty box or a thrown render.
@@ -100,7 +110,7 @@ export function GiftLottie({
       cancelled = true;
       animation?.destroy();
     };
-  }, [src, visible, loop, reduceMotion, onReady]);
+  }, [src, visible, loop, reduceMotion]);
 
   return (
     <span

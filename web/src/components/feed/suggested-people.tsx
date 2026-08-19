@@ -9,6 +9,7 @@ import type { User } from "@/lib/types";
 import { nameStyle } from "@/lib/profile-color";
 import { compactNumber } from "@/lib/utils";
 import { UserAvatar } from "../user-avatar";
+import { AdminMark } from "../admin-mark";
 import { VerifiedMark } from "../verified-mark";
 
 type Suggested = User & { is_following?: boolean };
@@ -79,6 +80,7 @@ export function SuggestedPeople() {
                 {user.display_name}
               </Link>
               {user.verified ? <VerifiedMark size={14} /> : null}
+              {user.is_admin ? <AdminMark size={13} /> : null}
             </div>
             <p className="mb-0 truncate text-[13px] leading-tight text-[var(--faint)]">@{user.username}</p>
             <p className="mb-0 mt-1 truncate text-[12px] leading-tight tracking-[-0.01em] text-[var(--faint)]">

@@ -132,6 +132,9 @@ class UserProfile(UserCompact):
     stars_balance: int | None = None
     featured_gift: GiftCompact | None = None
     name_gift: GiftCompact | None = None
+    # The gifts scattered over the cover, in slot order. The first one is free to choose; the
+    # rest are a premium arrangement, which is why the count matters to the client.
+    cover_gifts: list[GiftCompact] = Field(default_factory=list)
     interests: list[str] = Field(default_factory=list)
     onboarding_complete: bool = True
     website_url: str | None = None
@@ -1280,7 +1283,7 @@ class GiftTransferCreate(BaseModel):
 
 
 class GiftShowcaseRequest(BaseModel):
-    slot: Literal["featured", "name"]
+    slot: Literal["featured", "cover2", "cover3", "cover4", "name"]
 
 
 class ProfileShowcaseUpdate(BaseModel):

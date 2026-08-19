@@ -10,12 +10,14 @@ import {
   ArrowLeft,
   CalendarDays,
   Check,
+  Clock,
   Copy,
   ChevronLeft,
   Edit3,
   ExternalLink,
   Flag,
   Ban,
+  EyeOff,
   Flame,
   Gift as GiftIcon,
   Code2,
@@ -56,11 +58,14 @@ import { GiftPurchaseSheet } from "../gifts/gift-purchase-sheet";
 import { PostCard } from "../feed/post-card";
 import { UserAvatar } from "../user-avatar";
 import { PremiumMark } from "../premium-mark";
+import { AdminMark, AdminMarkExplained } from "../admin-mark";
 import { VerifiedMark, VerifiedMarkExplained } from "../verified-mark";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { useToast } from "../ui/toast";
 import { NoteDialog } from "./note-dialog";
 import { BadgeStrip } from "./badge-detail";
+import { CoverGiftsSheet } from "./cover-gifts-sheet";
+import { GiftContextMenu } from "./gift-context-menu";
 import { ProfileEditSheet } from "./profile-edit-sheet";
 import { ConnectionsDialog, ProfileQrDialog, ProfileStories } from "./profile-overlays";
 import { RelatedUsernames } from "./username-ownership";
@@ -105,6 +110,7 @@ export function ProfileView({ username }: { username: string }) {
   const [copied, setCopied] = useState(false);
   const { notify } = useToast();
   const openPremium = useUiStore((state) => state.openPremium);
+  const [coverSheet, setCoverSheet] = useState(false);
   // On phones the reference hides the compact bar until the cover scrolls away and puts
   // navigation on top of the cover instead.
   const [scrolled, setScrolled] = useState(false);
@@ -160,12 +166,11 @@ export function ProfileView({ username }: { username: string }) {
     );
   }, [gifts]);
   const identityGift = nameGift ?? featuredGift ?? rankedGifts[0];
-  const coverGifts = [
-    featuredGift,
-    ...rankedGifts.filter((gift) => gift.id !== featuredGift?.id && gift.id !== nameGift?.id)
-  ]
-    .filter((gift): gift is RichGift => Boolean(gift))
-    .slice(0, 3);
+  /*
+   * Only what the owner put there. It used to be the pinned gift plus the two most valuable
+   * ones, which meant a visitor saw a ranking the owner never chose and could not remove.
+   */
+  const coverGifts = ((profile?.cover_gifts ?? []) as RichGift[]).slice(0, 4);
   const tabGifts = useMemo(() => {
     const seen = new Set<string>();
     return rankedGifts.filter((gift) => (seen.has(gift.slug) ? false : seen.add(gift.slug))).slice(0, 3);
@@ -176,14 +181,28 @@ export function ProfileView({ username }: { username: string }) {
   const tabAccent = themeGradient(profile?.profile_color);
 
   const follow = useMutation({
-    mutationFn: () => profile?.is_following ? api.unfollow(canonicalUsername) : api.follow(canonicalUsername),
+    // A closed account turns a follow into a request, so the same button covers three states:
+    // ask, wait (press again to withdraw), and unfollow.
+    mutationFn: () =>
+      profile?.is_following || profile?.follow_requested
+        ? api.unfollow(canonicalUsername)
+        : api.follow(canonicalUsername),
     onSuccess: async (result) => {
+      const withdrew = Boolean(profile?.follow_requested);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["profile", username] }),
         queryClient.invalidateQueries({ queryKey: ["me"] }),
         queryClient.invalidateQueries({ queryKey: ["profile-connections", canonicalUsername] })
       ]);
-      setFeedback(result.is_following ? `Вы подписались на @${canonicalUsername}` : "Подписка отменена");
+      setFeedback(
+        result.requested
+          ? `Заявка отправлена @${canonicalUsername} — ждём ответа`
+          : result.is_following
+            ? `Вы подписались на @${canonicalUsername}`
+            : withdrew
+              ? "Заявка отменена"
+              : "Подписка отменена"
+      );
     }
   });
   const subscription = useMutation({
@@ -285,7 +304,7 @@ export function ProfileView({ username }: { username: string }) {
           {/* Both marks are tappable here too: this header replaces the identity block on
               scroll, and a mark that explains itself in one place but not the other reads
               as broken rather than as a different affordance. */}
-          <div className="flex items-center gap-1.5"><strong className="truncate text-[15px] font-black leading-tight" style={nameStyle(profile.profile_color)}>{profile.display_name}</strong>{profile.verified ? <VerifiedMarkExplained name={profile.display_name} label="Личность подтверждена GRAM" /> : null}{profile.is_premium ? <button type="button" onClick={() => openPremium()} className="inline-grid place-items-center border-0 bg-transparent p-0 transition-transform hover:scale-110 active:scale-95" aria-label="Открыть GRAM Premium"><PremiumMark size={14} profileColor={profile.profile_color} /></button> : null}</div>
+          <div className="flex items-center gap-1.5"><strong className="truncate text-[15px] font-black leading-tight" style={nameStyle(profile.profile_color)}>{profile.display_name}</strong>{profile.is_admin ? <AdminMark size={14} /> : null}{profile.verified ? <VerifiedMarkExplained name={profile.display_name} label="Личность подтверждена GRAM" /> : null}{profile.is_premium ? <button type="button" onClick={() => openPremium()} className="inline-grid place-items-center border-0 bg-transparent p-0 transition-transform hover:scale-110 active:scale-95" aria-label="Открыть GRAM Premium"><PremiumMark size={14} profileColor={profile.profile_color} /></button> : null}</div>
           <span className="block truncate text-xs text-[var(--dim)]">{compactNumber(profile.posts_count ?? posts.length)} постов</span>
         </div>
         <button onClick={() => setQrOpen(true)} className="icon-button" aria-label="QR-код профиля"><QrCode size={18} /></button>
@@ -302,7 +321,11 @@ export function ProfileView({ username }: { username: string }) {
           <button type="button" onClick={() => setQrOpen(true)} className="pointer-events-auto grid size-9 place-items-center rounded-full border-0 bg-black/45 text-white backdrop-blur-sm transition-colors hover:bg-black/65" aria-label="QR-код профиля"><QrCode size={18} /></button>
         </div>
         {profile.note || isMe ? <div className="absolute bottom-3 left-[122px] z-10 max-w-[42%] sm:left-[136px] sm:max-w-[50%]"><NoteDialog username={profile.username} note={profile.note} canEdit={Boolean(profile.can_edit_note ?? isMe)} variant="bubble" /></div> : null}
-        <CoverGifts gifts={coverGifts} me={meQuery.data?.username} />
+        <CoverGifts
+          gifts={coverGifts}
+          me={meQuery.data?.username}
+          onArrange={isMe ? () => setCoverSheet(true) : undefined}
+        />
       </section>
 
       <section className="relative px-4 pb-5 sm:px-6">
@@ -325,7 +348,7 @@ export function ProfileView({ username }: { username: string }) {
                 <button className={OUTLINE_ACTION} onClick={() => directChat.mutate()} disabled={directChat.isPending} aria-label="Написать"><MessageCircle size={16} /></button>
                 <button className={OUTLINE_ACTION} onClick={() => setGiftSheetOpen(true)} aria-label="Отправить подарок"><GiftIcon size={16} /></button>
                 <ProfileMoreMenu profile={profile} isMe={isMe} shareProfile={shareProfile} />
-                <button className={profile.is_following ? "quiet-button" : "profile-primary-action"} onClick={() => follow.mutate()} disabled={follow.isPending}>{profile.is_following ? <><Check size={16} />Вы подписаны</> : "Читать"}</button>
+                <button className={profile.is_following || profile.follow_requested ? "quiet-button" : "profile-primary-action"} onClick={() => follow.mutate()} disabled={follow.isPending} title={profile.follow_requested ? "Нажмите, чтобы отменить заявку" : undefined}>{profile.is_following ? <><Check size={16} />Вы подписаны</> : profile.follow_requested ? <><Clock size={15} />Заявка отправлена</> : "Читать"}</button>
               </>
             )}
           </div>
@@ -333,6 +356,7 @@ export function ProfileView({ username }: { username: string }) {
 
         <div className="mt-3.5">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            {profile.is_admin ? <AdminMarkExplained name={profile.display_name} size={20} /> : null}
             <h1 className="m-0 inline-block min-w-0 break-words text-xl font-extrabold leading-tight" style={nameStyle(profile.profile_color)}>{profile.display_name}</h1>
             {profile.verified ? <VerifiedMarkExplained name={profile.display_name} label="Личность подтверждена GRAM" size={20} /> : null}
             {profile.is_premium ? <button type="button" onClick={() => openPremium()} className="inline-grid place-items-center border-0 bg-transparent p-0 transition-transform hover:scale-110 active:scale-95" aria-label="Открыть GRAM Premium"><PremiumMark size={18} profileColor={profile.profile_color} /></button> : null}
@@ -420,11 +444,12 @@ export function ProfileView({ username }: { username: string }) {
       {contentOpen ? (
       <Tabs.Root value={tab} onValueChange={setTab}>
         <Tabs.List className="sticky top-[56px] z-30 flex overflow-x-auto border-b border-[var(--line-structural)] bg-[var(--header)] backdrop-blur-xl [scrollbar-width:none]" aria-label="Разделы профиля">
-          <ProfileTab value="posts" label="Posts" accent={tabAccent} />
-          <ProfileTab value="stories" label={stories.length ? `Stories • ${stories.length}` : "Stories"} accent={tabAccent} />
-          <ProfileTab value="replies" label="Replies" accent={tabAccent} />
-          <ProfileTab value="media" label="Media" accent={tabAccent} />
-          <ProfileTab value="gifts" label="Gifts" accent={tabAccent} emblems={tabGifts} me={meQuery.data?.username} />
+          {/* Russian, like every other tab strip in the product and in the reference. */}
+          <ProfileTab value="posts" label="Посты" accent={tabAccent} />
+          <ProfileTab value="stories" label={stories.length ? `Истории • ${stories.length}` : "Истории"} accent={tabAccent} />
+          <ProfileTab value="replies" label="Ответы" accent={tabAccent} />
+          <ProfileTab value="media" label="Медиа" accent={tabAccent} />
+          <ProfileTab value="gifts" label="Подарки" accent={tabAccent} emblems={tabGifts} me={meQuery.data?.username} />
         </Tabs.List>
 
         <Tabs.Content value="posts" className="space-y-3 px-3 py-4 outline-none sm:px-5">
@@ -445,7 +470,7 @@ export function ProfileView({ username }: { username: string }) {
         </Tabs.Content>
 
         <Tabs.Content value="gifts" className="outline-none">
-          {giftsQuery.isLoading ? <div className="grid grid-cols-3 gap-2 p-3 sm:grid-cols-4 sm:p-5">{[0,1,2,3].map((item) => <div key={item} className="skeleton aspect-square rounded-[16px]" />)}</div> : giftsQuery.isError ? <SectionError text={giftsQuery.error.message} retry={() => giftsQuery.refetch()} /> : <ProfileCollection gifts={gifts} meUsername={meQuery.data?.username} />}
+          {giftsQuery.isLoading ? <div className="grid grid-cols-3 gap-2 p-3 sm:grid-cols-4 sm:p-5">{[0,1,2,3].map((item) => <div key={item} className="skeleton aspect-square rounded-[16px]" />)}</div> : giftsQuery.isError ? <SectionError text={giftsQuery.error.message} retry={() => giftsQuery.refetch()} /> : <ProfileCollection gifts={gifts} meUsername={meQuery.data?.username} isOwner={isMe} />}
         </Tabs.Content>
 
       </Tabs.Root>
@@ -456,6 +481,14 @@ export function ProfileView({ username }: { username: string }) {
       <StoryComposerDialog open={storyComposerOpen} onOpenChange={setStoryComposerOpen} posts={mediaPosts} username={profile.username} />
       <GiftPurchaseSheet recipient={profile.username} open={giftSheetOpen} onOpenChange={setGiftSheetOpen} />
       <ProfileEditSheet open={editOpen} onOpenChange={setEditOpen} />
+      {isMe ? (
+        <CoverGiftsSheet
+          profile={profile}
+          gifts={gifts}
+          open={coverSheet}
+          onOpenChange={setCoverSheet}
+        />
+      ) : null}
       <ConfirmDialog
         open={cancelSubOpen}
         onOpenChange={setCancelSubOpen}
@@ -679,36 +712,69 @@ function FeaturedCommunityCard({ community, latestPost }: { community: Community
  * instead of leaving a bare number next to the name.
  */
 /**
- * Showcased collectibles over the cover photo.
+ * The gifts the owner arranged over their cover.
  *
- * Drawn bare — sticker only, no coloured tile — because the cover is already an image and a
- * second backdrop would read as a sticker pack pasted on top. Sizes step down so the pinned
- * gift leads and the rest support it, which is the arrangement the reference uses.
+ * Scattered rather than stacked in a corner, and kept to the right half so the avatar and the
+ * name keep their room. Each one carries a glow in its own accent colour: the cover is a
+ * photograph, and a bare sticker on top of one needs something to lift it off the image.
+ *
+ * Smaller than they were, too — four gifts in a row at 66px read as a sticker pack pasted on.
  */
-const COVER_SIZES = [66, 48, 40];
+const COVER_SPOTS = [
+  { size: 46, style: { right: "4%", bottom: "13%" } },
+  { size: 38, style: { right: "22%", top: "14%" } },
+  { size: 32, style: { right: "38%", bottom: "24%" } },
+  { size: 28, style: { right: "53%", top: "28%" } }
+] as const;
 
-function CoverGifts({ gifts, me }: { gifts: RichGift[]; me?: string }) {
-  if (!gifts.length) return null;
+function CoverGifts({
+  gifts,
+  me,
+  onArrange
+}: {
+  gifts: RichGift[];
+  me?: string;
+  /** Present only for the owner: opens the sheet that decides what sits here. */
+  onArrange?: () => void;
+}) {
+  if (!gifts.length && !onArrange) return null;
   return (
-    <div className="pointer-events-none absolute bottom-2 right-2 z-20 flex items-end gap-1 sm:bottom-3 sm:right-4 sm:gap-2">
-      {gifts.map((gift, index) => (
-        <GiftDetailTrigger
-          key={gift.id}
-          gift={gift}
-          me={me}
-          className="pointer-events-auto border-0 bg-transparent p-0 drop-shadow-[0_10px_18px_rgba(0,0,0,.55)] transition-transform duration-200 hover:scale-[1.08] active:scale-95"
-          label={`Показать подарок ${gift.name} #${gift.serial_number}`}
+    <>
+      {gifts.map((gift, index) => {
+        const spot = COVER_SPOTS[index] ?? COVER_SPOTS[COVER_SPOTS.length - 1];
+        return (
+          <GiftDetailTrigger
+            key={gift.id}
+            gift={gift}
+            me={me}
+            className="absolute z-20 border-0 bg-transparent p-0 transition-transform duration-200 hover:scale-[1.12] active:scale-95"
+            style={{
+              ...spot.style,
+              filter: `drop-shadow(0 0 12px ${gift.accent ?? "#8b5cf6"}88) drop-shadow(0 8px 14px rgba(0,0,0,.5))`
+            }}
+            label={`Показать подарок ${gift.name} #${gift.serial_number}`}
+          >
+            <GiftImage
+              {...giftArtProps(gift)}
+              size={spot.size}
+              bare
+              rounded="rounded-none"
+              className={index === 0 ? "gift-anim gift-bob" : undefined}
+            />
+          </GiftDetailTrigger>
+        );
+      })}
+      {onArrange ? (
+        <button
+          type="button"
+          onClick={onArrange}
+          aria-label="Настроить подарки в шапке"
+          className="absolute right-2 top-2 z-20 grid size-9 place-items-center rounded-full bg-black/45 text-white backdrop-blur transition hover:bg-black/65 active:scale-95"
         >
-          <GiftImage
-            {...giftArtProps(gift)}
-            size={COVER_SIZES[index] ?? 40}
-            bare
-            rounded="rounded-none"
-            className={index === 0 ? "gift-anim gift-bob" : undefined}
-          />
-        </GiftDetailTrigger>
-      ))}
-    </div>
+          <Sparkles size={16} />
+        </button>
+      ) : null}
+    </>
   );
 }
 
@@ -808,10 +874,10 @@ function StoryComposerDialog({ open, onOpenChange, posts, username }: { open: bo
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-[80] bg-black/75 backdrop-blur-sm" /><Dialog.Content className="fixed inset-x-2 bottom-2 z-[90] mx-auto max-h-[86dvh] max-w-[640px] overflow-y-auto rounded-[28px] bg-[#121216] p-4 shadow-[0_28px_80px_rgba(0,0,0,.62)] sm:bottom-auto sm:inset-x-auto sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2"><div className="flex items-center gap-3"><button className="icon-button" onClick={() => onOpenChange(false)} aria-label="Закрыть"><ChevronLeft size={21} /></button><div className="min-w-0 flex-1"><Dialog.Title className="text-lg font-bold">Новая история</Dialog.Title><Dialog.Description className="mt-1 text-xs text-[var(--muted)]">Выберите изображение из своей публикации</Dialog.Description></div><Dialog.Close className="icon-button" aria-label="Закрыть"><X size={20} /></Dialog.Close></div>{posts.length ? <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{posts.map((post) => <button key={post.id} className="group relative aspect-[3/4] overflow-hidden rounded-[18px] border-0 bg-[#17171d] p-0 text-left" onClick={() => createStory.mutate(post)} disabled={createStory.isPending}><Image src={post.media_url!} alt={post.content.slice(0,80)} fill sizes="200px" className="object-cover transition-transform group-hover:scale-[1.03]" /><span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/70 to-transparent p-3 pt-10 text-xs font-bold text-white">{post.content.slice(0,55)}</span></button>)}</div> : <div className="empty-state"><ImageIcon className="mx-auto mb-3" /><p className="font-bold text-white">Нет публикаций с медиа</p><p className="text-sm">Сначала добавьте изображение в новую запись.</p></div>}<p className="mb-0 mt-3 min-h-5 text-sm text-[var(--danger)]" aria-live="polite">{createStory.error?.message}</p></Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
-function ProfileCollection({ gifts, meUsername }: { gifts: RichGift[]; meUsername?: string }) {
+function ProfileCollection({ gifts, meUsername, isOwner }: { gifts: RichGift[]; meUsername?: string; isOwner?: boolean }) {
   const openGifts = useUiStore((state) => state.openGifts);
   if (!gifts.length) return <EmptySection icon={GiftIcon} title="Коллекция пока пуста" text="Подарки пользователя появятся здесь." action={<button type="button" className="quiet-button mt-3" onClick={() => openGifts()}>Открыть подарки</button>} />;
-  return <section className="px-3 py-4 sm:px-5"><div className="mb-4 flex items-center justify-between"><div><h2 className="m-0 text-lg font-bold">Подарки</h2><p className="mb-0 mt-1 text-xs text-[var(--muted)]">Коллекционные предметы с историей владения</p></div><button type="button" className="border-0 bg-transparent p-0 text-sm font-semibold text-[var(--link)]" onClick={() => openGifts()}>Все</button></div><div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-3">{gifts.map((gift, index) => <CollectionItem key={gift.id} gift={gift} index={index} meUsername={meUsername} />)}</div></section>;
+  return <section className="px-3 py-4 sm:px-5"><div className="mb-4 flex items-center justify-between"><div><h2 className="m-0 text-lg font-bold">Подарки</h2><p className="mb-0 mt-1 text-xs text-[var(--muted)]">Коллекционные предметы с историей владения</p></div><button type="button" className="border-0 bg-transparent p-0 text-sm font-semibold text-[var(--link)]" onClick={() => openGifts()}>Все</button></div><div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-3">{gifts.map((gift, index) => <CollectionItem key={gift.id} gift={gift} index={index} meUsername={meUsername} owned={isOwner} />)}</div></section>;
 }
 
 /**
@@ -823,27 +889,56 @@ function ProfileCollection({ gifts, meUsername }: { gifts: RichGift[]; meUsernam
 function CollectionItem({
   gift,
   index,
-  meUsername
+  meUsername,
+  owned
 }: {
   gift: RichGift;
   index: number;
   meUsername?: string;
+  /** The owner gets the right-click menu and sees which of their items are hidden. */
+  owned?: boolean;
 }) {
   return (
-    // The card is a button, which would shrink to its content once it stops being the grid's
-    // own child; `[&>button]:w-full` keeps the tile the size of its cell.
-    <div className="relative block w-full min-w-0 [&>button]:w-full">
-      <GiftCard gift={gift} index={index} me={meUsername} />
-      {gift.is_pinned ? (
-        <span
-          className="pointer-events-none absolute left-1.5 top-1.5 grid size-6 place-items-center rounded-full bg-black/65 text-white backdrop-blur-sm"
-          title="Закреплён в коллекции"
-          aria-label="Закреплён в коллекции"
-        >
-          <Pin size={13} />
-        </span>
-      ) : null}
-    </div>
+    <GiftContextMenu gift={gift} owned={Boolean(owned)} username={meUsername}>
+      {/*
+        The card is a button, which would shrink to its content once it stops being the grid's
+        own child; `[&>button]:w-full` keeps the tile the size of its cell.
+      */}
+      <div className="relative block w-full min-w-0 [&>button]:w-full">
+        <GiftCard gift={gift} index={index} me={meUsername} />
+        {gift.is_pinned ? (
+          <span
+            className="pointer-events-none absolute left-1.5 top-1.5 grid size-6 place-items-center rounded-full bg-black/65 text-white backdrop-blur-sm"
+            title="Закреплён в коллекции"
+            aria-label="Закреплён в коллекции"
+          >
+            <Pin size={13} />
+          </span>
+        ) : null}
+        {/*
+          A hidden item is still the owner's, so it stays in their own grid — marked, because
+          otherwise the only way to tell was to open each one.
+        */}
+        {gift.hidden_in_profile ? (
+          <span
+            className="pointer-events-none absolute inset-x-1.5 bottom-1.5 flex items-center justify-center gap-1 rounded-full bg-black/70 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm"
+            title="Скрыт из профиля — виден только вам"
+          >
+            <EyeOff size={11} />
+            Скрыт
+          </span>
+        ) : null}
+        {gift.offers_disabled ? (
+          <span
+            className="pointer-events-none absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-full bg-black/65 text-white backdrop-blur-sm"
+            title="Цену за этот подарок не предлагают"
+            aria-label="Предложения цены отключены"
+          >
+            <Ban size={12} />
+          </span>
+        ) : null}
+      </div>
+    </GiftContextMenu>
   );
 }
 

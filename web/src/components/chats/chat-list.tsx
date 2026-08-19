@@ -10,6 +10,7 @@ import type { Chat, ChatFolder } from "@/lib/types";
 import { nameColor } from "@/lib/profile-color";
 import { UserAvatar } from "../user-avatar";
 import { PremiumMark } from "../premium-mark";
+import { AdminMark } from "../admin-mark";
 import { VerifiedMark } from "../verified-mark";
 import { useToast } from "../ui/toast";
 import { ChatListMenu, ChatRowMenu } from "./chat-list-menus";
@@ -277,6 +278,7 @@ export function ChatList({
                       {/* A group's title is its own; the marks of whoever happens to be the
                           first other member must not be pinned onto it. */}
                       {!chat.is_group && chat.participant?.verified ? <VerifiedMark size={15} /> : null}
+                      {!chat.is_group && chat.participant?.is_admin ? <AdminMark size={14} /> : null}
                       {!chat.is_group && chat.participant?.is_premium ? (
                         <PremiumMark size={14} profileColor={chat.participant.profile_color} />
                       ) : null}
