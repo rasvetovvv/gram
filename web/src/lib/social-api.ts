@@ -131,6 +131,12 @@ export const socialApi = {
       method: "PATCH",
       body: JSON.stringify(patch)
     }),
+  /** Staff granting or withdrawing a channel's tick; refused for everybody else. */
+  setCommunityVerified: (slug: string, verified: boolean) =>
+    request<Community>(`/api/communities/${encodeURIComponent(slug)}/verification`, {
+      method: "PATCH",
+      body: JSON.stringify({ verified })
+    }),
   /** A story published into a channel the caller owns. */
   createCommunityStory: (slug: string, title: string, mediaUrl: string) =>
     request<CommunityStory>("/api/users/me/stories", {

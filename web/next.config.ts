@@ -2,14 +2,11 @@ import type { NextConfig } from "next";
 
 /**
  * Uploads are stored by the API and served from its own `/media` mount, so their urls come back
- * root-relative (`/media/avatars/…`). The browser would resolve those against this app's origin
- * and get a 404 — which is why an uploaded avatar or cover appeared blank while the seeded ones
- * (absolute urls) worked. Proxying the path keeps the url origin-relative and lets the two run
- * on different ports, in docker and locally alike.
+ * root-relative (`/media/avatars/…`). They are proxied by the route handler at
+ * `src/app/media/[...path]/route.ts` — not by a `rewrites()` entry here, because a rewrite
+ * destination is resolved during `next build` and frozen into the standalone output, which pinned
+ * every proxied upload to whatever origin the *build* happened to know.
  */
-const apiOrigin =
-  process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
 const nextConfig: NextConfig = {
   output: "standalone",
   images: {
@@ -21,9 +18,6 @@ const nextConfig: NextConfig = {
       { protocol: "http", hostname: "localhost", port: "8000" },
       { protocol: "http", hostname: "api", port: "8000" }
     ]
-  },
-  async rewrites() {
-    return [{ source: "/media/:path*", destination: `${apiOrigin}/media/:path*` }];
   }
 };
 

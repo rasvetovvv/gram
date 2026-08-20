@@ -2,15 +2,17 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Tabs from "@radix-ui/react-tabs";
-import { ArrowLeft, CalendarDays, Check, Copy, Crown, FileText, Flag, Gift, Hash, ImageIcon, Link2, MapPin, Share2, Sparkles, Star, Users } from "lucide-react";
+import { ArrowLeft, BadgeCheck, CalendarDays, Check, Copy, Crown, FileText, Flag, Gift, Hash, ImageIcon, Link2, MapPin, Share2, Sparkles, Star, Users } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
+import { api } from "@/lib/api";
 import { socialApi } from "@/lib/social-api";
 import type { CommunityPerson } from "@/lib/social-types";
 import { VerifiedMark } from "../verified-mark";
 import { PostCard } from "../feed/post-card";
 import { PostComposer } from "../feed/post-composer";
 import { CommunityReportSheet } from "../chats/report-sheets";
+import { useToast } from "../ui/toast";
 import { ChannelManageSheet } from "./channel-manage-sheet";
 import { CommunityAvatar, communityTitle } from "./communities-directory";
 import styles from "./communities.module.css";
@@ -35,6 +37,7 @@ function PersonAvatar({ person, size = 42 }: { person: CommunityPerson; size?: n
 
 export function CommunityProfileView({ slug }: { slug: string }) {
   const queryClient = useQueryClient();
+  const { notify } = useToast();
   const [managing, setManaging] = useState(false);
   const [reporting, setReporting] = useState(false);
   const [shareNotice, setShareNotice] = useState<string | null>(null);
@@ -53,6 +56,20 @@ export function CommunityProfileView({ slug }: { slug: string }) {
       queryClient.setQueryData(["community", slug], nextCommunity);
       await queryClient.invalidateQueries({ queryKey: ["communities"] });
     }
+  });
+
+  // Staff can tick a channel. The endpoint refuses everybody else, so the control only appears
+  // for the people it would actually work for.
+  const me = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
+  const verification = useMutation({
+    mutationFn: (verified: boolean) => socialApi.setCommunityVerified(slug, verified),
+    onSuccess: async (nextCommunity) => {
+      queryClient.setQueryData(["community", slug], nextCommunity);
+      await queryClient.invalidateQueries({ queryKey: ["communities"] });
+      notify(nextCommunity.is_verified ? "Галочка выдана" : "Галочка снята", { variant: "success" });
+    },
+    onError: (error: unknown) =>
+      notify("Не удалось изменить галочку", { variant: "error", detail: messageFrom(error) })
   });
 
 
@@ -158,6 +175,20 @@ export function CommunityProfileView({ slug }: { slug: string }) {
                 <Flag size={16} />
               </button>
             )}
+            {/* Staff only: the tick is GRAM's to give, so it is not in the owner's «Управление». */}
+            {me.data?.is_admin ? (
+              <button
+                type="button"
+                className={styles.reportButton}
+                aria-label={item.is_verified ? "Снять галочку канала" : "Выдать галочку каналу"}
+                title={item.is_verified ? "Снять галочку канала" : "Выдать галочку каналу"}
+                aria-pressed={item.is_verified}
+                disabled={verification.isPending}
+                onClick={() => verification.mutate(!item.is_verified)}
+              >
+                <BadgeCheck size={16} className={item.is_verified ? "text-[var(--primary-strong)]" : undefined} />
+              </button>
+            ) : null}
           </div>
         </div>
 
