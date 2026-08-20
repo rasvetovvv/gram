@@ -51,6 +51,7 @@ from app.config import (
     COOKIE_SECURE,
     CORS_ORIGINS,
     ENABLE_INTERNAL_LEDGER_TOPUPS,
+    MAX_FILE_BYTES,
     MAX_PARKED_ACCOUNTS,
     MAX_UPLOAD_BYTES,
     MAX_VIDEO_BYTES,
@@ -94,6 +95,7 @@ from app.models import (
     PostBookmark,
     PostComment,
     PostCommentLike,
+    PostDraft,
     PostLike,
     PostMute,
     PostPollVote,
@@ -179,6 +181,8 @@ from app.schemas import (
     PostCommentEdit,
     PostCommentOut,
     PostCreate,
+    PostDraftBody,
+    PostDraftOut,
     PostEdit,
     PostMusic,
     PostPollOut,
@@ -210,6 +214,7 @@ from app.schemas import (
     SubscriptionOut,
     ToggleState,
     TrendOut,
+    UploadedFile,
     UploadedMedia,
     UserCompact,
     UsernameAssetOut,
@@ -1308,6 +1313,9 @@ async def render_post(  # noqa: PLR0913
         media_url=post.image_url,
         image_urls=list(post.image_urls or ([post.image_url] if post.image_url else [])),
         video_url=post.video_url,
+        file_url=post.file_url,
+        file_name=post.file_name,
+        file_size=post.file_size,
         poll=poll,
         sensitive=post.sensitive,
         link_url=post.link_url,
@@ -2266,6 +2274,79 @@ VIDEO_SIGNATURES: tuple[tuple[bytes, int, str], ...] = (
 )
 
 
+# What a post may carry as a document, identified by its own first bytes. Everything else is
+# refused: this is a place to put a rider, a spec or a dataset, not a place to host programs.
+FILE_SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
+    (b"%PDF-", "pdf", "PDF"),
+    (b"PK\x03\x04", "zip", "ZIP"),
+)
+# Text is recognised by decoding rather than by a signature, because it has none.
+TEXT_EXTENSIONS = {"txt": "TXT", "md": "MD", "csv": "CSV", "json": "JSON", "log": "LOG"}
+SAFE_NAME = re.compile(r"[^\w \-.()\[\]]+", re.UNICODE)
+
+
+def _basename(name: str) -> str:
+    """
+    The last segment of whatever the browser sent as a filename.
+
+    Written out rather than handed to `pathlib`, because `Path` in this module is FastAPI's
+    path-parameter marker — and a directory separator from a client has no business reaching a
+    path API in the first place.
+    """
+    return name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+
+
+def _document_kind(payload: bytes, original_name: str) -> tuple[str, str] | None:
+    """The extension to store under and the label to show, or None if this is not allowed."""
+    for magic, extension, label in FILE_SIGNATURES:
+        if payload.startswith(magic):
+            return extension, label
+    suffix = _basename(original_name).rpartition(".")[2].lower()
+    if suffix in TEXT_EXTENSIONS:
+        try:
+            payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        return suffix, TEXT_EXTENSIONS[suffix]
+    return None
+
+
+async def _store_document(
+    file: UploadFile, folder: str, owner_id: uuid.UUID
+) -> tuple[str, str, int, str]:
+    """
+    Keep an uploaded document and return where it went, what to call it, its size and its kind.
+
+    The stored name is ours — the author's is kept only as a label — so nothing about the upload
+    can decide a path. The reader always gets it as a download: see `download_post_file`.
+    """
+    payload = await file.read(MAX_FILE_BYTES + 1)
+    if len(payload) > MAX_FILE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Файл больше {MAX_FILE_BYTES // (1024 * 1024)} МБ",
+        )
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Файл пустой"
+        )
+    original = (file.filename or "file").strip()
+    resolved = _document_kind(payload, original)
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Поддерживаются PDF, ZIP и текстовые файлы (TXT, MD, CSV, JSON, LOG)",
+        )
+    extension, label = resolved
+    target_dir = MEDIA_ROOT / folder
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{owner_id}-{uuid.uuid4().hex}.{extension}"
+    (target_dir / stored).write_bytes(payload)
+    # The label a reader sees, with anything that could travel as a path taken out of it.
+    shown = SAFE_NAME.sub("_", _basename(original))[:160] or f"file.{extension}"
+    return f"/api/feed/files/{stored}", shown, len(payload), label
+
+
 async def _store_video(file: UploadFile, folder: str, owner_id: uuid.UUID) -> str:
     """
     Keep an uploaded clip under `MEDIA_ROOT/<folder>` and return its URL.
@@ -2981,6 +3062,136 @@ async def user_following(username: str, session: SessionDep, me: CurrentUser) ->
     return [compact_user(user) for user in users]
 
 
+MAX_DRAFTS = 20
+
+
+def _draft_out(draft: PostDraft, community_slug: str | None) -> PostDraftOut:
+    return PostDraftOut(
+        id=draft.id,
+        content=draft.content or "",
+        image_urls=list(draft.image_urls or []),
+        video_url=draft.video_url,
+        file_url=draft.file_url,
+        file_name=draft.file_name,
+        file_size=draft.file_size,
+        poll_options=list(draft.poll_options or []),
+        sensitive=draft.sensitive,
+        link_url=draft.link_url,
+        link_title=draft.link_title,
+        community_slug=community_slug,
+        created_at=draft.created_at,
+        updated_at=draft.updated_at,
+    )
+
+
+async def _draft_community(session: AsyncSession, me: User, slug: str | None) -> Community | None:
+    """A draft for a channel is only offered by the channel that its author owns."""
+    if not slug:
+        return None
+    community = await session.scalar(
+        select(Community).where(func.lower(Community.slug) == slug.lower())
+    )
+    if community is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
+    if community.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Черновик канала может сохранить только его владелец",
+        )
+    return community
+
+
+def _apply_draft(draft: PostDraft, payload: PostDraftBody, community: Community | None) -> None:
+    draft.community_id = community.id if community else None
+    draft.content = payload.content
+    draft.image_urls = list(payload.image_urls or []) or None
+    draft.video_url = payload.video_url
+    draft.file_url = payload.file_url
+    draft.file_name = payload.file_name
+    draft.file_size = payload.file_size
+    draft.poll_options = list(payload.poll_options or []) or None
+    draft.sensitive = payload.sensitive
+    draft.link_url = payload.link_url
+    draft.link_title = payload.link_title
+
+
+@app.get("/api/feed/drafts", response_model=list[PostDraftOut], tags=["feed"])
+async def read_drafts(session: SessionDep, me: CurrentUser) -> list[PostDraftOut]:
+    """One's own unfinished posts, most recently touched first."""
+    rows = (
+        await session.execute(
+            select(PostDraft, Community.slug)
+            .outerjoin(Community, PostDraft.community_id == Community.id)
+            .where(PostDraft.author_id == me.id)
+            .order_by(PostDraft.updated_at.desc())
+            .limit(MAX_DRAFTS)
+        )
+    ).all()
+    return [_draft_out(draft, slug) for draft, slug in rows]
+
+
+@app.post(
+    "/api/feed/drafts",
+    response_model=PostDraftOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["feed"],
+)
+async def create_draft(
+    payload: PostDraftBody, session: SessionDep, me: CurrentUser
+) -> PostDraftOut:
+    """
+    Keep an unfinished post.
+
+    Bounded, because a drawer nobody empties is not a feature: past twenty the oldest has to go
+    or be deleted deliberately, and saying so is better than quietly dropping one.
+    """
+    held = int(
+        await session.scalar(
+            select(func.count()).select_from(PostDraft).where(PostDraft.author_id == me.id)
+        )
+        or 0
+    )
+    if held >= MAX_DRAFTS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Больше {MAX_DRAFTS} черновиков не сохранить — удалите ненужные",
+        )
+    community = await _draft_community(session, me, payload.community_slug)
+    draft = PostDraft(author_id=me.id)
+    _apply_draft(draft, payload, community)
+    session.add(draft)
+    await session.commit()
+    await session.refresh(draft)
+    return _draft_out(draft, community.slug if community else None)
+
+
+@app.patch("/api/feed/drafts/{draft_id}", response_model=PostDraftOut, tags=["feed"])
+async def update_draft(
+    draft_id: uuid.UUID, payload: PostDraftBody, session: SessionDep, me: CurrentUser
+) -> PostDraftOut:
+    """Save over a draft that was picked up again, rather than leaving two of the same post."""
+    draft = await session.get(PostDraft, draft_id)
+    if draft is None or draft.author_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Черновик не найден")
+    community = await _draft_community(session, me, payload.community_slug)
+    _apply_draft(draft, payload, community)
+    await session.commit()
+    await session.refresh(draft)
+    return _draft_out(draft, community.slug if community else None)
+
+
+@app.delete("/api/feed/drafts/{draft_id}", response_model=DetailResponse, tags=["feed"])
+async def delete_draft(
+    draft_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    draft = await session.get(PostDraft, draft_id)
+    if draft is None or draft.author_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Черновик не найден")
+    await session.delete(draft)
+    await session.commit()
+    return DetailResponse(detail="Черновик удалён")
+
+
 @app.get("/api/feed/bookmarks", response_model=list[FeedPost], tags=["feed"])
 async def read_bookmarks(session: SessionDep, me: CurrentUser) -> list[FeedPost]:
     rows = (
@@ -3237,6 +3448,9 @@ async def create_post(payload: PostCreate, session: SessionDep, me: CurrentUser)
         image_urls=gallery or ([payload.image_url] if payload.image_url else None),
         video_url=payload.video_url,
         poll_options=_poll_options(payload),
+        file_url=payload.file_url,
+        file_name=payload.file_name,
+        file_size=payload.file_size,
         sensitive=payload.sensitive,
         link_url=payload.link_url,
         link_title=(payload.link_title or None),
@@ -3351,6 +3565,44 @@ async def vote_in_poll(
     session.add(PostPollVote(post_id=post.id, user_id=me.id, option_index=option_index))
     await session.commit()
     return await render_post(session, post, author, me)
+
+
+@app.post(
+    "/api/feed/file",
+    response_model=UploadedFile,
+    status_code=status.HTTP_201_CREATED,
+    tags=["feed"],
+)
+async def upload_post_file(
+    session: SessionDep, me: CurrentUser, file: Annotated[UploadFile, File()]
+) -> UploadedFile:
+    """One document for a post being written."""
+    del session
+    url, name, size, kind = await _store_document(file, "files", me.id)
+    return UploadedFile(url=url, name=name, size=size, kind=kind)
+
+
+@app.get("/api/feed/files/{stored_name}", tags=["feed"])
+async def download_post_file(stored_name: str) -> FileResponse:
+    """
+    Hand a stored document back, always as a download.
+
+    Never inline: a browser that decides for itself what to do with a file is how an upload
+    becomes a page on our own origin. The name comes from the path, and the path is one we
+    generated — `..` and separators cannot appear in it, and are refused anyway.
+    """
+    if "/" in stored_name or "\\" in stored_name or stored_name.startswith("."):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден")
+    target = (MEDIA_ROOT / "files" / stored_name).resolve()
+    root = (MEDIA_ROOT / "files").resolve()
+    if root not in target.parents or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден")
+    return FileResponse(
+        target,
+        media_type="application/octet-stream",
+        filename=stored_name,
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.post("/api/feed/{post_id}/view", response_model=PostViewReceipt, tags=["feed"])
@@ -6431,6 +6683,9 @@ async def create_community_post(
         image_urls=gallery or ([payload.image_url] if payload.image_url else None),
         video_url=payload.video_url,
         poll_options=_poll_options(payload),
+        file_url=payload.file_url,
+        file_name=payload.file_name,
+        file_size=payload.file_size,
         sensitive=payload.sensitive,
         link_url=payload.link_url,
         link_title=(payload.link_title or None),

@@ -129,6 +129,39 @@ export type PremiumEntitlement = {
   /** Set when somebody else paid for it, so the sheet can name them. */
   gifted_by?: User | null;
 };
+/** An unfinished post, kept on the server so it survives the device that typed it. */
+export type PostDraft = {
+  id: string;
+  content: string;
+  image_urls?: string[];
+  video_url?: string | null;
+  file_url?: string | null;
+  file_name?: string | null;
+  file_size?: number | null;
+  poll_options?: string[];
+  sensitive?: boolean;
+  link_url?: string | null;
+  link_title?: string | null;
+  community_slug?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** What the composer sends when it saves one. */
+export type PostDraftInput = {
+  content: string;
+  image_urls?: string[];
+  video_url?: string | null;
+  file_url?: string | null;
+  file_name?: string | null;
+  file_size?: number | null;
+  poll_options?: string[] | null;
+  sensitive?: boolean;
+  link_url?: string | null;
+  link_title?: string | null;
+  community_slug?: string | null;
+};
+
 /** One answer in a poll and how many people chose it. */
 export type PollOption = { index: number; text: string; votes: number };
 
@@ -160,6 +193,10 @@ export type Post = {
   video_url?: string | null;
   /** The question this post asks, if it asks one. */
   poll?: PostPoll | null;
+  /** An attached document: the card shows its name and size before anyone downloads it. */
+  file_url?: string | null;
+  file_name?: string | null;
+  file_size?: number | null;
   /** The author marked the media 18+: it arrives covered and the reader chooses to look. */
   sensitive?: boolean;
   /** An outbound link the author attached; opening it asks for confirmation first. */

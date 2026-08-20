@@ -24,6 +24,7 @@ import {
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useToast } from "../ui/toast";
+import { DraftsSheet } from "./drafts-sheet";
 import { UserAvatar } from "../user-avatar";
 
 const MAX_LENGTH = 560;
@@ -37,12 +38,7 @@ const MAX_POLL_OPTIONS = 4;
 const EMOJI = ["🙂", "😂", "🔥", "❤️", "👍", "🎉", "✨", "😮", "😢", "🙏", "👀", "💯", "🌙", "☕", "📷", "🎧"];
 
 /** The reference's "Ещё" menu. Only the surfaces GRAM actually supports are enabled. */
-/** What the menu still cannot do, and says so rather than pretending. */
-const MORE_SOON = [
-  { icon: Paperclip, label: "Прикрепить файл" },
-  { icon: Save, label: "Сохранить черновик" },
-  { icon: FileText, label: "Черновики" }
-];
+
 
 /**
  * Inline composer, following the reference: a borderless growing input at 17px, a divider,
@@ -55,12 +51,15 @@ export function PostComposer({
   avatarUrl,
   displayName,
   placeholder = "Что нового?",
+  communitySlug,
   onPublished,
   onPublish
 }: {
   avatarUrl?: string | null;
   displayName?: string;
   placeholder?: string;
+  /** Set on a channel's page, so a draft saved there is offered back there. */
+  communitySlug?: string;
   onPublished?: () => void;
   /**
    * Where the post goes, when it is not the author's own feed. A channel takes the same text,
@@ -72,7 +71,8 @@ export function PostComposer({
     link: { url?: string; title?: string } | null | undefined,
     videoUrl: string | null,
     pollOptions: string[] | null,
-    sensitive: boolean
+    sensitive: boolean,
+    file: { url: string; name: string; size: number } | null
   ) => Promise<unknown>;
 }) {
   const queryClient = useQueryClient();
@@ -108,6 +108,16 @@ export function PostComposer({
    * author does not have to know that the link is what does the work.
    */
   const [trackField, setTrackField] = useState(false);
+  // One document, uploaded before publishing like everything else the post carries.
+  const [file, setFile] = useState<{ url: string; name: string; size: number } | null>(null);
+  const filePicker = useRef<HTMLInputElement>(null);
+  /*
+   * The draft this composer is holding, if it was picked up from the drawer. Saving again writes
+   * over it rather than leaving two copies of the same unfinished post, and publishing removes
+   * it — a published draft is a post.
+   */
+  const [draftId, setDraftId] = useState<string | null>(null);
+  const [draftsOpen, setDraftsOpen] = useState(false);
 
   const upload = useMutation({
     mutationFn: (files: File[]) =>
@@ -128,6 +138,40 @@ export function PostComposer({
       notify("Не удалось загрузить видео", { variant: "error", detail: error.message })
   });
 
+  const uploadFile = useMutation({
+    mutationFn: (chosen: File) => api.uploadPostFile(chosen),
+    onSuccess: (uploaded) =>
+      setFile({ url: uploaded.url, name: uploaded.name, size: uploaded.size }),
+    onError: (error: Error) =>
+      notify("Не удалось прикрепить файл", { variant: "error", detail: error.message })
+  });
+
+  const draftBody = () => ({
+    content,
+    image_urls: pictures.length ? pictures : undefined,
+    video_url: video,
+    file_url: file?.url,
+    file_name: file?.name,
+    file_size: file?.size,
+    poll_options: poll?.length ? poll : undefined,
+    sensitive,
+    link_url: link?.url.trim() || undefined,
+    link_title: link?.title.trim() || undefined,
+    community_slug: communitySlug ?? undefined
+  });
+
+  const saveDraft = useMutation({
+    mutationFn: () =>
+      draftId ? api.updatePostDraft(draftId, draftBody()) : api.savePostDraft(draftBody()),
+    onSuccess: async (saved) => {
+      setDraftId(saved.id);
+      await queryClient.invalidateQueries({ queryKey: ["post-drafts"] });
+      notify("Черновик сохранён", { variant: "success", detail: "Найдёте его в «Ещё»." });
+    },
+    onError: (error: Error) =>
+      notify("Не удалось сохранить", { variant: "error", detail: error.message })
+  });
+
   const publish = useMutation({
     mutationFn: () => {
       const trimmed = link?.url.trim()
@@ -135,16 +179,23 @@ export function PostComposer({
         : null;
       const answers = poll?.map((option) => option.trim()).filter(Boolean) ?? null;
       return onPublish
-        ? onPublish(content.trim(), pictures, trimmed, video, answers, sensitive)
-        : api.createPost(content.trim(), pictures, trimmed, video, answers, sensitive);
+        ? onPublish(content.trim(), pictures, trimmed, video, answers, sensitive, file)
+        : api.createPost(content.trim(), pictures, trimmed, video, answers, sensitive, file);
     },
     onSuccess: async () => {
       setContent("");
       setPictures([]);
       setVideo(null);
       setPoll(null);
+      setFile(null);
       setSensitive(false);
       setLink(null);
+      // A published draft is a post, so it stops being a draft.
+      if (draftId) {
+        void api.deletePostDraft(draftId).catch(() => undefined);
+        setDraftId(null);
+        void queryClient.invalidateQueries({ queryKey: ["post-drafts"] });
+      }
       if (inputRef.current) inputRef.current.style.height = "auto";
       if (!onPublish) await queryClient.invalidateQueries({ queryKey: ["feed"] });
       notify("Запись опубликована", { variant: "success" });
@@ -200,12 +251,23 @@ export function PostComposer({
   }
 
   const tooLong = content.length > MAX_LENGTH;
+  // Worth saving if anything at all has been put in: a draft may be as unfinished as it likes.
+  const hasSomething = Boolean(
+    content.trim() ||
+      pictures.length ||
+      video ||
+      file ||
+      poll?.some((option) => option.trim()) ||
+      link?.url.trim()
+  );
   // A picture or a clip is worth publishing on its own, so either counts as content.
   const canPublish =
     (content.trim().length >= 2 ||
       pictures.length > 0 ||
       Boolean(video) ||
+      Boolean(file) ||
       Boolean(link?.url.trim())) &&
+    !uploadFile.isPending &&
     // An unfinished poll blocks publishing: half a question is worse than no question.
     (!poll || poll.filter((option) => option.trim()).length >= MIN_POLL_OPTIONS) &&
     !tooLong &&
@@ -253,6 +315,18 @@ export function PostComposer({
             const files = [...(event.target.files ?? [])];
             event.target.value = "";
             if (files.length) upload.mutate(files);
+          }}
+        />
+
+        <input
+          ref={filePicker}
+          type="file"
+          accept=".pdf,.zip,.txt,.md,.csv,.json,.log"
+          className="hidden"
+          onChange={(event) => {
+            const chosen = event.target.files?.[0];
+            event.target.value = "";
+            if (chosen) uploadFile.mutate(chosen);
           }}
         />
 
@@ -385,6 +459,32 @@ export function PostComposer({
           </div>
         ) : null}
 
+        {file ? (
+          <div className="mb-1 flex items-center gap-2 rounded-[14px] bg-[var(--surface-raised)] p-2 pr-2.5">
+            <span className="grid size-9 flex-none place-items-center rounded-[11px] bg-black/25 text-[var(--primary-strong)]">
+              <Paperclip size={16} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[14px] font-semibold">{file.name}</span>
+              <span className="block text-[12px] text-[var(--dim)]">
+                {file.size < 1024 * 1024
+                  ? `${Math.max(1, Math.round(file.size / 1024))} КБ`
+                  : `${(file.size / (1024 * 1024)).toFixed(1)} МБ`}
+              </span>
+            </span>
+            <button
+              type="button"
+              className="icon-button !size-8"
+              aria-label="Убрать файл"
+              onClick={() => setFile(null)}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ) : uploadFile.isPending ? (
+          <div className="skeleton mb-1 h-14 rounded-[14px]" />
+        ) : null}
+
         {trackField ? (
           <div className="mb-1 grid gap-1 rounded-[14px] bg-[var(--surface-raised)] p-2.5">
             <input
@@ -506,8 +606,13 @@ export function PostComposer({
               <ComposerMore
                 onCamera={() => camera.current?.click()}
                 onCode={wrapCode}
+                onFile={() => (file ? setFile(null) : filePicker.current?.click())}
+                fileAttached={Boolean(file)}
                 sensitive={sensitive}
                 onSensitive={() => setSensitive((current) => !current)}
+                onSaveDraft={() => saveDraft.mutate()}
+                canSaveDraft={hasSomething && !saveDraft.isPending}
+                onOpenDrafts={() => setDraftsOpen(true)}
               />
             </div>
 
@@ -527,6 +632,36 @@ export function PostComposer({
             </button>
           </div>
         </div>
+
+        <DraftsSheet
+          open={draftsOpen}
+          onOpenChange={setDraftsOpen}
+          onPick={(draft) => {
+            setDraftId(draft.id);
+            setContent(draft.content ?? "");
+            setPictures(draft.image_urls ?? []);
+            setVideo(draft.video_url ?? null);
+            setFile(
+              draft.file_url
+                ? {
+                    url: draft.file_url,
+                    name: draft.file_name ?? "Файл",
+                    size: draft.file_size ?? 0
+                  }
+                : null
+            );
+            setPoll(draft.poll_options?.length ? draft.poll_options : null);
+            setSensitive(Boolean(draft.sensitive));
+            setLink(
+              draft.link_url ? { url: draft.link_url, title: draft.link_title ?? "" } : null
+            );
+            requestAnimationFrame(() => {
+              const node = inputRef.current;
+              node?.focus();
+              if (node) grow(node);
+            });
+          }}
+        />
 
         {publish.error ? (
           <p className="mb-0 mt-2 text-[13px] text-[var(--danger)]" aria-live="polite">
@@ -569,13 +704,23 @@ function ComposerAction({
 function ComposerMore({
   onCamera,
   onCode,
+  onFile,
+  fileAttached,
   sensitive,
-  onSensitive
+  onSensitive,
+  onSaveDraft,
+  canSaveDraft,
+  onOpenDrafts
 }: {
   onCamera: () => void;
   onCode: () => void;
+  onFile: () => void;
+  fileAttached: boolean;
   sensitive: boolean;
   onSensitive: () => void;
+  onSaveDraft: () => void;
+  canSaveDraft: boolean;
+  onOpenDrafts: () => void;
 }) {
   return (
     <DropdownMenu.Root>
@@ -605,6 +750,13 @@ function ComposerMore({
             <span className="flex-1">Камера</span>
           </DropdownMenu.Item>
           <DropdownMenu.Item
+            onSelect={onFile}
+            className="flex min-h-11 cursor-pointer items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold outline-none focus:bg-white/[0.06]"
+          >
+            <Paperclip size={18} className={fileAttached ? "text-[var(--primary-strong)]" : undefined} />
+            <span className="flex-1">{fileAttached ? "Убрать файл" : "Прикрепить файл"}</span>
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
             onSelect={onCode}
             className="flex min-h-11 cursor-pointer items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold outline-none focus:bg-white/[0.06]"
           >
@@ -620,17 +772,21 @@ function ComposerMore({
             {sensitive ? <Check size={15} /> : null}
           </DropdownMenu.Item>
           <DropdownMenu.Separator className="mx-2 my-1.5 h-px bg-[var(--line)]" />
-          {MORE_SOON.map(({ icon: Icon, label }) => (
-            <DropdownMenu.Item
-              key={label}
-              disabled
-              className="flex min-h-11 items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold text-[var(--dim)] outline-none data-[disabled]:opacity-60"
-            >
-              <Icon size={18} />
-              <span className="flex-1">{label}</span>
-              <span className="text-[12px] font-bold text-[var(--faint)]">скоро</span>
-            </DropdownMenu.Item>
-          ))}
+          <DropdownMenu.Item
+            onSelect={onSaveDraft}
+            disabled={!canSaveDraft}
+            className="flex min-h-11 cursor-pointer items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold outline-none focus:bg-white/[0.06] data-[disabled]:cursor-default data-[disabled]:opacity-50"
+          >
+            <Save size={18} />
+            <span className="flex-1">Сохранить черновик</span>
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={onOpenDrafts}
+            className="flex min-h-11 cursor-pointer items-center gap-3 rounded-[12px] px-3 text-[15px] font-semibold outline-none focus:bg-white/[0.06]"
+          >
+            <FileText size={18} />
+            <span className="flex-1">Черновики</span>
+          </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

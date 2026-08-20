@@ -390,6 +390,10 @@ class PostCreate(BaseModel):
     # One clip. Pictures and a clip are exclusive in the composer, but the field is independent
     # so an older client that sends both is not refused.
     video_url: Annotated[str | None, Field(max_length=500)] = None
+    # One attached document, as returned by the upload.
+    file_url: Annotated[str | None, Field(max_length=500)] = None
+    file_name: Annotated[str | None, Field(max_length=160)] = None
+    file_size: Annotated[int | None, Field(ge=0)] = None
     # The author's own 18+ mark. Nothing infers it: a picture nobody flagged is not flagged.
     sensitive: bool = False
     # Two to four answers. The question is the post's own text.
@@ -470,6 +474,10 @@ class FeedPost(ApiModel):
     image_urls: list[str] = Field(default_factory=list)
     video_url: str | None = None
     poll: PostPollOut | None = None
+    # An attached document, with the name and size the card shows before anyone downloads it.
+    file_url: str | None = None
+    file_name: str | None = None
+    file_size: int | None = None
     # The author marked the media as 18+: the card covers it until the reader asks.
     sensitive: bool = False
     link_url: str | None = None
@@ -550,6 +558,60 @@ class UploadedMedia(ApiModel):
     """Where a just-uploaded picture now lives, so the composer can preview and attach it."""
 
     url: str
+
+
+class PostDraftBody(BaseModel):
+    """
+    What a saved draft holds: everything the composer does, with nothing required.
+
+    A draft is allowed to be unfinished — that is what makes it a draft — so even the text may
+    be empty and the poll may have one option written so far.
+    """
+
+    content: Annotated[str, Field(max_length=4000)] = ""
+    image_urls: Annotated[list[str] | None, Field(max_length=MAX_POST_IMAGES)] = None
+    video_url: Annotated[str | None, Field(max_length=500)] = None
+    file_url: Annotated[str | None, Field(max_length=500)] = None
+    file_name: Annotated[str | None, Field(max_length=160)] = None
+    file_size: Annotated[int | None, Field(ge=0)] = None
+    poll_options: (
+        Annotated[
+            list[Annotated[str, Field(max_length=MAX_POLL_OPTION_LENGTH)]] | None,
+            Field(max_length=MAX_POLL_OPTIONS),
+        ]
+    ) = None
+    sensitive: bool = False
+    link_url: Annotated[str | None, Field(max_length=500)] = None
+    link_title: Annotated[str | None, Field(max_length=120)] = None
+    community_slug: CommunitySlug | None = None
+
+
+class PostDraftOut(ApiModel):
+    """A draft as the list and the composer read it back."""
+
+    id: uuid.UUID
+    content: str
+    image_urls: list[str] = Field(default_factory=list)
+    video_url: str | None = None
+    file_url: str | None = None
+    file_name: str | None = None
+    file_size: int | None = None
+    poll_options: list[str] = Field(default_factory=list)
+    sensitive: bool = False
+    link_url: str | None = None
+    link_title: str | None = None
+    community_slug: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class UploadedFile(ApiModel):
+    """A stored document: where it is, what it is called, and how big it turned out."""
+
+    url: str
+    name: str
+    size: int
+    kind: str
 
 
 class PostViewReceipt(ApiModel):

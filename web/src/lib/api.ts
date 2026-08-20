@@ -27,6 +27,8 @@ import type {
   Message,
   Notification,
   Post,
+  PostDraft,
+  PostDraftInput,
   ProfileBadge,
   ProfileReply,
   ProfileStory,
@@ -364,7 +366,8 @@ export const api = {
     link?: { url: string; title?: string } | null,
     videoUrl?: string | null,
     pollOptions?: string[] | null,
-    sensitive?: boolean
+    sensitive?: boolean,
+    file?: { url: string; name: string; size: number } | null
   ) =>
     request<Post>("/api/feed", {
       method: "POST",
@@ -375,6 +378,9 @@ export const api = {
         video_url: videoUrl || undefined,
         poll_options: pollOptions?.length ? pollOptions : undefined,
         sensitive: sensitive || undefined,
+        file_url: file?.url,
+        file_name: file?.name,
+        file_size: file?.size,
         link_url: link?.url || undefined,
         link_title: link?.title || undefined
       })
@@ -390,6 +396,15 @@ export const api = {
     const body = new FormData();
     body.append("file", file);
     return request<{ url: string }>("/api/feed/video", { method: "POST", body });
+  },
+  /** One document. PDF, ZIP and plain text only, and always served back as a download. */
+  uploadPostFile: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<{ url: string; name: string; size: number; kind: string }>("/api/feed/file", {
+      method: "POST",
+      body
+    });
   },
   deletePost: (id: string) => request<{ detail: string }>(`/api/feed/${id}`, { method: "DELETE" }),
   /** Rewrites one's own post; the server re-reads the text for a music link and marks «ред.». */
@@ -408,6 +423,17 @@ export const api = {
         sensitive
       })
     }),
+  /** One's own unfinished posts, most recently touched first. */
+  postDrafts: () => request<PostDraft[]>("/api/feed/drafts"),
+  savePostDraft: (payload: PostDraftInput) =>
+    request<PostDraft>("/api/feed/drafts", { method: "POST", body: JSON.stringify(payload) }),
+  updatePostDraft: (id: string, payload: PostDraftInput) =>
+    request<PostDraft>(`/api/feed/drafts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  deletePostDraft: (id: string) =>
+    request<{ detail: string }>(`/api/feed/drafts/${id}`, { method: "DELETE" }),
   /** Answers a poll. One vote per person, and the server refuses the second. */
   voteInPoll: (id: string, optionIndex: number) =>
     request<Post>(`/api/feed/${id}/poll/${optionIndex}`, { method: "POST" }),

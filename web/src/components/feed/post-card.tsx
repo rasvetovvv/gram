@@ -38,6 +38,7 @@ import { useToast } from "../ui/toast";
 import { UserAvatar } from "../user-avatar";
 import { VerifiedMark } from "../verified-mark";
 import { PostEditSheet } from "./post-edit-sheet";
+import { PostFileCard } from "./post-file-card";
 import { PostGallery } from "./post-gallery";
 import { PostLinkCard } from "./post-link-card";
 import { PostMusicCard, useRecordView } from "./post-music";
@@ -369,6 +370,13 @@ export function PostCard({
         ) : null}
 
         {post.poll ? <PostPoll post={post} poll={post.poll} /> : null}
+        {post.file_url ? (
+          <PostFileCard
+            url={post.file_url}
+            name={post.file_name ?? "Файл"}
+            size={post.file_size}
+          />
+        ) : null}
         {post.music ? <PostMusicCard music={post.music} /> : null}
         {post.link_url ? <PostLinkCard url={post.link_url} title={post.link_title} /> : null}
 

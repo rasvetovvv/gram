@@ -324,6 +324,11 @@ class Post(Base):
     # The author marked it themselves. The post stays in every list it belongs to; only its
     # pictures and clip arrive covered, and the reader decides whether to look.
     sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    # One attached document: where it landed, what the author called it, and how big it is, so
+    # a reader can decide before downloading. Served only as an attachment, never inline.
+    file_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # A poll's options, in the order the author wrote them: `["Да", "Нет"]`. The question is the
     # post's own text, as in the reference — a poll is a post that asks something, not a widget
     # with a title of its own. Votes are rows, so nothing here is a running total that can lie.
@@ -426,6 +431,41 @@ class PostRepost(Base):
     post_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"))
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PostDraft(Base):
+    """
+    A post that is not published yet.
+
+    Kept on the server rather than in the browser, because a draft that only exists on the
+    machine that typed it is a note, not a draft: the point is to start on a phone and finish at
+    a desk. It carries exactly what the composer holds, so loading one restores the whole thing.
+    """
+
+    __tablename__ = "post_drafts"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # Set when the draft is meant for a channel, so it is offered back in the right composer.
+    community_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("communities.id", ondelete="CASCADE"), nullable=True
+    )
+    content: Mapped[str] = mapped_column(Text, default="")
+    image_urls: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    file_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    poll_options: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    link_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    link_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class PostPollVote(Base):

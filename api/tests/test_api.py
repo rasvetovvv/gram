@@ -3517,3 +3517,148 @@ async def test_a_repost_appears_for_the_people_who_read_the_reposter(
         if item["id"] == post_id
     )
     assert plain["reposted_by"] is None
+
+
+async def test_a_post_carries_one_document_served_only_as_a_download(
+    client: AsyncClient,
+) -> None:
+    """PDF, ZIP and text are allowed on content; everything else is refused by name."""
+    await login_demo(client)
+    uploaded = await client.post(
+        "/api/feed/file",
+        files={"file": ("rider.pdf", b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n", "application/pdf")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    stored = uploaded.json()
+    assert stored["url"].startswith("/api/feed/files/")
+    assert stored["name"] == "rider.pdf"
+    assert stored["kind"] == "PDF"
+    assert stored["size"] > 0
+
+    published = await client.post(
+        "/api/feed",
+        json={
+            "content": "Технический райдер",
+            "file_url": stored["url"],
+            "file_name": stored["name"],
+            "file_size": stored["size"],
+        },
+    )
+    assert published.status_code == 201, published.text
+    assert published.json()["file_name"] == "rider.pdf"
+    assert (await client.get(f"/api/feed/{published.json()['id']}")).json()["file_url"] == (
+        stored["url"]
+    )
+
+    # It comes back as an attachment, never as something a browser might render.
+    fetched = await client.get(stored["url"])
+    assert fetched.status_code == 200, fetched.status_code
+    assert fetched.headers["content-type"] == "application/octet-stream"
+    assert "attachment" in fetched.headers["content-disposition"]
+    assert fetched.headers["x-content-type-options"] == "nosniff"
+
+    # Text is recognised by decoding, and a name that is not really text is refused.
+    notes = await client.post(
+        "/api/feed/file", files={"file": ("notes.md", "# Заголовок\n".encode(), "text/markdown")}
+    )
+    assert notes.status_code == 201, notes.text
+    assert notes.json()["kind"] == "MD"
+    binary_named_text = await client.post(
+        "/api/feed/file", files={"file": ("notes.md", b"\x00\x01\x02\xff", "text/markdown")}
+    )
+    assert binary_named_text.status_code == 415
+
+    for name, payload in (
+        ("app.exe", b"MZ\x90\x00" + b"\x00" * 32),
+        ("page.html", b"<html><script>alert(1)</script></html>"),
+        ("clip.mp4", b"\x00\x00\x00\x18ftypisom"),
+    ):
+        refused = await client.post("/api/feed/file", files={"file": (name, payload, "text/plain")})
+        assert refused.status_code == 415, f"{name}: {refused.status_code}"
+
+    # Nothing about a request may choose a path, and the ceiling is the ceiling.
+    assert (await client.get("/api/feed/files/..%2F..%2Fapp%2Fmain.py")).status_code == 404
+    too_big = b"%PDF-1.7\n" + b"0" * (24 * 1024 * 1024)
+    assert (
+        await client.post("/api/feed/file", files={"file": ("big.pdf", too_big, "application/pdf")})
+    ).status_code == 413
+
+
+async def test_a_draft_holds_an_unfinished_post_until_it_is_published(
+    client: AsyncClient,
+) -> None:
+    """A draft may be as unfinished as it likes, belongs to one account, and is bounded."""
+    await login_demo(client)
+    empty = await client.post("/api/feed/drafts", json={})
+    assert empty.status_code == 201, empty.text
+    assert empty.json()["content"] == ""
+    assert empty.json()["poll_options"] == []
+
+    saved = await client.post(
+        "/api/feed/drafts",
+        json={
+            "content": "Черновик с вложениями",
+            "image_urls": ["https://example.com/a.jpg"],
+            "poll_options": ["Один"],
+            "sensitive": True,
+            "link_url": "https://example.com",
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    draft = saved.json()
+    # Half a poll is fine in a draft; the post endpoint is the one that refuses it.
+    assert draft["poll_options"] == ["Один"]
+    assert draft["sensitive"] is True
+    assert draft["community_slug"] is None
+
+    listed = await client.get("/api/feed/drafts")
+    assert next(item["id"] for item in listed.json()) == draft["id"]
+    assert len(listed.json()) == 2
+
+    # Saving again writes over it rather than leaving two copies.
+    updated = await client.patch(
+        f"/api/feed/drafts/{draft['id']}",
+        json={"content": "Черновик, дописанный", "poll_options": ["Один", "Два"]},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["content"] == "Черновик, дописанный"
+    assert updated.json()["image_urls"] == []
+    assert len((await client.get("/api/feed/drafts")).json()) == 2
+
+    # A draft for a channel is only kept by the channel's owner.
+    created = await client.post(
+        "/api/communities",
+        json={"slug": "draft-house", "title": "Draft House", "description": "Черновики"},
+    )
+    assert created.status_code == 201, created.text
+    channel_draft = await client.post(
+        "/api/feed/drafts", json={"content": "Для канала", "community_slug": "draft-house"}
+    )
+    assert channel_draft.status_code == 201, channel_draft.text
+    assert channel_draft.json()["community_slug"] == "draft-house"
+
+    await register_partner(client, "not_owner")
+    await client.post("/api/auth/logout")
+    await login_as(client, "not_owner")
+    refused = await client.post(
+        "/api/feed/drafts", json={"content": "Чужой канал", "community_slug": "draft-house"}
+    )
+    assert refused.status_code == 403
+    # Drafts are private: another account sees none of them and cannot touch one.
+    assert (await client.get("/api/feed/drafts")).json() == []
+    assert (await client.delete(f"/api/feed/drafts/{draft['id']}")).status_code == 404
+    assert (
+        await client.patch(f"/api/feed/drafts/{draft['id']}", json={"content": "Правка"})
+    ).status_code == 404
+
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    assert (await client.delete(f"/api/feed/drafts/{draft['id']}")).status_code == 200
+    assert all(item["id"] != draft["id"] for item in (await client.get("/api/feed/drafts")).json())
+
+    # The drawer is bounded, and says so instead of quietly dropping the oldest.
+    for _ in range(20):
+        await client.post("/api/feed/drafts", json={"content": "Ещё один"})
+    full = await client.post("/api/feed/drafts", json={"content": "Двадцать первый"})
+    assert full.status_code == 409
+    assert "черновиков" in full.json()["detail"]
