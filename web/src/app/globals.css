@@ -1369,11 +1369,10 @@ html[data-chat-wallpaper="constellation"] .chat-wallpaper {
 
 html[data-chat-pattern="off"] .chat-wallpaper::after { display: none; }
 
-/* ─── Anonymous +888 number badge ────────────────────────────────────────────────
-   The number pill above a username. Digits are tabular so a themed gradient does not
-   make them jitter, and a slow sheen sweeps across a themed pill once on mount to make
-   a bought number feel like the collectible it is. Neutral (default-theme) pills stay
-   still — a graphite chip that shimmered would read as a loading skeleton. */
+/* ─── Anonymous +888 number ──────────────────────────────────────────────────────
+   The number shown under the username as plain text (no pill). Digits are tabular so
+   a themed gradient does not make them jitter; a themed number gets a slow, gentle
+   glow pulse so it reads as a collectible. Neutral (default-theme) numbers stay still. */
 .number-badge {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
@@ -1381,24 +1380,11 @@ html[data-chat-pattern="off"] .chat-wallpaper::after { display: none; }
 
 @media (prefers-reduced-motion: no-preference) {
   .number-badge[data-themed="true"] {
-    position: relative;
-    overflow: hidden;
-  }
-  .number-badge[data-themed="true"]::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-      120deg,
-      transparent 0%,
-      rgba(255, 255, 255, 0.45) 50%,
-      transparent 100%
-    );
-    transform: translateX(-120%);
-    animation: numberSheen 2.6s var(--ease-out) 0.4s;
+    animation: numberGlow 3.2s ease-in-out infinite;
   }
 }
 
-@keyframes numberSheen {
-  to { transform: translateX(120%); }
+@keyframes numberGlow {
+  0%, 100% { filter: drop-shadow(0 0 5px var(--number-glow, #6d5fc4)); opacity: 0.9; }
+  50% { filter: drop-shadow(0 0 12px var(--number-glow, #6d5fc4)); opacity: 1; }
 }

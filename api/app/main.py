@@ -12169,16 +12169,31 @@ def normalize_anonymous_number(raw: str) -> str:
     """
     Reduce any accepted spelling of a +888 number to its bare eight body digits.
 
-    Accepts "+888 8888 8888", "8888888888", "888 88888888" and so on. Returns the eight digits
-    after the 888 country code. Raises 422 for anything that is not a valid +888 number, so a
-    caller can never buy a malformed or non-888 identifier.
+    The pool is +888 followed by eight digits. The client shows "+888" as a fixed prefix and
+    the user types only the eight body digits, so the common input is exactly eight digits and
+    must be taken verbatim — NOT re-stripped, or a body that itself begins with 888 (e.g.
+    "88888888") would lose three digits and never match. A full spelling that includes the 888
+    country code is also accepted. Everything else is a 422, so a caller can never buy a
+    malformed or non-888 identifier.
+
+    Accepted, all mapping to the same body:
+      "88888888", "8888 8888", "+888 8888 8888", "88888888888", "888 88888888".
     """
     digits = "".join(ch for ch in raw if ch.isdigit())
-    if digits.startswith(ANONYMOUS_NUMBER_PREFIX):
+    body_len = ANONYMOUS_NUMBER_BODY_DIGITS
+    full_len = len(ANONYMOUS_NUMBER_PREFIX) + body_len
+    if len(digits) == body_len:
+        # Already just the body — the phone-keyboard case. Never strip a leading 888 here.
+        body = digits
+    elif len(digits) == full_len and digits.startswith(ANONYMOUS_NUMBER_PREFIX):
+        # Full number including the 888 country code.
         body = digits[len(ANONYMOUS_NUMBER_PREFIX):]
     else:
-        body = digits
-    if len(body) != ANONYMOUS_NUMBER_BODY_DIGITS or not body.isdigit():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Некорректный номер: +888 и восемь цифр, например +888 8888 8888",
+        )
+    if len(body) != body_len or not body.isdigit():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Некорректный номер: +888 и восемь цифр, например +888 8888 8888",

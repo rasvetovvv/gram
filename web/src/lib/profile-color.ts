@@ -81,18 +81,23 @@ export function themeGradient(slug?: string | null): string {
 }
 
 /**
- * Pill style for the anonymous +888 number shown above the username. The number's colour follows
- * the profile colour: a themed profile tints the pill with its gradient (dark text on the accent),
- * while a default profile keeps a neutral graphite chip so it never looks accidentally coloured.
+ * Colour for the anonymous +888 number shown under the username. The number is plain text — no
+ * background pill — so a themed profile tints the digits with the theme's gradient (clipped to
+ * the glyphs) and adds a soft glow, while a default profile stays a neutral muted colour.
  */
-export function numberBadgeStyle(slug?: string | null): CSSProperties {
+export function numberDigitStyle(slug?: string | null): CSSProperties {
   const theme = profileTheme(slug);
   if (theme.slug === "default") {
-    return { background: "#27272a", color: "#e7e9ea", boxShadow: "inset 0 0 0 1px var(--line)" };
+    return { color: "var(--muted)" };
   }
   return {
     backgroundImage: `linear-gradient(to right, ${theme.from}, ${theme.to})`,
-    color: theme.onAccent,
-    boxShadow: `0 0 16px ${theme.to}55`
-  };
+    WebkitBackgroundClip: "text",
+    backgroundClip: "text",
+    color: "transparent",
+    // Consumed by the .number-badge glow keyframes; currentColor is transparent here because
+    // the digits are a clipped gradient, so the glow needs its own colour.
+    ["--number-glow" as string]: theme.to,
+    filter: `drop-shadow(0 0 8px ${theme.to}66)`
+  } as CSSProperties;
 }

@@ -2,9 +2,10 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ApiError } from "@/lib/api";
+import { applyLocale, readLocale } from "@/lib/i18n";
 import { ToastProvider } from "./ui/toast";
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -23,6 +24,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
         }
       })
   );
+
+  // Mirror the saved locale onto <html lang> once on mount, so a reload keeps the chosen
+  // language without a server round-trip (the SSR default is English).
+  useEffect(() => {
+    applyLocale(readLocale());
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

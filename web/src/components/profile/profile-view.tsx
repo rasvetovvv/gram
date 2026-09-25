@@ -50,7 +50,7 @@ import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react"
 import { API_URL, ApiError, api } from "@/lib/api";
 import type { Community, Post, ProfileReply, User } from "@/lib/types";
 import { presenceText, statusLine } from "@/lib/presence";
-import { nameStyle, numberBadgeStyle, profileTheme, themeGradient } from "@/lib/profile-color";
+import { nameStyle, numberDigitStyle, profileTheme, themeGradient } from "@/lib/profile-color";
 import { compactNumber, isVideoUrl, relativeTime } from "@/lib/utils";
 import { GiftCard, GiftDetailTrigger, type RichGift } from "../gifts/gift-gallery";
 import { UserReportSheet } from "./user-report-sheet";
@@ -448,20 +448,6 @@ export function ProfileView({ username }: { username: string }) {
         <StaffUserControls profile={profile} />
 
         <div className="mt-3.5">
-          {profile.anonymous_number ? (
-            <motion.div
-              initial={{ opacity: 0, y: -6, scale: 0.96 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-              className="number-badge mb-1.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-bold"
-              style={numberBadgeStyle(profile.profile_color)}
-              data-themed={(profile.profile_color ?? "default") !== "default"}
-              title="Anonymous +888 number"
-            >
-              <Phone size={13} />
-              {profile.anonymous_number}
-            </motion.div>
-          ) : null}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
             {profile.is_admin ? <AdminMarkExplained name={profile.display_name} size={20} /> : null}
             <h1 className="m-0 inline-block min-w-0 break-words text-xl font-extrabold leading-tight" style={nameStyle(profile.profile_color)}>{profile.display_name}</h1>
@@ -503,6 +489,20 @@ export function ProfileView({ username }: { username: string }) {
               )}
             </AnimatePresence>
           </button>
+          {profile.anonymous_number ? (
+            <motion.p
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
+              className="number-badge mb-0 mt-0.5 flex items-center gap-1.5 px-1 text-sm font-bold"
+              style={numberDigitStyle(profile.profile_color)}
+              data-themed={(profile.profile_color ?? "default") !== "default"}
+              title="Anonymous +888 number"
+            >
+              <Phone size={13} className="flex-none opacity-80" />
+              {profile.anonymous_number}
+            </motion.p>
+          ) : null}
           <p className={`mb-0 mt-0.5 text-sm ${profile.is_online ? "font-medium text-[var(--online)]" : "text-[var(--dim)]"}`}>{presenceText(profile)}</p>
           {statusLine(profile) ? (
             <p className="mb-0 mt-1 inline-flex max-w-full items-center gap-1.5 truncate rounded-full bg-[var(--surface-raised)] px-2.5 py-1 text-[13px] text-[var(--muted)]">

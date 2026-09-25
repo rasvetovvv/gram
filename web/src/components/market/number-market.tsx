@@ -44,7 +44,7 @@ export function NumberMarket() {
   const { notify } = useToast();
   const [scope, setScope] = useState<Scope>("showcase");
   const [sort, setSort] = useState<Sort>("fresh");
-  const [needle, setNeedle] = useState("");
+  const [digits, setDigits] = useState("");
   const [check, setCheck] = useState<NumberCheck | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -71,7 +71,7 @@ export function NumberMarket() {
     mutationFn: (value: string) => api.buyNumber(value),
     onSuccess: async (number) => {
       setCheck(null);
-      setNeedle("");
+      setDigits("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["numbers"] }),
         queryClient.invalidateQueries({ queryKey: ["me"] })
@@ -86,7 +86,7 @@ export function NumberMarket() {
   });
 
   const visible = useMemo(() => {
-    const query = needle.replace(/\D/g, "");
+    const query = digits;
     const pool =
       scope === "mine" ? mine : scope === "listed" ? listed : showcase;
     const filtered = query
@@ -97,7 +97,7 @@ export function NumberMarket() {
     if (sort === "price-desc") sorted.sort((a, b) => priceOf(b) - priceOf(a));
     if (sort === "fresh") sorted.sort((a, b) => listedAtOf(b) - listedAtOf(a));
     return sorted;
-  }, [listed, mine, needle, scope, showcase, sort]);
+  }, [listed, mine, digits, scope, showcase, sort]);
 
   const openNumber = items.find((item) => item.id === openId) ?? null;
   const alreadyHolds = mine.length > 0;
@@ -118,11 +118,15 @@ export function NumberMarket() {
                 <span className="mr-1 font-bold text-[var(--link)]">+888</span>
                 <input
                   inputMode="numeric"
-                  className="min-w-0 flex-1 bg-transparent outline-none"
+                  pattern="[0-9]*"
+                  maxLength={9}
+                  className="min-w-0 flex-1 bg-transparent tracking-[0.14em] outline-none"
                   placeholder="8888 8888"
-                  value={needle}
+                  value={digits.replace(/(\d{4})(?=\d)/, "$1 ")}
                   onChange={(event) => {
-                    setNeedle(event.target.value);
+                    // Keep digits only and cap at the eight body digits, so a phone numeric
+                    // keyboard (which has no space key) always produces a valid number.
+                    setDigits(event.target.value.replace(/\D/g, "").slice(0, 8));
                     setCheck(null);
                   }}
                 />
@@ -149,15 +153,15 @@ export function NumberMarket() {
                 className="gold-button h-12"
                 disabled={buy.isPending || alreadyHolds}
                 title={alreadyHolds ? "You already hold a number" : undefined}
-                onClick={() => buy.mutate(needle)}
+                onClick={() => buy.mutate(digits)}
               >
                 {buy.isPending ? "Buying…" : "Buy"}
               </button>
             ) : (
               <button
                 className="signal-button h-12"
-                disabled={checkNumber.isPending || needle.replace(/\D/g, "").length < 8}
-                onClick={() => checkNumber.mutate(needle)}
+                disabled={checkNumber.isPending || digits.length < 8}
+                onClick={() => checkNumber.mutate(digits)}
               >
                 {checkNumber.isPending ? "Checking…" : "Check"}
               </button>
