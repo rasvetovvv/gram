@@ -5715,6 +5715,46 @@ async def test_anonymous_number_buy_one_per_account_and_shows_on_profile(
 
 
 @pytest.mark.asyncio
+async def test_anonymous_number_accepts_bare_digits_from_a_phone_keyboard(
+    client: AsyncClient,
+) -> None:
+    """
+    A phone numeric keyboard produces no spaces, so the eight body digits must be accepted
+    verbatim — including a body that itself starts with 888, which must NOT lose those digits.
+    """
+    registered = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "bareinput@gram.local",
+            "password": "BarePass!2026",
+            "username": "bareinput",
+            "display_name": "Bare Input",
+        },
+    )
+    assert registered.status_code == 201, registered.text
+    await client.post("/api/stars/top-up", json={"amount": 5000})
+
+    # Eight bare digits whose body begins with 888 — the exact case from the bug report.
+    check = await client.get("/api/numbers/check", params={"number": "88888888"})
+    assert check.status_code == 200, check.text
+    assert check.json()["available"] is True
+    assert check.json()["number"] == "88888888"
+    assert check.json()["formatted"] == "+888 8888 8888"
+
+    bought = await client.post("/api/numbers/buy", json={"number": "88888888"})
+    assert bought.status_code == 201, bought.text
+    assert bought.json()["number"] == "88888888"
+    assert bought.json()["formatted"] == "+888 8888 8888"
+
+    # The full spelling with the country code normalizes to the same body, so re-checking it
+    # reports the number as taken rather than free.
+    recheck = await client.get("/api/numbers/check", params={"number": "+888 8888 8888"})
+    assert recheck.status_code == 200, recheck.text
+    assert recheck.json()["number"] == "88888888"
+    assert recheck.json()["available"] is False
+
+
+@pytest.mark.asyncio
 async def test_anonymous_number_resale_pays_the_seller(client: AsyncClient) -> None:
     # Seller is a fresh account (the demo user already holds a seeded number).
     seller_reg = await client.post(
