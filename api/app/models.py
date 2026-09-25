@@ -9,11 +9,13 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -68,13 +70,36 @@ class User(Base):
     bio: Mapped[str] = mapped_column(String(280), default="")
     location: Mapped[str | None] = mapped_column(String(80), nullable=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Which kind of confirmation the mark stands for. Set by staff only, and shown in the
+    # popover behind the tick so "подтверждён" says what was actually checked.
+    verification_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Staff. Drawn as the V badge before the name wherever the account appears, and the only
     # flag that grants it — there is no way to buy or claim it.
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Moderation. A ban keeps the account and its history — posts stay up, marked — because
+    # deleting the trail is what makes moderation unaccountable.
+    banned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ban_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    banned_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     is_online: Mapped[bool] = mapped_column(Boolean, default=False)
     related_usernames: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Whether the handles shown under "а также" are picked automatically.
+    #
+    # True — the default, and what every account starts as — means "show everything I own", which is
+    # the sensible thing before anybody has expressed a preference. Saving the profile form turns it
+    # off, and from then on `related_usernames` is the whole list: that is what makes removing a
+    # handle from the profile actually remove it. Without this flag the two states are
+    # indistinguishable, and an empty list has to mean either "show all" or "show none" — the first
+    # reading is why a removed handle used to come straight back.
+    usernames_auto: Mapped[bool] = mapped_column(Boolean, default=True)
     profile_color: Mapped[str] = mapped_column(String(24), default="default")
     badges: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Which of the badges this account has earned it chooses to wear. Kept apart from `badges`
+    # because that column is what staff granted: a person picks from what they have, and the
+    # picking must not be able to take a grant away.
+    badge_slots: Mapped[list[str]] = mapped_column(JSON, default=list)
     followers_count: Mapped[int] = mapped_column(Integer, default=0)
     following_count: Mapped[int] = mapped_column(Integer, default=0)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -95,6 +120,43 @@ class AuthIdentity(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class PendingRegistration(Base):
+    """A verified-email gate before an account can reserve a username or receive a session."""
+
+    __tablename__ = "pending_registrations"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(80))
+    onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    sent_count: Mapped[int] = mapped_column(Integer, default=1)
+    last_sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EmailLoginChallenge(Base):
+    """Short-lived pre-auth state; a password alone never becomes a full session."""
+
+    __tablename__ = "email_login_challenges"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    sent_count: Mapped[int] = mapped_column(Integer, default=1)
+    last_sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class UserPreferences(Base):
@@ -134,6 +196,12 @@ class UserSettings(Base):
     # Who may open a direct chat: everyone, only people this account follows, or nobody.
     # Enforced when a chat or a message is created, not merely hidden in the UI.
     who_can_message: Mapped[str] = mapped_column(String(20), default="everyone")
+    # Two inboxes for things other people can put in your collection without asking. Closing one
+    # refuses the handover at the source rather than hiding it afterwards: an unwanted collectible
+    # that has already landed is somebody else's property sitting in your profile, and getting rid
+    # of it costs the same work as receiving it did. Open by default — a present is normally welcome.
+    accept_usernames: Mapped[bool] = mapped_column(Boolean, default=True)
+    accept_gifts: Mapped[bool] = mapped_column(Boolean, default=True)
     status_emoji: Mapped[str | None] = mapped_column(String(8), nullable=True)
     status_text: Mapped[str | None] = mapped_column(String(40), nullable=True)
     notify_likes: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -202,6 +270,27 @@ class ProfileStory(Base):
         DateTime(timezone=True), nullable=True, index=True
     )
     highlight: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class StoryView(Base):
+    """
+    One person's viewing of one story.
+
+    A row per pair rather than a counter: the author is shown *who* watched, and the ring in
+    the rail has to know whether *this* reader has already seen it.
+    """
+
+    __tablename__ = "story_views"
+    __table_args__ = (UniqueConstraint("story_id", "user_id", name="uq_story_view"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    story_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("profile_stories.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class RefreshSession(Base):
@@ -324,6 +413,13 @@ class Post(Base):
     # The author marked it themselves. The post stays in every list it belongs to; only its
     # pictures and clip arrive covered, and the reader decides whether to look.
     sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Hidden by staff. The row stays so the author can be told what happened and why, and so the
+    # decision is auditable; only readers other than the author and staff stop seeing it.
+    hidden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hidden_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    hidden_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
     # One attached document: where it landed, what the author called it, and how big it is, so
     # a reader can decide before downloading. Served only as an attachment, never inline.
     file_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -348,6 +444,13 @@ class Post(Base):
     # An author keeps one post at the top of their profile. Pinning another one unpins this,
     # so the column doubles as "which one" and "since when".
     pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # A Premium author may write now and publish later. Until this moment passes the post exists
+    # only for its author: no feed, no profile, no direct link. Nothing schedules anything —
+    # visibility is `publish_at <= now`, so the post appears by itself when the time comes and no
+    # background job can forget it.
+    publish_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
@@ -397,6 +500,13 @@ class PostComment(Base):
     )
     edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Removed by staff. Same reasoning as a hidden post: the row survives so its author can be
+    # told, and so the removal can be reviewed afterwards.
+    hidden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hidden_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    hidden_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
 
 
 class PostCommentLike(Base):
@@ -531,7 +641,52 @@ class ContentReport(Base):
     reporter_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     reason: Mapped[str] = mapped_column(String(40))
     comment: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Whose content it was, when that is known: it turns "how many complaints does this account
+    # have" into one query instead of five joins, which is what the profile warning needs.
+    subject_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # A snapshot of what was reported, because the original can be edited or deleted before
+    # anyone reviews it, and a moderator judging a blank row is judging nothing.
+    excerpt: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # The review state. Open complaints are the queue and the thing that marks an account;
+    # resolved ones stay for the record but stop counting against anybody.
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    resolution: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    resolved_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LegalReport(Base):
+    """A public legal, safety, or support request submitted without requiring an account."""
+
+    __tablename__ = "legal_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    reporter_role: Mapped[str] = mapped_column(String(24))
+    reporter_name: Mapped[str] = mapped_column(String(100))
+    reporter_email: Mapped[str] = mapped_column(String(254), index=True)
+    country: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    account_username: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    content_urls: Mapped[list[str]] = mapped_column(JSON, default=list)
+    original_work: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[str] = mapped_column(Text)
+    requested_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    electronic_signature: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    resolution: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    resolved_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class Chat(Base):
@@ -547,6 +702,13 @@ class Chat(Base):
     avatar_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # A public group is one anybody with its link may walk into; a private one is entered only by
+    # the owner's invitation. The code *is* the link, so clearing it closes the door on every
+    # link already sent.
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False)
+    invite_code: Mapped[str | None] = mapped_column(
+        String(24), nullable=True, unique=True, index=True
     )
     # Auto-delete is a property of the conversation, not of one reader: both sides watch the
     # same messages disappear. Zero means off, which is what every existing chat gets.
@@ -615,6 +777,14 @@ class Message(Base):
     # An attached image sits beside the text rather than inside it, so a picture and its
     # caption stay one message.
     media_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # What `media_url` actually is. NULL reads as "image": every row written before clips were
+    # accepted held a picture, so the absent value is already the truth about them.
+    media_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # One attached document, described well enough that a reader can decide before downloading.
+    # Handed back only as a download, never inline — see `download_post_file`.
+    file_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
@@ -640,6 +810,37 @@ class Message(Base):
     gift_claimed_by_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # A story shared into the chat points at the story itself, so the bubble shows what it is
+    # now — expired, or deleted by its author — instead of a copy that outlives the original.
+    story_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("profile_stories.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class RealtimeOutbox(Base):
+    """One durable per-user event committed in the same transaction as its domain mutation."""
+
+    __tablename__ = "realtime_outbox"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(96))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error_class: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    published_cursor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class MessageReaction(Base):
@@ -685,6 +886,128 @@ class StarWallet(Base):
     )
 
 
+class StarPurchase(Base):
+    """
+    An order for site stars, charged in Telegram Stars inside our own bot.
+
+    The row exists before the money does: the site mints it, the buyer opens the bot through a
+    deep link carrying `payload`, and the bot reports the charge back. `telegram_charge_id` is
+    unique because Telegram may deliver the same successful payment twice, and a second credit
+    for one payment is the one mistake a wallet must never make.
+    """
+
+    __tablename__ = "star_purchases"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    package_slug: Mapped[str] = mapped_column(String(32))
+    # What the buyer receives here, and what Telegram charges for it.
+    stars: Mapped[int] = mapped_column(Integer)
+    price_xtr: Mapped[int] = mapped_column(Integer)
+    # The deep-link token. It is the invoice payload too, so the bot never has to trust a number
+    # typed by whoever opened the chat.
+    payload: Mapped[str] = mapped_column(String(48), unique=True, index=True)
+    # pending | paid | cancelled | expired | refunded | paid_out
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_charge_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, unique=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Which payout consumed this charge, when one did. Telegram has no call that sends Stars to a
+    # person, but `refundStarPayment` returns them — so a withdrawal can be carried out by handing
+    # back a charge of exactly the right size. That charge is then spent: it cannot also be
+    # refunded through the refund flow, and this is what says so. Plain column, no constraint:
+    # `_add_missing_columns` adds columns to existing tables and cannot add a foreign key.
+    payout_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+
+class StarRefund(Base):
+    """
+    A request to give a Telegram Stars payment back.
+
+    The decision is a person's, not a rule's: the buyer states a reason, an admin answers it in
+    Telegram, and only then does anything move. Both conditions are checked again at that moment —
+    the two-week window may have closed and the stars may have been spent since the request.
+
+    Money moves in one order and only one: the site debits first, Telegram refunds second. The
+    other way round leaves a buyer holding both halves if the debit turns out to be impossible.
+    """
+
+    __tablename__ = "star_refunds"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    purchase_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("star_purchases.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    reason: Mapped[str] = mapped_column(Text)
+    # pending | approved | declined | failed
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    admin_note: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    decided_by_telegram_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # When the bot handed this request to an admin, so one request is announced once.
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When Telegram actually gave the money back. An approval on the site is only half of it:
+    # `refundStarPayment` still has to be called, and it must be called exactly once, whether the
+    # approval came from the bot's buttons or from the admin panel.
+    telegram_done_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class StarPayout(Base):
+    """
+    A request to take site stars out of GRAM as Telegram Stars.
+
+    The mirror image of `StarPurchase` at the same rate — twenty of ours for one of theirs — with
+    one difference that decides the whole design: Telegram has no API for sending Stars to a
+    person, so the last step is a human's. The site therefore does what it alone can do, and does
+    it first: the stars leave the balance the moment the request is made, so nobody can spend the
+    same stars twice while a payout waits. An admin then confirms or refuses in the panel, and the
+    stars come back on a refusal or a failure.
+    """
+
+    __tablename__ = "star_payouts"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # What leaves here, and what has to arrive in Telegram.
+    stars: Mapped[int] = mapped_column(Integer)
+    price_xtr: Mapped[int] = mapped_column(Integer)
+    # Where it goes. The id is what an earlier purchase through the bot taught us; the username is
+    # what the requester typed when we know nothing, and then an admin resolves it by hand.
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # pending | approved | paid | declined | failed | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    admin_note: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    decided_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_by_telegram_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # When the bot told the admins about it, so an approved payout is announced once.
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class StarLedger(Base):
     __tablename__ = "star_ledger"
 
@@ -703,6 +1026,103 @@ class StarLedger(Base):
     entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     correlation_id: Mapped[uuid.UUID] = mapped_column(default=uuid.uuid4, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CryptoInvoice(Base):
+    """
+    One crypto top-up: an address to send to, and the credit it becomes when the money lands.
+
+    The row exists before the money does, exactly like `StarPurchase`. What differs is who confirms
+    it: Telegram tells our bot about a charge, whereas here *we* ask NOWPayments what happened.
+    Nothing is credited on a callback's word — a callback only says "look again", and the look is an
+    authenticated read of the payment by its provider id.
+
+    `credited_at` is the idempotency latch. A provider may deliver the same `finished` state to a
+    callback, to a poll from the buyer's open browser tab and to an admin's refresh within the same
+    second; whichever gets there first sets this, and the others find it set and do nothing. That is
+    the one mistake a wallet must never make.
+    """
+
+    __tablename__ = "crypto_invoices"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    package_slug: Mapped[str] = mapped_column(String(32))
+    # What the buyer receives here, and the fiat price the crypto amount was quoted from.
+    stars: Mapped[int] = mapped_column(Integer)
+    price_amount: Mapped[float] = mapped_column(Float)
+    price_currency: Mapped[str] = mapped_column(String(8), default="uah")
+    # Which coin and network, and how much of it the provider asked for.
+    pay_currency: Mapped[str] = mapped_column(String(24))
+    pay_amount: Mapped[float] = mapped_column(Float, default=0)
+    pay_address: Mapped[str] = mapped_column(String(200), default="")
+    # Some chains need a memo/tag beside the address; sending without it loses the payment.
+    payin_extra_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    network_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Ours, and how a callback finds the row. Carries no secret: the credit is decided by re-reading
+    # the payment from the provider, so a guessed order id buys nothing.
+    order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # The provider's own id. Unique so two rows can never claim one payment.
+    provider_payment_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
+    # waiting | confirming | confirmed | sending | finished | partially_paid | failed | refunded |
+    # expired — the provider's vocabulary, stored verbatim so an admin sees what it actually said.
+    provider_status: Mapped[str] = mapped_column(String(24), default="waiting", index=True)
+    # How much really arrived, which is how an underpayment is recognised.
+    actually_paid: Mapped[float] = mapped_column(Float, default=0)
+    # pending | paid | expired | cancelled | underpaid | failed — ours, for the UI.
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    # Set once, when the stars are actually added. The latch described above.
+    credited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # What the provider last told us, for an admin looking at a payment that went wrong.
+    provider_note: Mapped[str | None] = mapped_column(String(400), nullable=True)
+
+
+class CryptoPayoutDetails(Base):
+    """
+    Where an approved crypto withdrawal has to go.
+
+    A separate table rather than more columns on `StarPayout` for one reason: a Telegram payout and
+    a crypto payout are different destinations, not different flavours of one. Keeping the address,
+    coin and network out here means the Telegram path is untouched by this feature and a payout with
+    no crypto details is unambiguously a Telegram payout.
+
+    The address is validated against the provider before the request is accepted — a wrong checksum
+    is a typo, and finding it after an admin has sent the money is finding it too late.
+    """
+
+    __tablename__ = "crypto_payout_details"
+
+    payout_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("star_payouts.id", ondelete="CASCADE"), primary_key=True
+    )
+    # The coin the person wants, its human label and the network — all three are shown to the admin
+    # who sends it, because "USDT" without a network is not an instruction.
+    currency: Mapped[str] = mapped_column(String(24))
+    asset_label: Mapped[str] = mapped_column(String(24), default="")
+    network_label: Mapped[str] = mapped_column(String(64), default="")
+    address: Mapped[str] = mapped_column(String(200))
+    extra_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # What the payout is worth in fiat and in the coin, quoted when the request was made. Stored
+    # rather than recomputed so the admin pays what the person was promised.
+    fiat_amount: Mapped[float] = mapped_column(Float, default=0)
+    fiat_currency: Mapped[str] = mapped_column(String(8), default="uah")
+    quoted_amount: Mapped[float] = mapped_column(Float, default=0)
+    quoted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Filled by the admin when the transfer is done: the chain's own receipt.
+    tx_hash: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # If the payout is ever sent through the provider's API rather than by hand.
+    provider_payout_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
 
 
 class CreatorSubscription(Base):
@@ -823,6 +1243,11 @@ class UsernameAsset(Base):
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # A handle can point at a channel instead of a person. One namespace: `@gram` is either
+    # somebody's account, somebody's channel or nobody's — never two of those at once.
+    community_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("communities.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     status: Mapped[UsernameStatus] = mapped_column(
         Enum(UsernameStatus, native_enum=False, length=20), default=UsernameStatus.AVAILABLE
     )
@@ -833,6 +1258,33 @@ class UsernameAsset(Base):
     # An owner who is keeping the handle stops being asked for a price.
     offers_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UsernameOffer(Base):
+    """
+    A bid on a handle, with the bidder's stars held until the owner answers.
+
+    Held rather than promised: an accepted offer that cannot be paid is worse than no offer, so
+    the amount leaves the bidder's wallet when they bid and comes back if the offer does not
+    become a sale.
+    """
+
+    __tablename__ = "username_offers"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("username_assets.id", ondelete="CASCADE"), index=True
+    )
+    bidder_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    amount_stars: Mapped[int] = mapped_column(Integer)
+    # pending | accepted | declined | withdrawn | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class UsernameOwnershipEvent(Base):
@@ -1029,6 +1481,31 @@ class Notification(Base):
     text: Mapped[str] = mapped_column(String(240))
     entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class AdminAction(Base):
+    """
+    Every staff decision, append-only.
+
+    Moderation without a trail is indistinguishable from abuse, so each action records who did
+    it, to what, and why — including the ones that only granted something.
+    """
+
+    __tablename__ = "admin_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    action: Mapped[str] = mapped_column(String(40), index=True)
+    target_type: Mapped[str] = mapped_column(String(16))
+    target_id: Mapped[str] = mapped_column(String(64))
+    target_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )

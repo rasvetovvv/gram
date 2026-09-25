@@ -8,15 +8,113 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from PIL import Image
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import giftart
-from app.models import Message, User
+from app import main as main_module
+from app.config import REFRESH_GRACE_SECONDS
+from app.main import utcnow
+from app.models import (
+    AuthIdentity,
+    EmailLoginChallenge,
+    LegalReport,
+    Message,
+    PendingRegistration,
+    RefreshSession,
+    StarPurchase,
+    User,
+    UserProfileDetails,
+)
+from app.schemas import MAX_OWNED_USERNAMES
+from app.security import refresh_token_hash
 
 DEMO_PASSWORD = "GramDemo!2026"  # noqa: S105 - documented local-only fixture
+# The bot's shared secret, as `app.config` defaults it in a local run.
+BOT_SECRET = "local-only-change-this-bot-secret"  # noqa: S105 - documented local-only fixture
+BOT_HEADERS = {"X-Bot-Secret": BOT_SECRET}
+
+
+async def test_star_packages_are_bought_through_the_telegram_bot(client: AsyncClient) -> None:
+    """
+    Site stars are charged in Telegram Stars, inside our own bot.
+
+    The site opens an order and hands out a deep link; the bot reports the charge back with its
+    id. Paying once credits once: Telegram re-delivers a successful payment when it is not sure
+    the bot saw it, and a wallet that counts that twice is worse than one that misses it.
+    """
+    await login_demo(client)
+    packages = await client.get("/api/stars/packages")
+    assert packages.status_code == 200, packages.text
+    base = packages.json()[0]
+    assert (base["stars"], base["price_xtr"], base["bonus_percent"]) == (100, 5, 0)
+    # A bigger pack has to be the better deal, or there is no reason for it to exist.
+    assert packages.json()[-1]["bonus_percent"] > 0
+
+    order = await client.post("/api/stars/orders", json={"package": "starter"})
+    assert order.status_code == 201, order.text
+    body = order.json()
+    assert body["status"] == "pending"
+    assert (body["stars"], body["price_xtr"]) == (100, 5)
+    assert body["bot_url"].startswith("https://t.me/")
+    # A second tap on the same pack picks the open order back up.
+    assert (await client.post("/api/stars/orders", json={"package": "starter"})).json()["id"] == (
+        body["id"]
+    )
+
+    payload = body["bot_url"].split("start=")[1]
+    before = (await client.get("/api/users/me")).json()["stars_balance"]
+    # Without the bot's own credential the callback is nobody's.
+    assert (await client.get(f"/api/bot/orders/{payload}")).status_code == 401
+    seen = await client.get(f"/api/bot/orders/{payload}", headers=BOT_HEADERS)
+    assert seen.status_code == 200, seen.text
+    assert seen.json()["buyer_username"] == "leon"
+    assert seen.json()["price_xtr"] == 5
+
+    charge = {"telegram_user_id": 4242, "telegram_charge_id": "tg-charge-1", "amount_xtr": 5}
+    paid = await client.post(f"/api/bot/orders/{payload}/paid", json=charge, headers=BOT_HEADERS)
+    assert paid.status_code == 200, paid.text
+    assert paid.json() == {"detail": "credited"}
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == before + 100
+    # The same charge again credits nothing.
+    twice = await client.post(f"/api/bot/orders/{payload}/paid", json=charge, headers=BOT_HEADERS)
+    assert twice.json() == {"detail": "already_credited"}
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == before + 100
+    # A different charge against a paid order is refused outright.
+    other = {**charge, "telegram_charge_id": "tg-charge-2"}
+    assert (
+        await client.post(f"/api/bot/orders/{payload}/paid", json=other, headers=BOT_HEADERS)
+    ).status_code == 409
+    assert (await client.get(f"/api/stars/orders/{body['id']}")).json()["status"] == "paid"
+    ledger = (await client.get("/api/stars/ledger")).json()
+    assert ledger[0]["kind"] == "stars_telegram"
+    assert ledger[0]["amount"] == 100
+
+    # Paying less than the order says is not paying for it.
+    second = (await client.post("/api/stars/orders", json={"package": "plus"})).json()
+    second_payload = second["bot_url"].split("start=")[1]
+    short = {"telegram_user_id": 4242, "telegram_charge_id": "tg-charge-3", "amount_xtr": 1}
+    refused = await client.post(
+        f"/api/bot/orders/{second_payload}/paid", json=short, headers=BOT_HEADERS
+    )
+    assert refused.status_code == 409
+    assert "вместо" in refused.json()["detail"]
+
+    # Cancelling closes the link the buyer walked away from.
+    assert (await client.delete(f"/api/stars/orders/{second['id']}")).json() == {
+        "detail": "Заказ отменён"
+    }
+    closed = await client.get(f"/api/bot/orders/{second_payload}", headers=BOT_HEADERS)
+    assert closed.json()["status"] == "cancelled"
+    assert (
+        await client.post(
+            f"/api/bot/orders/{second_payload}/paid",
+            json={**short, "amount_xtr": 12, "telegram_charge_id": "tg-charge-4"},
+            headers=BOT_HEADERS,
+        )
+    ).status_code == 409
 
 
 async def login_demo(client: AsyncClient) -> dict[str, object]:
@@ -26,6 +124,182 @@ async def login_demo(client: AsyncClient) -> dict[str, object]:
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def enable_email_auth(
+    monkeypatch: pytest.MonkeyPatch,
+    sent: list[tuple[str, str, str]],
+    *,
+    fail_delivery: bool = False,
+) -> None:
+    monkeypatch.setattr(main_module, "EMAIL_AUTH_ENABLED", True)
+    monkeypatch.setattr(main_module, "EMAIL_OTP_BYPASS", False)
+    main_module._AUTH_SEND_WINDOWS.clear()
+
+    def deliver(email: str, code: str, *, purpose: str) -> None:
+        if fail_delivery:
+            raise OSError("synthetic SMTP outage")
+        sent.append((email, code, purpose))
+
+    monkeypatch.setattr(main_module, "send_auth_code", deliver)
+
+
+async def test_registration_waits_for_email_code_before_account_and_session(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[tuple[str, str, str]] = []
+    enable_email_auth(monkeypatch, sent)
+    email = "email-gate@example.com"
+    password = "EmailGatePass!2026"
+    started = await client.post(
+        "/api/auth/register",
+        json={
+            "email": email,
+            "password": password,
+            "username": "emailgate",
+            "display_name": "Email Gate",
+        },
+    )
+    assert started.status_code == 201, started.text
+    challenge = started.json()
+    assert challenge["purpose"] == "register"
+    assert challenge["requires_email_code"] is True
+    assert challenge["delivery"] == "sent"
+    assert email not in challenge["masked_email"]
+    assert started.headers["cache-control"] == "no-store"
+    assert not client.cookies.get("gram_access")
+    assert len(sent) == 1 and sent[0][2] == "register"
+    assert sent[0][1] not in started.text
+    assert await db_session.scalar(select(func.count()).select_from(User).where(User.username == "emailgate")) == 0
+    pending = await db_session.get(PendingRegistration, uuid.UUID(challenge["challenge_id"]))
+    assert pending is not None and len(pending.code_hash) == 64
+
+    wrong = await client.post(
+        "/api/auth/email/verify",
+        json={"challenge_id": challenge["challenge_id"], "code": "000000"},
+    )
+    assert wrong.status_code == 400
+    assert wrong.headers["cache-control"] == "no-store"
+    verified = await client.post(
+        "/api/auth/email/verify",
+        json={"challenge_id": challenge["challenge_id"], "code": sent[0][1]},
+    )
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["user"]["username"] == "emailgate"
+    assert client.cookies.get("gram_access")
+    identity = await db_session.get(AuthIdentity, uuid.UUID(verified.json()["user"]["id"]))
+    assert identity is not None
+    await db_session.refresh(identity)
+    assert identity.email_verified is True
+    db_session.expire_all()
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(PendingRegistration)
+            .where(PendingRegistration.id == uuid.UUID(challenge["challenge_id"]))
+        )
+        == 0
+    )
+    replay = await client.post(
+        "/api/auth/email/verify",
+        json={"challenge_id": challenge["challenge_id"], "code": sent[0][1]},
+    )
+    assert replay.status_code == 404
+
+
+async def test_login_email_code_resend_rotates_and_replay_fails(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[tuple[str, str, str]] = []
+    enable_email_auth(monkeypatch, sent)
+    started = await client.post(
+        "/api/auth/login", json={"identifier": "leon", "password": DEMO_PASSWORD}
+    )
+    assert started.status_code == 202, started.text
+    challenge = started.json()
+    assert challenge["purpose"] == "login" and challenge["delivery"] == "sent"
+    assert not client.cookies.get("gram_access")
+    first_code = sent[-1][1]
+    row = await db_session.get(EmailLoginChallenge, uuid.UUID(challenge["challenge_id"]))
+    assert row is not None and len(row.code_hash) == 64
+    too_soon = await client.post(
+        "/api/auth/email/resend", json={"challenge_id": challenge["challenge_id"]}
+    )
+    assert too_soon.status_code == 429
+    row.last_sent_at = datetime.now(UTC) - timedelta(minutes=2)
+    await db_session.commit()
+
+    resent = await client.post(
+        "/api/auth/email/resend", json={"challenge_id": challenge["challenge_id"]}
+    )
+    assert resent.status_code == 200, resent.text
+    second_code = sent[-1][1]
+    assert second_code != first_code
+    old = await client.post(
+        "/api/auth/email/verify",
+        json={"challenge_id": challenge["challenge_id"], "code": first_code},
+    )
+    assert old.status_code == 400
+    completed = await client.post(
+        "/api/auth/email/verify",
+        json={"challenge_id": challenge["challenge_id"], "code": second_code},
+    )
+    assert completed.status_code == 200, completed.text
+    assert client.cookies.get("gram_access")
+    replay = await client.post(
+        "/api/auth/email/verify",
+        json={"challenge_id": challenge["challenge_id"], "code": second_code},
+    )
+    assert replay.status_code == 409
+
+    await client.post("/api/auth/logout")
+    expired_start = await client.post(
+        "/api/auth/login", json={"identifier": "leon", "password": DEMO_PASSWORD}
+    )
+    expired_id = uuid.UUID(expired_start.json()["challenge_id"])
+    expired = await db_session.get(EmailLoginChallenge, expired_id)
+    assert expired is not None
+    expired.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await db_session.commit()
+    refused = await client.post(
+        "/api/auth/email/verify",
+        json={"challenge_id": str(expired_id), "code": sent[-1][1]},
+    )
+    assert refused.status_code == 410
+
+    locked_start = await client.post(
+        "/api/auth/login", json={"identifier": "leon", "password": DEMO_PASSWORD}
+    )
+    locked_id = uuid.UUID(locked_start.json()["challenge_id"])
+    locked = await db_session.get(EmailLoginChallenge, locked_id)
+    assert locked is not None
+    locked.attempts = main_module.EMAIL_OTP_MAX_ATTEMPTS
+    await db_session.commit()
+    limited = await client.post(
+        "/api/auth/email/verify",
+        json={"challenge_id": str(locked_id), "code": sent[-1][1]},
+    )
+    assert limited.status_code == 429
+
+
+async def test_login_smtp_failure_never_issues_a_session(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[tuple[str, str, str]] = []
+    enable_email_auth(monkeypatch, sent, fail_delivery=True)
+    started = await client.post(
+        "/api/auth/login", json={"identifier": "leon", "password": DEMO_PASSWORD}
+    )
+    assert started.status_code == 202, started.text
+    assert started.json()["delivery"] == "failed"
+    assert not client.cookies.get("gram_access")
+    assert (await client.get("/api/auth/me")).status_code == 401
+    assert sent == []
 
 
 async def test_auth_registration_onboarding_refresh_and_logout(client: AsyncClient) -> None:
@@ -72,6 +346,79 @@ async def test_auth_registration_onboarding_refresh_and_logout(client: AsyncClie
         "/api/auth/login", json={"identifier": "newcomer", "password": "wrong"}
     )
     assert wrong.status_code == 401
+
+
+async def test_a_concurrent_refresh_does_not_sign_anybody_out(client: AsyncClient) -> None:
+    """
+    Two refreshes racing on one cookie jar is ordinary, not theft.
+
+    A browser holds many requests; when the access cookie expires several get a 401 at once and
+    each tries to refresh. The loser arrives carrying the token the winner already spent. Treating
+    that as a stolen credential — and revoking *every* session of the account, as this used to —
+    is what signed people out of their phone because a laptop tab was a second late.
+    """
+    await register_partner(client, "racer")
+    await login_as(client, "racer")
+    first_refresh = client.cookies.get("gram_refresh")
+    assert first_refresh
+
+    winner = await client.post("/api/auth/refresh")
+    assert winner.status_code == 200, winner.text
+    rotated = client.cookies.get("gram_refresh")
+    assert rotated != first_refresh
+
+    # The straggler still holds the pre-rotation token.
+    loser = await client.post("/api/auth/refresh", cookies={"gram_refresh": first_refresh})
+    assert loser.status_code == 200, loser.text
+    # It is answered with a working access cookie and the refresh credential is left as it was:
+    # overwriting it would replace the winner's good token with a stale one.
+    assert client.cookies.get("gram_refresh") == rotated
+    assert (await client.get("/api/users/me")).status_code == 200
+
+
+async def test_a_stale_token_outside_the_grace_window_only_kills_its_own_chain(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """
+    A real reuse revokes that credential's chain — and nothing else.
+
+    The account's other devices keep working, which is the whole difference from the previous
+    behaviour: one compromised (or merely stale) cookie used to end every session there was.
+    """
+    await register_partner(client, "twodev")
+
+    # Device A signs in and keeps its own cookie jar; device B is the fixture's client. Both speak
+    # to the same in-process app, so this is two browsers rather than two servers.
+    transport = ASGITransport(app=main_module.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as device_a:
+        await login_as(device_a, "twodev")
+        assert device_a.cookies.get("gram_refresh")
+
+        await login_as(client, "twodev")
+        b_original = client.cookies.get("gram_refresh")
+        assert (await client.post("/api/auth/refresh")).status_code == 200
+        b_rotated = client.cookies.get("gram_refresh")
+        assert b_rotated != b_original
+
+        # Age the rotation past the grace window, then present the spent token again.
+        await db_session.execute(
+            update(RefreshSession)
+            .where(RefreshSession.token_hash == refresh_token_hash(b_original))
+            .values(revoked_at=utcnow() - timedelta(seconds=REFRESH_GRACE_SECONDS + 60))
+        )
+        await db_session.commit()
+
+        reused = await client.post("/api/auth/refresh", cookies={"gram_refresh": b_original})
+        assert reused.status_code == 401
+        assert "повторное использование" in reused.json()["detail"]
+
+        # Device B's chain is gone…
+        stale = await client.post("/api/auth/refresh", cookies={"gram_refresh": b_rotated})
+        assert stale.status_code == 401
+        # …and device A is untouched.
+        assert (await device_a.get("/api/users/me")).status_code == 200
+        assert (await device_a.post("/api/auth/refresh")).status_code == 200
 
 
 async def test_feed_follow_comments_bookmarks_reposts_and_direct_chat(client: AsyncClient) -> None:
@@ -233,6 +580,136 @@ async def test_gift_showcase_offer_provenance_and_username_purchase(client: Asyn
     assert purchased.json()["owner_username"] == "buyer"
     history = await client.get(f"/api/usernames/{listed['id']}/history")
     assert history.json()[0]["action"] == "acquired"
+    # The seller hears about it. A sale nobody is told about is the market's worst manners.
+    await client.post("/api/auth/logout")
+    await login_demo(client)
+    news = (await client.get("/api/notifications")).json()
+    assert any("продан" in item["text"] and "north" in item["text"] for item in news)
+
+
+async def test_channel_addresses_join_the_handle_market(client: AsyncClient) -> None:
+    """
+    A channel's address is a handle in the same namespace as an account's.
+
+    `@gram` used to be able to be a person *and* a channel at once. Now a channel takes its
+    address out of the one pool everybody draws from, may carry extra handles out of its owner's
+    own collection, and cannot have the address it answers to sold from under it.
+    """
+    await login_demo(client)
+    made = await client.post(
+        "/api/communities",
+        json={"slug": "leonchannel", "title": "Канал Леона", "description": "О коллекциях"},
+    )
+    assert made.status_code == 201, made.text
+    assert made.json()["usernames"] == ["leonchannel"]
+
+    assets = {item["username"]: item for item in (await client.get("/api/usernames")).json()}
+    primary = assets["leonchannel"]
+    assert primary["is_community_primary"] is True
+    assert primary["community_slug"] == "leonchannel"
+    refused = await client.patch(
+        f"/api/usernames/{primary['id']}/listing", json={"for_sale": True, "price": 400}
+    )
+    assert refused.status_code == 409, refused.text
+    assert "адрес канала" in refused.json()["detail"]
+
+    # An extra handle out of the owner's own collection becomes a second address for the channel.
+    attached = await client.post(
+        "/api/communities/leonchannel/usernames", json={"username": "afterglow"}
+    )
+    assert attached.status_code == 201, attached.text
+    assert attached.json()["usernames"] == ["leonchannel", "afterglow"]
+    assert (await client.get("/api/communities/afterglow")).json()["slug"] == "leonchannel"
+
+    # And it can become the address, with the previous one still opening the channel.
+    extra = next(
+        item for item in (await client.get("/api/usernames")).json()
+        if item["username"] == "afterglow"
+    )
+    promoted = await client.post(
+        f"/api/communities/leonchannel/usernames/{extra['id']}/primary"
+    )
+    assert promoted.status_code == 200, promoted.text
+    assert promoted.json()["slug"] == "afterglow"
+    assert (await client.get("/api/communities/leonchannel")).json()["slug"] == "afterglow"
+
+    # Nobody else can take any of a channel's handles, or an account's.
+    await register_partner(client, "handlepal")
+    await login_as(client, "handlepal")
+    # An extra handle is an address for everything, not only for reading: joining by it works.
+    joined = await client.post("/api/communities/leonchannel/join")
+    assert joined.status_code == 200, joined.text
+    assert joined.json()["is_member"] is True
+    assert joined.json()["slug"] == "afterglow"
+    for handle in ("leonchannel", "afterglow"):
+        clash = await client.post("/api/usernames/reserve", json={"username": handle})
+        assert clash.status_code == 409, handle
+    named = await client.post(
+        "/api/communities", json={"slug": "leon", "title": "Не Леон", "description": "x"}
+    )
+    assert named.status_code == 409
+    assert "аккаунт" in named.json()["detail"]
+
+
+async def test_username_offers_hold_stars_until_the_owner_answers(client: AsyncClient) -> None:
+    """
+    A bid is money, not a message.
+
+    The stars leave the bidder when they bid and come back the moment the bid stops being one:
+    declined, withdrawn, or beaten by a sale. An accepted bid nobody can pay is worse for a
+    seller than no bid at all, which is why nothing here is a promise.
+    """
+    await register_partner(client, "bidder")
+    await login_as(client, "bidder")
+    await client.post("/api/stars/top-up", json={"amount": 2000})
+    north = next(
+        item for item in (await client.get("/api/usernames")).json() if item["username"] == "north"
+    )
+    balance_before = (await client.get("/api/users/me")).json()["stars_balance"]
+
+    offered = await client.post(f"/api/usernames/{north['id']}/offers", json={"amount": 300})
+    assert offered.status_code == 201, offered.text
+    assert offered.json()["status"] == "pending"
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == balance_before - 300
+    # One standing bid per handle: a second would hold twice the stars for one answer.
+    again = await client.post(f"/api/usernames/{north['id']}/offers", json={"amount": 400})
+    assert again.status_code == 409
+    # A handle its owner still answers to is not biddable at all.
+    leon_handle = next(
+        item for item in (await client.get("/api/usernames")).json() if item["username"] == "leon"
+    )
+    assert (
+        await client.post(f"/api/usernames/{leon_handle['id']}/offers", json={"amount": 500})
+    ).status_code == 409
+
+    await login_demo(client)
+    seen = (await client.get(f"/api/usernames/{north['id']}/offers")).json()
+    assert [offer["amount_stars"] for offer in seen] == [300]
+    assert seen[0]["bidder"]["username"] == "bidder"
+    declined = await client.post(f"/api/usernames/offers/{seen[0]['id']}/decline")
+    assert declined.status_code == 200, declined.text
+    assert declined.json()["status"] == "declined"
+
+    await login_as(client, "bidder")
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == balance_before
+    assert (await client.get("/api/usernames/me/offers")).json()[0]["status"] == "declined"
+    accepted_bid = await client.post(f"/api/usernames/{north['id']}/offers", json={"amount": 500})
+    assert accepted_bid.status_code == 201, accepted_bid.text
+
+    await login_demo(client)
+    seller_before = (await client.get("/api/users/me")).json()["stars_balance"]
+    taken = await client.post(f"/api/usernames/offers/{accepted_bid.json()['id']}/accept")
+    assert taken.status_code == 200, taken.text
+    assert taken.json()["owner_username"] == "bidder"
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == seller_before + 500
+
+    await login_as(client, "bidder")
+    # The buyer paid when they bid, so acceptance costs them nothing more.
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == balance_before - 500
+    mine = (await client.get("/api/usernames/me/offers")).json()
+    assert [offer["status"] for offer in mine] == ["accepted", "declined"]
+    news = (await client.get("/api/notifications")).json()
+    assert any("Ставка принята" in item["text"] for item in news)
 
 
 async def test_avatar_and_cover_upload_validation(client: AsyncClient) -> None:
@@ -252,6 +729,189 @@ async def test_avatar_and_cover_upload_validation(client: AsyncClient) -> None:
     assert invalid.status_code == 422
 
 
+async def test_groups_are_private_by_invitation_or_public_by_link(client: AsyncClient) -> None:
+    """
+    Two kinds of group, and the difference is who may bring somebody in.
+
+    A private group is its owner's to invite into. A public one has a link, and whoever holds it
+    walks in. Closing a group destroys the link instead of parking it: a door that reopens for
+    everybody who was ever sent a key is not a closed door.
+    """
+    await register_partner(client, "grouppal")
+    await register_partner(client, "linkpal")
+    await login_demo(client)
+    private = await client.post(
+        "/api/chats/groups", json={"title": "Тихая группа", "members": ["grouppal"]}
+    )
+    assert private.status_code == 201, private.text
+    assert private.json()["is_public"] is False
+    assert private.json()["invite_code"] is None
+    assert private.json()["is_owner"] is True
+    chat_id = private.json()["id"]
+
+    # A member who is not the owner neither invites into a private group nor opens it.
+    await login_as(client, "grouppal")
+    refused = await client.post(f"/api/chats/{chat_id}/members", json={"members": ["linkpal"]})
+    assert refused.status_code == 403, refused.text
+    assert (
+        await client.patch(f"/api/chats/{chat_id}/access", json={"is_public": True})
+    ).status_code == 403
+
+    await login_demo(client)
+    opened = await client.patch(f"/api/chats/{chat_id}/access", json={"is_public": True})
+    assert opened.status_code == 200, opened.text
+    code = opened.json()["invite_code"]
+    assert code
+
+    await login_as(client, "linkpal")
+    preview = await client.get(f"/api/chats/join/{code}")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["title"] == "Тихая группа"
+    assert preview.json()["is_member"] is False
+    joined = await client.post(f"/api/chats/join/{code}")
+    assert joined.status_code == 200, joined.text
+    assert joined.json()["is_public"] is True
+    assert (await client.get(f"/api/chats/join/{code}")).json()["is_member"] is True
+    # Inside a public group, any member may bring somebody: the link already lets them.
+    assert (
+        await client.post(f"/api/chats/{chat_id}/members", json={"members": ["artem"]})
+    ).status_code == 200
+
+    # Closing the group kills the link that was handed out.
+    await login_demo(client)
+    closed = await client.patch(f"/api/chats/{chat_id}/access", json={"is_public": False})
+    assert closed.json()["invite_code"] is None
+    await login_as(client, "linkpal")
+    assert (await client.get(f"/api/chats/join/{code}")).status_code == 404
+
+    # A group created public carries its link from the start, and rotating it retires the old one.
+    await login_demo(client)
+    public = await client.post(
+        "/api/chats/groups",
+        json={"title": "Открытая", "members": ["grouppal"], "is_public": True},
+    )
+    assert public.status_code == 201, public.text
+    first = public.json()["invite_code"]
+    assert first
+    rotated = await client.post(f"/api/chats/{public.json()['id']}/invite")
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.json()["invite_code"] != first
+    await login_as(client, "linkpal")
+    assert (await client.get(f"/api/chats/join/{first}")).status_code == 404
+    fresh_code = rotated.json()["invite_code"]
+    assert (await client.post(f"/api/chats/join/{fresh_code}")).status_code == 200
+
+
+async def test_star_refund_needs_a_reason_an_admin_and_unspent_stars(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """
+    A refund is a person's decision, taken inside two hard limits.
+
+    Fourteen days, and the stars still on the balance: the first is the window, the second is what
+    "unused" can honestly mean when stars are fungible. The site debits before Telegram is asked,
+    so an approval that cannot be paid for is refused before anybody is refunded — and if Telegram
+    then refuses anyway, the debit is reversed.
+    """
+    await login_demo(client)
+    order = (await client.post("/api/stars/orders", json={"package": "starter"})).json()
+    payload = order["bot_url"].split("start=")[1]
+    await client.post(
+        f"/api/bot/orders/{payload}/paid",
+        json={"telegram_user_id": 7001, "telegram_charge_id": "refund-charge-1", "amount_xtr": 5},
+        headers=BOT_HEADERS,
+    )
+
+    # A reason is required, and it has to say something.
+    assert (
+        await client.post(f"/api/stars/orders/{order['id']}/refund", json={"reason": "нет"})
+    ).status_code == 422
+
+    asked = await client.post(
+        f"/api/stars/orders/{order['id']}/refund",
+        json={"reason": "Купил по ошибке, звёзды не тратил"},
+    )
+    assert asked.status_code == 201, asked.text
+    assert asked.json()["refund"]["status"] == "pending"
+    assert asked.json()["refundable"] is False
+    # A second request while the first is open would be two answers to one question.
+    again = await client.post(
+        f"/api/stars/orders/{order['id']}/refund", json={"reason": "Ещё одна причина возврата"}
+    )
+    assert again.status_code == 409
+
+    # The bot is handed each request once; `/refunds` still lists it afterwards.
+    pending = await client.get("/api/bot/refunds/pending", headers=BOT_HEADERS)
+    assert pending.status_code == 200, pending.text
+    assert [item["buyer_username"] for item in pending.json()] == ["leon"]
+    refund_id = pending.json()[0]["id"]
+    assert pending.json()[0]["telegram_charge_id"] == "refund-charge-1"
+    assert pending.json()[0]["reason"].startswith("Купил по ошибке")
+    assert (await client.get("/api/bot/refunds/pending", headers=BOT_HEADERS)).json() == []
+    still_open = await client.get("/api/bot/refunds/open", headers=BOT_HEADERS)
+    assert [item["id"] for item in still_open.json()] == [refund_id]
+
+    before = (await client.get("/api/users/me")).json()["stars_balance"]
+    decision = {"approved": True, "admin_telegram_id": 944763501}
+    approved = await client.post(
+        f"/api/bot/refunds/{refund_id}/decision", json=decision, headers=BOT_HEADERS
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["telegram_charge_id"] == "refund-charge-1"
+    assert approved.json()["price_xtr"] == 5
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == before - 100
+    receipt = (await client.get(f"/api/stars/orders/{order['id']}")).json()
+    assert receipt["status"] == "refunded"
+    assert receipt["refund"]["status"] == "approved"
+    # One decision per request.
+    assert (
+        await client.post(
+            f"/api/bot/refunds/{refund_id}/decision", json=decision, headers=BOT_HEADERS
+        )
+    ).status_code == 409
+
+    # Telegram refusing after the debit puts the stars back where they were.
+    reversal = await client.post(
+        f"/api/bot/refunds/{refund_id}/failed", params={"note": "Telegram отказал"},
+        headers=BOT_HEADERS,
+    )
+    assert reversal.json() == {"detail": "reversed"}
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == before
+    assert (await client.get(f"/api/stars/orders/{order['id']}")).json()["status"] == "paid"
+
+    # Stars that have been spent cannot be handed back.
+    second = (await client.post("/api/stars/orders", json={"package": "starter"})).json()
+    second_payload = second["bot_url"].split("start=")[1]
+    await client.post(
+        f"/api/bot/orders/{second_payload}/paid",
+        json={"telegram_user_id": 7001, "telegram_charge_id": "refund-charge-2", "amount_xtr": 5},
+        headers=BOT_HEADERS,
+    )
+    balance = (await client.get("/api/users/me")).json()["stars_balance"]
+    await client.post("/api/stars/send", json={"to_username": "artem", "amount": balance - 50})
+    spent = await client.post(
+        f"/api/stars/orders/{second['id']}/refund",
+        json={"reason": "Хочу вернуть, хотя звёзды уже потратил"},
+    )
+    assert spent.status_code == 409
+    assert "израсходованы" in spent.json()["detail"]
+
+    # And the window closes. Only time travel can set that up.
+    await client.post("/api/stars/top-up", json={"amount": 500})
+    await db_session.execute(
+        update(StarPurchase)
+        .where(StarPurchase.id == uuid.UUID(second["id"]))
+        .values(paid_at=datetime.now(UTC) - timedelta(days=15))
+    )
+    await db_session.commit()
+    stale = await client.post(
+        f"/api/stars/orders/{second['id']}/refund",
+        json={"reason": "Прошло больше двух недель, но всё равно хочу"},
+    )
+    assert stale.status_code == 409
+    assert "Срок возврата" in stale.json()["detail"]
+
+
 async def test_notification_read_actions(client: AsyncClient) -> None:
     await login_demo(client)
     notifications = (await client.get("/api/notifications")).json()
@@ -260,6 +920,73 @@ async def test_notification_read_actions(client: AsyncClient) -> None:
     assert single.json()["is_read"] is True
     assert (await client.post("/api/notifications/read-all")).json() == {"detail": "read"}
     assert all(item["is_read"] for item in (await client.get("/api/notifications")).json())
+
+
+async def test_a_notification_can_be_deleted_and_the_list_cleared(client: AsyncClient) -> None:
+    """
+    Reading a notice used to be the only thing anyone could do with it, so a list of settled
+    business could never be emptied. These are the three ways out: one row, the read ones, all.
+    """
+    # The seeded account starts with a single notice, so a real second one is earned here: a
+    # follow and a like both write to the demo user's list.
+    await register_partner(client, "notifpal")
+    await login_as(client, "notifpal")
+    assert (await client.post("/api/users/leon/follow")).status_code == 200
+    posts = (await client.get("/api/feed")).json()
+    mine = next(item for item in posts if item["author"]["username"] == "leon")
+    assert (await client.post(f"/api/feed/{mine['id']}/like")).status_code == 200
+
+    await login_demo(client)
+    notifications = (await client.get("/api/notifications")).json()
+    assert len(notifications) >= 3
+    doomed = notifications[0]["id"]
+
+    removed = await client.delete(f"/api/notifications/{doomed}")
+    assert removed.status_code == 200
+    remaining = (await client.get("/api/notifications")).json()
+    assert doomed not in {item["id"] for item in remaining}
+    assert len(remaining) == len(notifications) - 1
+
+    # Deleting the same row twice, and a made-up id, are the same 404: nothing is disclosed.
+    assert (await client.delete(f"/api/notifications/{doomed}")).status_code == 404
+    assert (await client.delete(f"/api/notifications/{uuid.uuid4()}")).status_code == 404
+
+    # `scope=read` keeps whatever is still waiting for attention.
+    await client.post(f"/api/notifications/{remaining[0]['id']}/read")
+    still_unread = [item["id"] for item in remaining[1:] if not item["is_read"]]
+    assert still_unread, "the sweep is only meaningful with something left to keep"
+    cleared = await client.delete("/api/notifications?scope=read")
+    assert cleared.status_code == 200
+    after_read_sweep = (await client.get("/api/notifications")).json()
+    assert all(not item["is_read"] for item in after_read_sweep)
+    assert {item["id"] for item in after_read_sweep} == set(still_unread)
+
+    # And the whole list can go.
+    assert (await client.delete("/api/notifications?scope=all")).status_code == 200
+    assert (await client.get("/api/notifications")).json() == []
+
+    # A scope nobody defined is refused rather than silently treated as "all".
+    assert (await client.delete("/api/notifications?scope=everything")).status_code == 422
+
+
+async def test_one_persons_notification_cannot_be_deleted_by_another(client: AsyncClient) -> None:
+    """The delete is scoped to the caller, so somebody else's row is simply not found."""
+    await login_demo(client)
+    mine = (await client.get("/api/notifications")).json()
+    assert mine
+    target = mine[0]["id"]
+
+    # `register_partner` leaves the new account logged out, so the second login is explicit.
+    await register_partner(client, "notifthief")
+    await login_as(client, "notifthief")
+    stolen = await client.delete(f"/api/notifications/{target}")
+    assert stolen.status_code == 404
+    # Clearing one's own list must not touch anybody else's.
+    assert (await client.delete("/api/notifications?scope=all")).status_code == 200
+
+    # Still there for its owner.
+    await login_demo(client)
+    assert target in {item["id"] for item in (await client.get("/api/notifications")).json()}
 
 
 async def test_profile_details_related_usernames_and_subscription_contract(
@@ -293,10 +1020,10 @@ async def test_profile_details_related_usernames_and_subscription_contract(
     )
     assert updated.status_code == 200, updated.text
     profile = updated.json()
-    # Handles that belong to other accounts are dropped; owned collectibles are listed.
-    assert set(profile["related_usernames"]) == {"afterglow", "north", "still"}
-    assert "artem" not in profile["related_usernames"]
-    assert "leon" not in profile["related_usernames"]
+    # Sending the field takes charge of the list, so it is exactly what was asked for, filtered
+    # against ownership. `artem` and `maya` belong to other accounts and are dropped; `leon` is the
+    # primary handle and is always shown separately, so it never appears here either.
+    assert profile["related_usernames"] == []
     assert profile["website_url"] == "https://example.com/leon"
     assert profile["birthday"] == "1997-05-14"
     assert profile["profile_song_url"] == "/media/songs/test.mp3"
@@ -305,8 +1032,35 @@ async def test_profile_details_related_usernames_and_subscription_contract(
     assert profile["streak_days"] == 151
     assert profile["updated_at"] is not None
     persisted = (await client.get("/api/users/me")).json()
-    assert set(persisted["related_usernames"]) == {"afterglow", "north", "still"}
+    assert persisted["related_usernames"] == []
     assert persisted["github_url"] == "https://github.com/example"
+    # The collection itself is unaffected by what the profile chooses to show, and the cap is
+    # published so the edit form does not have to hardcode it.
+    assert {"afterglow", "north", "leon"} <= set(persisted["owned_usernames"])
+    assert persisted["max_usernames"] == MAX_OWNED_USERNAMES
+    # A handle pointing at a channel opens the channel and nothing else: one address, one page.
+    assert (await client.get("/api/users/still")).status_code == 404
+    assert (await client.get("/api/communities/still")).json()["slug"] == "digital-objects"
+
+    # Choosing two of the owned handles shows exactly those two.
+    chosen = await client.patch(
+        "/api/users/me", json={"related_usernames": ["@North", "afterglow"]}
+    )
+    assert chosen.status_code == 200, chosen.text
+    assert set(chosen.json()["related_usernames"]) == {"north", "afterglow"}
+
+    # And removing one keeps it removed — the bug this asserts against silently merged every owned
+    # handle back in, so a deleted name reappeared on the very next read.
+    reduced = await client.patch("/api/users/me", json={"related_usernames": ["north"]})
+    assert reduced.status_code == 200, reduced.text
+    assert reduced.json()["related_usernames"] == ["north"]
+    assert (await client.get("/api/users/me")).json()["related_usernames"] == ["north"]
+
+    # Clearing the list empties the strip rather than resetting it to everything.
+    cleared = await client.patch("/api/users/me", json={"related_usernames": []})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["related_usernames"] == []
+    assert (await client.get("/api/users/me")).json()["related_usernames"] == []
 
     invalid_url = await client.patch("/api/users/me", json={"website_url": "javascript:alert(1)"})
     assert invalid_url.status_code == 422
@@ -318,6 +1072,180 @@ async def test_profile_details_related_usernames_and_subscription_contract(
         "/api/users/me", json={"featured_community_slug": "missing-community"}
     )
     assert invalid_community.status_code == 422
+
+
+async def test_a_collection_of_handles_has_a_ceiling(client: AsyncClient) -> None:
+    """
+    An account may hold twenty handles, and every route that adds one enforces it.
+
+    A handle is a scarce name in a shared namespace, so an unbounded collection is a way to sit on
+    every good word and lock everybody else out. There are three ways to end up with one more —
+    reserving, buying and being given — and a cap checked in only one of them is not a cap.
+    """
+    await register_partner(client, "collector")
+    await login_as(client, "collector")
+
+    # `collector` already owns its own handle, so twenty is reached after nineteen more.
+    owned = (await client.get("/api/users/me")).json()["owned_usernames"]
+    assert owned == ["collector"]
+    for index in range(MAX_OWNED_USERNAMES - 1):
+        reserved = await client.post(
+            "/api/usernames/reserve", json={"username": f"collector{index:02d}"}
+        )
+        assert reserved.status_code == 201, reserved.text
+
+    profile = (await client.get("/api/users/me")).json()
+    assert len(profile["owned_usernames"]) == MAX_OWNED_USERNAMES
+    assert profile["max_usernames"] == MAX_OWNED_USERNAMES
+
+    # One more is refused, and the refusal says what to do about it.
+    overflow = await client.post("/api/usernames/reserve", json={"username": "onetoomany"})
+    assert overflow.status_code == 409, overflow.text
+    assert str(MAX_OWNED_USERNAMES) in overflow.json()["detail"]
+
+    # Re-reserving something already held is not an addition and stays allowed.
+    again = await client.post("/api/usernames/reserve", json={"username": "collector00"})
+    assert again.status_code == 201, again.text
+
+    # And a gift cannot overflow it either: `leon` tries to hand a handle to a full collection.
+    await login_demo(client)
+    assets = (await client.get("/api/usernames")).json()
+    spare = next(
+        item
+        for item in assets
+        if item["is_owned_by_me"] and not item["is_primary_handle"]
+    )
+    handed = await client.post(
+        f"/api/usernames/{spare['id']}/transfer", json={"to_username": "collector"}
+    )
+    assert handed.status_code == 409, handed.text
+
+    # Freeing one makes room again.
+    await login_as(client, "collector")
+    listed = (await client.get("/api/usernames")).json()
+    mine = next(
+        item for item in listed if item["is_owned_by_me"] and item["username"] == "collector00"
+    )
+    released = await client.delete(f"/api/usernames/{mine['id']}")
+    assert released.status_code in {200, 204}, released.text
+    assert (await client.post("/api/usernames/reserve", json={"username": "roomagain"})).status_code == 201
+
+
+async def test_a_freed_handle_leaves_the_profile_and_the_two_it_cannot_free(
+    client: AsyncClient,
+) -> None:
+    """
+    Giving a handle up takes it off the profile, and two handles cannot be given up at all.
+
+    The strip under a name advertises handles the account holds, so a freed one has to leave it —
+    otherwise the profile keeps pointing at a name anybody can now register. And the account's own
+    address and a channel's address are refused outright: freeing either would strand whatever is
+    reached through it, which is the same reason neither can be sold.
+    """
+    await register_partner(client, "freeholder")
+    await login_as(client, "freeholder")
+
+    reserved = await client.post("/api/usernames/reserve", json={"username": "letitgo"})
+    assert reserved.status_code == 201, reserved.text
+    asset_id = reserved.json()["id"]
+
+    shown = await client.patch("/api/users/me", json={"related_usernames": ["letitgo"]})
+    assert shown.status_code == 200, shown.text
+    assert shown.json()["related_usernames"] == ["letitgo"]
+
+    freed = await client.delete(f"/api/usernames/{asset_id}")
+    assert freed.status_code == 200, freed.text
+    assert freed.json()["status"] == "available"
+    assert not freed.json()["owner_username"]
+
+    profile = (await client.get("/api/users/me")).json()
+    assert profile["related_usernames"] == []
+    assert "letitgo" not in profile["owned_usernames"]
+
+    # Free again: it is nobody's now, so there is nothing of this account's to give up.
+    assert (await client.delete(f"/api/usernames/{asset_id}")).status_code == 403
+    # And anybody may take it: that is what "free" has to mean for the release to be worth anything.
+    await login_demo(client)
+    retaken = await client.post("/api/usernames/reserve", json={"username": "letitgo"})
+    assert retaken.status_code == 201, retaken.text
+
+    # The account's own address stays put.
+    await login_as(client, "freeholder")
+    own = next(
+        item
+        for item in (await client.get("/api/usernames")).json()
+        if item["is_owned_by_me"] and item["is_primary_handle"]
+    )
+    refused = await client.delete(f"/api/usernames/{own['id']}")
+    assert refused.status_code == 409, refused.text
+    assert "основной" in refused.json()["detail"]
+
+
+async def test_a_closed_inbox_refuses_handles_and_gifts_before_anything_moves(
+    client: AsyncClient,
+) -> None:
+    """
+    Two switches that say "do not put anything in my collection", enforced at the source.
+
+    Refusing on arrival is the only place a refusal helps: a collectible that has landed is the
+    recipient's property to undo, and undoing it costs them exactly the work receiving it did. Both
+    switches are open by default, because a present is normally welcome.
+    """
+    await register_partner(client, "shutdoor")
+    await login_as(client, "shutdoor")
+    defaults = (await client.get("/api/users/me/settings")).json()
+    assert defaults["accept_usernames"] is True
+    assert defaults["accept_gifts"] is True
+
+    closed = await client.patch(
+        "/api/users/me/settings", json={"accept_usernames": False, "accept_gifts": False}
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["accept_usernames"] is False
+    assert closed.json()["accept_gifts"] is False
+
+    # `leon` tries both, and is told why rather than left guessing.
+    await login_demo(client)
+    spare = next(
+        item
+        for item in (await client.get("/api/usernames")).json()
+        if item["is_owned_by_me"] and not item["is_primary_handle"]
+    )
+    handed = await client.post(
+        f"/api/usernames/{spare['id']}/transfer", json={"to_username": "shutdoor"}
+    )
+    assert handed.status_code == 409, handed.text
+    assert "юзернеймы" in handed.json()["detail"]
+    # Nothing moved: the handle is still where it was.
+    still_mine = await client.get(
+        "/api/usernames/lookup", params={"username": spare["username"]}
+    )
+    assert still_mine.json()["owner_username"] == "leon"
+
+    bought = await client.post(
+        "/api/gifts/purchase", json={"slug": "santa-hat", "to_username": "shutdoor", "quantity": 1}
+    )
+    assert bought.status_code == 409, bought.text
+    assert "подарки" in bought.json()["detail"]
+
+    # Opened again, both go through.
+    await login_as(client, "shutdoor")
+    reopened = await client.patch(
+        "/api/users/me/settings", json={"accept_usernames": True, "accept_gifts": True}
+    )
+    assert reopened.status_code == 200, reopened.text
+    await login_demo(client)
+    assert (
+        await client.post(
+            f"/api/usernames/{spare['id']}/transfer", json={"to_username": "shutdoor"}
+        )
+    ).status_code == 200
+    assert (
+        await client.post(
+            "/api/gifts/purchase",
+            json={"slug": "santa-hat", "to_username": "shutdoor", "quantity": 1},
+        )
+    ).status_code == 201
 
 
 async def test_profile_stories_expiration_delete_ownership_and_replies(
@@ -377,6 +1305,84 @@ async def test_profile_stories_expiration_delete_ownership_and_replies(
     profile = (await client.get("/api/users/leon")).json()
     assert profile["followers_count"] == len(followers.json())
     assert profile["following_count"] == len(following.json())
+
+
+async def test_story_rail_is_only_people_i_follow_watched_once_and_shareable(
+    client: AsyncClient,
+) -> None:
+    """
+    The rail is the reader's own subscriptions and nothing else.
+
+    Leon follows Artem and not Maya in the demo graph, so Maya's live story must not appear
+    however fresh it is. A view is counted once, only the author is told who watched, and a
+    shared story arrives in a chat as a card pointing at the original.
+    """
+    await register_partner(client, "storypal")
+    await login_demo(client)
+
+    rail = await client.get("/api/stories/feed")
+    assert rail.status_code == 200, rail.text
+    by_author = {entry["author"]["username"]: entry for entry in rail.json()}
+    assert "artem" in by_author
+    assert "maya" not in by_author
+    assert by_author["artem"]["has_unseen"] is True
+    artem_story = by_author["artem"]["stories"][0]
+    assert artem_story["seen"] is False
+
+    watched = await client.post(f"/api/stories/{artem_story['id']}/view")
+    assert watched.json() == {"detail": "seen"}
+    # Opening it twice is not two views.
+    await client.post(f"/api/stories/{artem_story['id']}/view")
+    after = {
+        entry["author"]["username"]: entry
+        for entry in (await client.get("/api/stories/feed")).json()
+    }
+    assert after["artem"]["has_unseen"] is False
+    # Somebody else's audience is not this reader's business.
+    assert (await client.get(f"/api/stories/{artem_story['id']}/viewers")).status_code == 403
+
+    # A picture with nothing written on it is still a story.
+    mine = await client.post(
+        "/api/users/me/stories",
+        json={
+            "media_url": "/media/stories/mine.webp",
+            "expires_at": (datetime.now(UTC) + timedelta(hours=6)).isoformat(),
+            "highlight": False,
+        },
+    )
+    assert mine.status_code == 201, mine.text
+    assert mine.json()["title"] == ""
+    story_id = mine.json()["id"]
+    ordered = (await client.get("/api/stories/feed")).json()
+    assert ordered[0]["is_me"] is True
+    assert ordered[0]["has_unseen"] is False
+    # Leon's own expired story stays out of the rail, highlight or not.
+    assert all(story["title"] != "Night city" for story in ordered[0]["stories"])
+
+    chat_id = (await client.post("/api/chats/direct/storypal")).json()["id"]
+    shared = await client.post(
+        f"/api/stories/{story_id}/share", json={"chat_ids": [chat_id], "text": "Смотри"}
+    )
+    assert shared.status_code == 201, shared.text
+    assert shared.json() == {"detail": "Отправлено: 1"}
+    bubble = (await client.get(f"/api/chats/{chat_id}/messages")).json()[-1]
+    assert bubble["content"] == "Смотри"
+    assert bubble["story"]["id"] == story_id
+    assert bubble["story"]["author"]["username"] == "leon"
+    assert bubble["story"]["active"] is True
+
+    # The other side may pass somebody else's story on, and their view is what the author counts.
+    await login_as(client, "storypal")
+    passed_on = await client.post(f"/api/stories/{story_id}/share", json={"chat_ids": [chat_id]})
+    assert passed_on.status_code == 201, passed_on.text
+    assert (await client.post(f"/api/stories/{story_id}/view")).json() == {"detail": "seen"}
+
+    await login_demo(client)
+    viewers = await client.get(f"/api/stories/{story_id}/viewers")
+    assert viewers.status_code == 200, viewers.text
+    assert [viewer["user"]["username"] for viewer in viewers.json()] == ["storypal"]
+    own = next(entry for entry in (await client.get("/api/stories/feed")).json() if entry["is_me"])
+    assert next(story for story in own["stories"] if story["id"] == story_id)["views_count"] == 1
 
 
 async def test_profile_showcase_drops_gifts_the_owner_transferred_away(
@@ -493,6 +1499,12 @@ async def test_security_sessions_password_change_and_account_deletion(
     assert len(sessions.json()) == 1
     assert sessions.json()[0]["current"] is True
 
+    # A name colour is Premium's, and the refusal says so rather than failing validation.
+    refused = await client.patch("/api/users/me", json={"profile_color": "ice_blue"})
+    assert refused.status_code == 402
+    assert "Premium" in refused.json()["detail"]
+    await client.post("/api/stars/top-up", json={"amount": 1000})
+    assert (await client.post("/api/premium/purchase", json={"plan": "monthly"})).status_code == 200
     appearance = await client.patch("/api/users/me", json={"profile_color": "ice_blue"})
     assert appearance.status_code == 200, appearance.text
     assert appearance.json()["profile_color"] == "ice_blue"
@@ -547,17 +1559,31 @@ async def test_premium_plan_contract_and_stars_checkout(client: AsyncClient) -> 
     assert body["fiat_currency"] == "UAH"
     assert body["period_days"] == 30
     assert body["entitlement"] is None
-    assert len(body["benefits"]) == 12
+    assert len(body["benefits"]) == 14
     assert body["benefits"][0]["slug"] == "subscription"
     assert any(benefit["soon"] for benefit in body["benefits"])
+    benefits = {item["slug"]: item for item in body["benefits"]}
+    assert benefits["streak-protection"]["soon"] is False
+    assert benefits["chat-wallpapers"]["soon"] is False
+    # Everything the table claims is enforced somewhere; these are the numbers the code uses.
     limits = {item["slug"]: item for item in body["limits"]}
     assert limits["post-length"] == {
         "slug": "post-length",
         "title": "Длина поста",
-        "free": 280,
-        "premium": 1200,
+        "free": 1000,
+        "premium": 4000,
     }
+    assert limits["post-photos"]["free"] == 4
+    assert limits["post-photos"]["premium"] == 10
+    assert limits["bio-length"]["premium"] == 560
     assert limits["special-marks"]["premium"] == 7
+    assert limits["streak-freeze"] == {
+        "slug": "streak-freeze",
+        "title": "Защита серии, дней",
+        "free": 0,
+        "premium": 1,
+    }
+    assert limits["file-size"]["premium"] == limits["file-size"]["free"] * 4
     methods = {item["slug"]: item for item in body["payment_methods"]}
     assert methods["stars"]["available"] is True
     assert methods["card"]["available"] is False
@@ -575,6 +1601,51 @@ async def test_premium_plan_contract_and_stars_checkout(client: AsyncClient) -> 
     assert after["entitlement"]["active"] is True
     assert after["stars_balance"] == balance_before - 750
     assert (await client.get("/api/users/me")).json()["is_premium"] is True
+
+    # The sheet offers an explicit extension while active. It adds time to the same entitlement
+    # and charges once; it does not silently create a second subscription or auto-renew.
+    first_expiry = datetime.fromisoformat(after["entitlement"]["expires_at"])
+    if first_expiry.tzinfo is None:
+        first_expiry = first_expiry.replace(tzinfo=UTC)
+    renewed = await client.post("/api/premium/purchase", json={"plan": "monthly"})
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["id"] == after["entitlement"]["id"]
+    renewed_expiry = datetime.fromisoformat(renewed.json()["expires_at"])
+    if renewed_expiry.tzinfo is None:
+        renewed_expiry = renewed_expiry.replace(tzinfo=UTC)
+    assert renewed_expiry > first_expiry + timedelta(days=29)
+    after_renewal = (await client.get("/api/premium/plan")).json()
+    assert after_renewal["stars_balance"] == after["stars_balance"] - 750
+
+
+async def test_premium_protects_one_missed_streak_day(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A two-day gap resets Free and consumes Premium's one automatic protected day."""
+    session = await login_demo(client)
+    user = session["user"]
+    assert isinstance(user, dict)
+    user_id = uuid.UUID(str(user["id"]))
+    details = await db_session.get(UserProfileDetails, user_id)
+    assert details is not None
+
+    missed = datetime.now(UTC) - timedelta(days=2)
+    details.streak_days = 9
+    details.streak_updated_at = missed
+    details.last_seen_at = missed
+    await db_session.commit()
+    assert (await client.get("/api/users/me")).json()["streak_days"] == 1
+
+    await db_session.refresh(details)
+    details.streak_days = 9
+    details.streak_updated_at = missed
+    details.last_seen_at = missed
+    await db_session.commit()
+    await client.post("/api/stars/top-up", json={"amount": 1000})
+    assert (await client.post("/api/premium/purchase", json={"plan": "monthly"})).status_code == 200
+    protected = await client.get("/api/users/me")
+    assert protected.status_code == 200, protected.text
+    assert protected.json()["streak_days"] == 10
 
 
 async def test_premium_gift_names_every_refusal(client: AsyncClient) -> None:
@@ -931,14 +2002,16 @@ async def test_badges_are_structured_objects_with_catalog_endpoints(client: Asyn
     await login_demo(client)
     profile = (await client.get("/api/users/leon")).json()
     badges = profile["badges"]
-    assert badges and isinstance(badges[0], dict)
-    developer = next(badge for badge in badges if badge["slug"] == "maker")
-    assert developer["title"] == "Разработчик"
-    assert developer["rarity"] == "epic"
-    assert developer["points"] == 50
-    assert developer["qualification"]
-    assert developer["issuer"] == "GRAM"
-    assert developer["visible_in_profile"] is True
+    # A free account wears three. Leon was granted six, so the profile shows the strongest ones
+    # rather than all of them — the shelf is a choice now, not a dump.
+    assert len(badges) == 3
+    assert [badge["slug"] for badge in badges] == ["founder", "legend", "sponsor"]
+    granted = badges[0]
+    assert granted["title"] == "Основатель"
+    assert granted["rarity"] == "legendary"
+    assert granted["qualification"]
+    assert granted["issuer"] == "GRAM"
+    assert granted["visible_in_profile"] is True
 
     catalog = await client.get("/api/badges")
     assert catalog.status_code == 200, catalog.text
@@ -953,6 +2026,57 @@ async def test_badges_are_structured_objects_with_catalog_endpoints(client: Asyn
     assert by_user.status_code == 200, by_user.text
     assert [badge["slug"] for badge in by_user.json()] == [badge["slug"] for badge in badges]
     assert (await client.get("/api/users/ghost/badges")).status_code == 404
+
+
+async def test_badges_are_earned_from_the_record_and_worn_by_choice(client: AsyncClient) -> None:
+    """
+    A badge is a fact about an account, and wearing it is a decision.
+
+    The shelf lists every badge in GRAM with what it needs; a free account may wear three of the
+    ones it has, Premium seven. Choosing one nobody earned is refused with the requirement, so
+    the answer says what to do rather than just no.
+    """
+    await login_demo(client)
+    shelf = await client.get("/api/users/me/badges")
+    assert shelf.status_code == 200, shelf.text
+    body = shelf.json()
+    assert body["limit"] == 3
+    offers = {offer["badge"]["slug"]: offer for offer in body["badges"]}
+    # Staff grants have no progress to show; earned ones carry the number they were measured by.
+    assert offers["founder"]["earned"] is True
+    assert offers["founder"]["target"] is None
+    # The demo owner holds three upgraded collectibles: that earns «Улучшитель» and leaves
+    # «Коллекционер» honestly short of its five.
+    assert offers["upgrader"]["earned"] is True
+    assert offers["collector"] == {
+        **offers["collector"],
+        "earned": False,
+        "progress": 3,
+        "target": 5,
+    }
+    assert offers["voice"]["earned"] is False
+    assert offers["voice"]["target"] == 1000
+    assert offers["voice"]["progress"] is not None
+
+    chosen = await client.put(
+        "/api/users/me/badges", json={"slugs": ["upgrader", "maker", "og"]}
+    )
+    assert chosen.status_code == 200, chosen.text
+    assert [badge["slug"] for badge in chosen.json()["badges"]] == ["upgrader", "maker", "og"]
+    # The order is the account's own, and it survives a reload.
+    assert [
+        badge["slug"] for badge in (await client.get("/api/users/leon")).json()["badges"]
+    ] == ["upgrader", "maker", "og"]
+
+    too_many = await client.put(
+        "/api/users/me/badges", json={"slugs": ["upgrader", "maker", "og", "founder"]}
+    )
+    assert too_many.status_code == 409
+    assert "Premium" in too_many.json()["detail"]
+
+    not_earned = await client.put("/api/users/me/badges", json={"slugs": ["voice"]})
+    assert not_earned.status_code == 409
+    assert "подписчик" in not_earned.json()["detail"]
 
 
 async def test_collectible_username_aliases_resolve_across_profile_endpoints(
@@ -2279,7 +3403,6 @@ async def test_settings_hide_presence_close_the_account_and_silence_kinds(
             "show_online": False,
             "private_account": True,
             "notify_likes": False,
-            "status_emoji": "🌙",
             "status_text": "  сплю  ",
         },
     )
@@ -2287,6 +3410,15 @@ async def test_settings_hide_presence_close_the_account_and_silence_kinds(
     assert saved.json()["show_online"] is False
     # A padded status is stored trimmed, and an emptied one clears rather than becoming "".
     assert saved.json()["status_text"] == "сплю"
+    # The emoji beside the name is Premium's; the words are anybody's.
+    refused = await client.patch("/api/users/me/settings", json={"status_emoji": "🌙"})
+    assert refused.status_code == 402
+    assert "Premium" in refused.json()["detail"]
+    await client.post("/api/stars/top-up", json={"amount": 1000})
+    await client.post("/api/premium/purchase", json={"plan": "monthly"})
+    with_emoji = await client.patch("/api/users/me/settings", json={"status_emoji": "🌙"})
+    assert with_emoji.status_code == 200, with_emoji.text
+    assert with_emoji.json()["status_emoji"] == "🌙"
     assert (await client.patch("/api/users/me/settings", json={"status_text": "  "})).json()[
         "status_text"
     ] is None
@@ -2460,10 +3592,16 @@ async def test_a_post_carries_up_to_four_uploaded_pictures(
     )
     assert listed["image_urls"] == urls[:4]
 
-    # Five is one too many.
-    assert (
-        await client.post("/api/feed", json={"content": "Пять", "image_urls": urls})
-    ).status_code == 422
+    # Five is one too many without Premium, and the refusal names the price rather than the rule.
+    refused = await client.post("/api/feed", json={"content": "Пять", "image_urls": urls})
+    assert refused.status_code == 402
+    assert "Premium" in refused.json()["detail"]
+    # With Premium the same five go through, up to ten.
+    await client.post("/api/stars/top-up", json={"amount": 1000})
+    await client.post("/api/premium/purchase", json={"plan": "monthly"})
+    five = await client.post("/api/feed", json={"content": "Пять", "image_urls": urls})
+    assert five.status_code == 201, five.text
+    assert len(five.json()["image_urls"]) == 5
 
     # A post with only a picture is still a post, and a text-only one has an empty gallery.
     only_text = await client.post("/api/feed", json={"content": "без картинок"})
@@ -2765,6 +3903,69 @@ async def test_a_name_slot_gift_travels_with_its_owner_into_the_feed(
     # A comment carries it too: the marker belongs to the person, not to the surface.
     commented = await client.post(f"/api/feed/{post['id']}/comments", json={"content": "И тут"})
     assert commented.json()["author"]["name_gift"]["id"] == gifts[1]["id"]
+
+    # And so does a message in a group, which is the surface that needs it most: a name is often
+    # all there is to identify a stranger, and the thread used to send the author bare.
+    group = await client.post(
+        "/api/chats/groups", json={"title": "С подарком", "members": ["maya"]}
+    )
+    assert group.status_code == 201, group.text
+    chat_id = group.json()["id"]
+    said = await client.post(f"/api/chats/{chat_id}/messages", json={"content": "Привет группе"})
+    assert said.status_code == 201, said.text
+    author = said.json()["sender"]
+    assert author["name_gift"]["id"] == gifts[1]["id"]
+    assert author["is_premium"] is True
+    # The stored thread says the same, so the marks do not depend on which copy arrived.
+    fetched = (await client.get(f"/api/chats/{chat_id}/messages")).json()[-1]["sender"]
+    assert fetched["name_gift"]["id"] == gifts[1]["id"]
+    assert fetched["is_premium"] is True
+
+
+async def test_reading_a_conversation_clears_its_badge_without_re_fetching_it(
+    client: AsyncClient,
+) -> None:
+    """
+    A message that arrives while the thread is open has to be markable as read on its own.
+
+    Fetching the window is what used to mark a conversation read, so a message delivered over the
+    socket to a reader already looking at the thread stayed unread for as long as they kept looking
+    at it: the badge in the list disagreed with what was on screen.
+    """
+    await register_partner(client, "readpal")
+    await login_demo(client)
+    opened = await client.post("/api/chats/direct/readpal")
+    assert opened.status_code == 200, opened.text
+    chat_id = opened.json()["id"]
+
+    await login_as(client, "readpal")
+    said = await client.post(f"/api/chats/{chat_id}/messages", json={"content": "Ты здесь?"})
+    assert said.status_code == 201, said.text
+
+    await login_demo(client)
+    waiting = next(
+        chat for chat in (await client.get("/api/chats")).json() if chat["id"] == chat_id
+    )
+    assert waiting["unread_count"] >= 1
+
+    read = await client.post(f"/api/chats/{chat_id}/read")
+    assert read.status_code == 200, read.text
+    assert read.json() == {"detail": "chat_read"}
+    settled = next(
+        chat for chat in (await client.get("/api/chats")).json() if chat["id"] == chat_id
+    )
+    assert settled["unread_count"] == 0
+
+    # And the sender's own copy now reads as seen, which is the second tick.
+    await login_as(client, "readpal")
+    mine = (await client.get(f"/api/chats/{chat_id}/messages")).json()[-1]
+    assert mine["is_mine"] is True
+    assert mine["read"] is True
+
+    # Somebody who is not in the conversation cannot mark it read.
+    await register_partner(client, "readstranger")
+    await login_as(client, "readstranger")
+    assert (await client.post(f"/api/chats/{chat_id}/read")).status_code == 403
 
 
 async def test_stars_can_support_one_post_and_the_card_counts_them(client: AsyncClient) -> None:
@@ -3662,3 +4863,807 @@ async def test_a_draft_holds_an_unfinished_post_until_it_is_published(
     full = await client.post("/api/feed/drafts", json={"content": "Двадцать первый"})
     assert full.status_code == 409
     assert "черновиков" in full.json()["detail"]
+
+
+async def test_admin_panel_is_closed_to_everyone_else(client: AsyncClient) -> None:
+    """Staff tools refuse a normal account outright, and say so rather than pretending to 404."""
+    await login_demo(client)
+    assert (await client.get("/api/admin/overview")).status_code == 403
+    assert (await client.get("/api/admin/users")).status_code == 403
+    banned = await client.post("/api/admin/users/artem/ban", json={"reason": "просто так"})
+    assert banned.status_code == 403
+    assert "администратора" in banned.json()["detail"]
+    assert (await client.get("/api/users/artem")).json()["is_banned"] is False
+
+
+async def test_admin_manages_accounts_and_leaves_a_trail(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """
+    The panel's whole point in one pass: grant, verify, ban, and be accountable for it.
+
+    Staff is granted outside the product — nothing in the UI can set the flag — so the test
+    sets it the same way an operator would, then works only through the API.
+    """
+    await login_demo(client)
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+
+    overview = await client.get("/api/admin/overview")
+    assert overview.status_code == 200, overview.text
+    assert overview.json()["users"] >= 4
+    assert overview.json()["banned_users"] == 0
+
+    # Verification carries a tier, because "подтверждён" has to say what was checked.
+    verified = await client.patch(
+        "/api/admin/users/maya",
+        json={"is_verified": True, "verification_tier": "creator", "reason": "проверили автора"},
+    )
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["verification_tier"] == "creator"
+    assert (await client.get("/api/users/maya")).json()["verification_tier"] == "creator"
+
+    # Stars, a finished collectible and a handle — all three land on the person, not on staff.
+    topped = await client.post(
+        "/api/admin/users/maya/stars", json={"amount": 300, "reason": "компенсация"}
+    )
+    assert topped.status_code == 200, topped.text
+    assert topped.json()["stars_balance"] >= 300
+    gifted = await client.post(
+        "/api/admin/users/maya/gifts", json={"slug": "plush-pepe", "upgraded": True}
+    )
+    assert gifted.status_code == 200, gifted.text
+    assert gifted.json()["owner_username"] == "maya"
+    assert gifted.json()["upgraded"] is True
+    assert gifted.json()["model"]
+    handle = await client.post("/api/admin/users/maya/usernames", json={"username": "mayalis"})
+    assert handle.status_code == 200, handle.text
+    assert handle.json()["usernames_count"] >= 1
+
+
+async def test_public_legal_report_enters_the_admin_queue(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    payload = {
+        "kind": "copyright",
+        "reporter_role": "rights_holder",
+        "reporter_name": "  Rights   Owner  ",
+        "reporter_email": "OWNER@EXAMPLE.COM",
+        "country": "UA",
+        "account_username": "@leon",
+        "content_urls": ["https://vexory.xyz/post/example"],
+        "original_work": "Оригинальная фотография и исходный файл автора.",
+        "details": "Материал опубликован без разрешения правообладателя и доступен публично.",
+        "requested_action": "Ограничить доступ к материалу после проверки.",
+        "electronic_signature": "Rights Owner",
+        "good_faith": True,
+        "accuracy_confirmed": True,
+        "consent_to_process": True,
+    }
+    filed = await client.post(
+        "/api/legal/reports",
+        json=payload,
+        headers={"x-forwarded-for": "198.51.100.24"},
+    )
+    assert filed.status_code == 201, filed.text
+    assert filed.headers["cache-control"] == "no-store"
+    assert filed.json()["reference_code"].startswith("GRAM-")
+    row = await db_session.scalar(select(LegalReport))
+    assert row is not None
+    assert row.reporter_name == "Rights Owner"
+    assert row.reporter_email == "owner@example.com"
+    assert row.account_username == "leon"
+
+    # Personal data from the notice is staff-only.
+    assert (await client.get("/api/admin/legal-reports")).status_code == 401
+    await login_demo(client)
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+    overview = (await client.get("/api/admin/overview")).json()
+    assert overview["open_legal_reports"] == 1
+    queue = await client.get("/api/admin/legal-reports")
+    assert queue.status_code == 200, queue.text
+    assert queue.headers["cache-control"] == "no-store"
+    case = queue.json()[0]
+    assert case["reference_code"] == filed.json()["reference_code"]
+    assert case["reporter_email"] == "owner@example.com"
+
+    resolved = await client.post(
+        f"/api/admin/legal-reports/{case['id']}/resolve",
+        json={"action": "resolve", "resolution": "Материал проверен, меры приняты"},
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["status"] == "resolved"
+    assert (await client.get("/api/admin/legal-reports")).json() == []
+    assert (
+        await client.post(
+            f"/api/admin/legal-reports/{case['id']}/resolve",
+            json={"action": "dismiss", "resolution": "Повторное решение"},
+        )
+    ).status_code == 409
+
+
+async def test_public_report_honeypot_validation_and_rate_limit(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    support = {
+        "kind": "technical",
+        "reporter_role": "platform_user",
+        "reporter_name": "Support User",
+        "reporter_email": "support-user@example.com",
+        "details": "После открытия чата интерфейс не показывает историю сообщений.",
+        "accuracy_confirmed": True,
+        "consent_to_process": True,
+    }
+    trapped = await client.post(
+        "/api/legal/reports",
+        json={**support, "website": "https://spam.example"},
+    )
+    assert trapped.status_code == 201
+    assert await db_session.scalar(select(func.count()).select_from(LegalReport)) == 0
+
+    invalid_rights_notice = await client.post(
+        "/api/legal/reports",
+        json={**support, "kind": "copyright"},
+    )
+    assert invalid_rights_notice.status_code == 422
+    external_link = await client.post(
+        "/api/legal/reports",
+        json={
+            **support,
+            "kind": "privacy",
+            "content_urls": ["https://example.com/not-a-gram-link"],
+        },
+    )
+    assert external_link.status_code == 422
+
+    for index in range(5):
+        accepted = await client.post(
+            "/api/legal/reports",
+            json={**support, "details": f"Техническое обращение номер {index}: история не загрузилась полностью."},
+            headers={"x-forwarded-for": "203.0.113.20"},
+        )
+        assert accepted.status_code == 201, accepted.text
+    limited = await client.post(
+        "/api/legal/reports",
+        json=support,
+        headers={"x-forwarded-for": "203.0.113.20"},
+    )
+    assert limited.status_code == 429
+    assert await db_session.scalar(select(func.count()).select_from(LegalReport)) == 5
+
+
+async def test_admin_report_queue_bans_and_marks_the_history(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A complaint becomes a decision, and the decision is visible without erasing anything."""
+    await login_demo(client)
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+
+    posts = (await client.get("/api/feed", params={"author": "artem"})).json()
+    assert posts, "artem should have seeded posts to report"
+    target = posts[0]
+    filed = await client.post(
+        f"/api/feed/{target['id']}/report", json={"reason": "spam", "comment": "реклама"}
+    )
+    assert filed.status_code == 201, filed.text
+
+    queue = await client.get("/api/admin/reports")
+    assert queue.status_code == 200, queue.text
+    case = next(item for item in queue.json() if item["target_id"] == target["id"])
+    assert case["target_type"] == "post"
+    assert case["subject"]["username"] == "artem"
+    # The snapshot matters: the post can be edited or deleted before anyone reviews it.
+    assert case["excerpt"]
+    assert case["reason_label"] == "Спам"
+
+    resolved = await client.post(
+        f"/api/admin/reports/{case['id']}/resolve",
+        json={"action": "ban", "resolution": "рассылка рекламы"},
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["status"] == "resolved"
+    assert (await client.get("/api/admin/reports")).json() == []
+
+    profile = (await client.get("/api/users/artem")).json()
+    assert profile["is_banned"] is True
+    assert profile["ban_reason"] == "рассылка рекламы"
+    # Nothing was deleted: the posts stay up and every card carries the mark.
+    kept = (await client.get("/api/feed", params={"author": "artem"})).json()
+    assert kept
+    assert all(post["author"]["is_banned"] for post in kept)
+
+    # Hiding is separate from banning, and the author keeps seeing their own hidden post.
+    hidden = await client.post(
+        f"/api/admin/posts/{target['id']}/hide", json={"reason": "реклама"}
+    )
+    assert hidden.status_code == 200, hidden.text
+    assert (await client.get("/api/feed", params={"author": "artem"})).json()[0]["hidden_reason"]
+
+    # Every decision is in the trail, including the ones that only granted something.
+    actions = {entry["action"] for entry in (await client.get("/api/admin/actions")).json()}
+    assert {"report_ban", "post_hidden"} <= actions
+    # And a banned account cannot be banned again by mistake.
+    again = await client.post("/api/admin/users/artem/ban", json={"reason": "ещё раз"})
+    assert again.status_code == 200
+
+
+async def test_admin_manages_gifts_usernames_and_accounts(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The inventory half of the panel: what an account holds, not just who it is."""
+    await login_demo(client)
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+
+    # A prize is chosen, not won: staff name the model instead of taking the roll.
+    design = (await client.get("/api/gifts/catalog/plush-pepe")).json()
+    wanted = design["models"][0]["name"]
+    granted = await client.post(
+        "/api/admin/users/maya/gifts",
+        json={"slug": "plush-pepe", "upgraded": True, "model": wanted, "reason": "приз"},
+    )
+    assert granted.status_code == 200, granted.text
+    assert granted.json()["model"] == wanted
+    gift_id = granted.json()["id"]
+
+    # Nonsense variants are refused rather than written into somebody's collection.
+    bad = await client.post(
+        "/api/admin/users/maya/gifts", json={"slug": "plush-pepe", "model": "Нет такой модели"}
+    )
+    assert bad.status_code == 422
+    assert "нет модели" in bad.json()["detail"]
+
+    inventory = await client.get("/api/admin/users/maya/inventory")
+    assert inventory.status_code == 200, inventory.text
+    assert any(item["id"] == gift_id for item in inventory.json()["gifts"])
+
+    # Rewriting what a collectible shows, and taking the upgrade away again.
+    other = design["models"][1]["name"]
+    changed = await client.patch(f"/api/admin/gifts/{gift_id}", json={"model": other})
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["model"] == other
+    plain = await client.patch(f"/api/admin/gifts/{gift_id}", json={"upgraded": False})
+    assert plain.json()["upgraded"] is False
+
+    # Moving it to somebody else, then wiping that trail.
+    moved = await client.post(f"/api/admin/gifts/{gift_id}/transfer", json={"username": "nikita"})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["owner_username"] == "nikita"
+    cleared = await client.delete(
+        f"/api/admin/gifts/{gift_id}/history", params={"reason": "ошибка выдачи"}
+    )
+    assert cleared.status_code == 200, cleared.text
+
+    # Supply: the ceiling cannot drop below what already exists.
+    await client.post("/api/admin/users/maya/gifts", json={"slug": "plush-pepe"})
+    designs = await client.get("/api/admin/gift-designs", params={"q": "plush"})
+    assert designs.status_code == 200, designs.text
+    row = next(item for item in designs.json() if item["slug"] == "plush-pepe")
+    assert row["minted"] >= 2
+    shrunk = await client.patch(
+        "/api/admin/gift-designs/plush-pepe", json={"edition_size": row["minted"] - 1}
+    )
+    assert shrunk.status_code == 409
+    assert "нельзя опустить" in shrunk.json()["detail"]
+    grown = await client.patch(
+        "/api/admin/gift-designs/plush-pepe",
+        json={"edition_size": row["edition_size"] + 500, "reason": "расширили тираж"},
+    )
+    assert grown.status_code == 200, grown.text
+    assert grown.json()["remaining"] > row["remaining"]
+
+
+async def test_admin_transfers_handles_and_deletes_an_account(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Handles move between people, and deletion is the one action that asks twice."""
+    doomed = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "doomed@gram.local",
+            "password": "Doomed!2026",
+            "username": "doomed",
+            "display_name": "Уходящий",
+        },
+    )
+    assert doomed.status_code == 201
+    await client.post("/api/auth/logout")
+
+    await login_demo(client)
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+
+    # A collectible handle, then the same handle handed to somebody else.
+    granted = await client.post(
+        "/api/admin/users/doomed/usernames", json={"username": "rarehandle"}
+    )
+    assert granted.status_code == 200, granted.text
+    moved = await client.post(
+        "/api/admin/usernames/rarehandle/transfer",
+        json={"username": "maya", "reason": "спор о владении"},
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["username"] == "maya"
+    # A live account's own handle is not a free collectible.
+    refused = await client.post(
+        "/api/admin/usernames/nikita/transfer", json={"username": "maya"}
+    )
+    assert refused.status_code == 409
+    assert "основной ник" in refused.json()["detail"]
+    wiped = await client.delete(
+        "/api/admin/usernames/rarehandle/history", params={"reason": "по решению спора"}
+    )
+    assert wiped.status_code == 200, wiped.text
+
+    # Deletion asks for the handle again, refuses admins, and then really removes the row.
+    mistyped = await client.request(
+        "DELETE",
+        "/api/admin/users/doomed",
+        json={"confirm_username": "notdoomed", "reason": "спам"},
+    )
+    assert mistyped.status_code == 422
+    assert "Для подтверждения" in mistyped.json()["detail"]
+    staff = await client.request(
+        "DELETE",
+        "/api/admin/users/leon",
+        json={"confirm_username": "leon", "reason": "проверка"},
+    )
+    assert staff.status_code == 409
+
+    gone = await client.request(
+        "DELETE",
+        "/api/admin/users/doomed",
+        json={"confirm_username": "doomed", "reason": "спам и накрутка"},
+    )
+    assert gone.status_code == 200, gone.text
+    assert (await client.get("/api/users/doomed")).status_code == 404
+    actions = {entry["action"] for entry in (await client.get("/api/admin/actions")).json()}
+    assert {"username_transferred", "username_history_cleared", "user_deleted"} <= actions
+
+
+async def test_a_banned_account_cannot_gain_new_followers(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A ban stops the audience growing; the people who already read it keep their subscription."""
+    await login_demo(client)
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+    # Somebody who already follows the account before the ban.
+    assert (await client.post("/api/users/nikita/follow")).status_code == 200
+    banned = await client.post("/api/admin/users/nikita/ban", json={"reason": "накрутка"})
+    assert banned.status_code == 200, banned.text
+    # The existing subscription survives: the ban is on the account, not on its readers.
+    assert (await client.get("/api/users/nikita")).json()["is_following"] is True
+
+    fresh = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "curious@gram.local",
+            "password": "Curious!2026",
+            "username": "curious",
+            "display_name": "Любопытный",
+        },
+    )
+    assert fresh.status_code == 201
+    blocked = await client.post("/api/users/nikita/follow")
+    assert blocked.status_code == 403
+    assert "заблокирован администрацией" in blocked.json()["detail"]
+
+
+async def test_a_banned_account_can_read_but_cannot_act(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """
+    A block has to stop the account using the network, not just label it.
+
+    Reading stays open on purpose — the notice and its reason are on the profile, and locking
+    somebody out of that would leave them guessing. Every write is refused, including signing in
+    again, which was the hole: the ban revoked the session and the next login handed back a new one.
+    """
+    registered = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "loud@gram.local",
+            "password": "LoudPass!2026",
+            "username": "loud",
+            "display_name": "Шумный",
+        },
+    )
+    assert registered.status_code == 201
+    post = await client.post("/api/feed", json={"content": "Пока ещё можно"})
+    assert post.status_code == 201
+    await client.post("/api/auth/logout")
+
+    await login_demo(client)
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+    banned = await client.post("/api/admin/users/loud/ban", json={"reason": "спам"})
+    assert banned.status_code == 200, banned.text
+    await client.post("/api/auth/logout")
+
+    # Signing back in still works, so the account can read what happened to it.
+    again = await client.post(
+        "/api/auth/login", json={"identifier": "loud", "password": "LoudPass!2026"}
+    )
+    assert again.status_code == 200, again.text
+    mine = await client.get("/api/users/me")
+    assert mine.status_code == 200
+    assert mine.json()["is_banned"] is True
+    assert mine.json()["ban_reason"] == "спам"
+    assert (await client.get("/api/feed")).status_code == 200
+
+    # And nothing it does changes anything.
+    blocked_post = await client.post("/api/feed", json={"content": "Ещё раз"})
+    assert blocked_post.status_code == 403
+    assert "заблокирован администрацией" in blocked_post.json()["detail"]
+    assert "спам" in blocked_post.json()["detail"]
+    assert (await client.post("/api/users/artem/follow")).status_code == 403
+    assert (await client.patch("/api/users/me", json={"bio": "обход"})).status_code == 403
+    assert (await client.post("/api/chats/direct/artem")).status_code == 403
+    assert (await client.post("/api/stars/top-up", json={"amount": 100})).status_code == 403
+    # Signing out is the one write left open: a session nobody can end is a different punishment.
+    assert (await client.post("/api/auth/logout")).status_code == 200
+
+
+async def test_gifts_cannot_be_sent_to_a_banned_account(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The collectible would be minted and the stars spent for somebody who cannot use either."""
+    await login_demo(client)
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+    assert (
+        await client.post("/api/admin/users/nikita/ban", json={"reason": "накрутка"})
+    ).status_code == 200
+    await client.post("/api/stars/top-up", json={"amount": 3000})
+    refused = await client.post(
+        "/api/gifts/purchase", json={"slug": "plush-pepe", "to_username": "nikita"}
+    )
+    assert refused.status_code == 409
+    assert "подарок не дойдёт" in refused.json()["detail"]
+    # Buying for oneself is untouched by somebody else's block.
+    mine = await client.post("/api/gifts/purchase", json={"slug": "plush-pepe"})
+    assert mine.status_code == 201, mine.text
+
+
+async def test_star_payout_holds_the_stars_until_an_admin_answers(  # noqa: PLR0915
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Taking stars out, at the rate they came in: twenty of ours for one of theirs.
+
+    The stars leave the balance when the request is made, not when it is granted — otherwise an
+    admin confirming an hour later could find them spent. Every ending puts that right: a
+    cancellation, a refusal and a failed transfer all give the same amount back, and only a
+    completed payout keeps it.
+    """
+    await register_partner(client, "cashout")
+    await login_as(client, "cashout")
+    await client.post("/api/stars/top-up", json={"amount": 900})
+    start = (await client.get("/api/users/me")).json()["stars_balance"]
+
+    # Withdrawals ship switched off — the Telegram half needs a person — so the route says so until
+    # somebody opens it. That refusal is the product's default, and the rest of this asserts the
+    # flow it guards.
+    assert (await client.post("/api/stars/payouts", json={"stars": 100})).status_code == 503
+    assert (await client.get("/api/stars/wallet")).json()["payouts_enabled"] is False
+    monkeypatch.setattr(main_module, "STAR_PAYOUTS_ENABLED", True)
+    assert (await client.get("/api/stars/wallet")).json()["payouts_enabled"] is True
+
+    # The amount has to be a whole number of Telegram Stars, and worth sending.
+    assert (await client.post("/api/stars/payouts", json={"stars": 130})).status_code == 422
+    assert (await client.post("/api/stars/payouts", json={"stars": 40})).status_code == 422
+    unknown = await client.post("/api/stars/payouts", json={"stars": 100})
+    assert unknown.status_code == 422
+    assert "юзернейм" in unknown.json()["detail"]
+
+    asked = await client.post(
+        "/api/stars/payouts", json={"stars": 100, "telegram_username": "@cashout_tg"}
+    )
+    assert asked.status_code == 201, asked.text
+    assert asked.json()["price_xtr"] == 5
+    assert asked.json()["status"] == "pending"
+    assert asked.json()["telegram_username"] == "cashout_tg"
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == start - 100
+
+    # Taking the request back is the requester's own move, and it is immediate.
+    cancelled = await client.delete(f"/api/stars/payouts/{asked.json()['id']}")
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "cancelled"
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == start
+
+    # A purchase through the bot teaches the site where a payout should land.
+    order = (await client.post("/api/stars/orders", json={"package": "starter"})).json()
+    await client.post(
+        f"/api/bot/orders/{order['bot_url'].split('start=')[1]}/paid",
+        json={"telegram_user_id": 8123, "telegram_charge_id": "payout-charge-1", "amount_xtr": 5},
+        headers=BOT_HEADERS,
+    )
+    again = await client.post("/api/stars/payouts", json={"stars": 500})
+    assert again.status_code == 201, again.text
+    assert again.json()["telegram_user_id"] == 8123
+    payout_id = again.json()["id"]
+    held = start + 100 - 500
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == held
+
+    # Only staff decide, and only through the panel.
+    await login_demo(client)
+    assert (await client.get("/api/admin/payouts")).status_code == 403
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+    queue = await client.get("/api/admin/payouts")
+    assert queue.status_code == 200, queue.text
+    assert [item["id"] for item in queue.json()] == [payout_id]
+    assert queue.json()[0]["user"]["username"] == "cashout"
+    assert queue.json()[0]["balance"] == held
+
+    approved = await client.post(
+        f"/api/admin/payouts/{payout_id}/decision",
+        json={"approved": True, "note": "проверил, отправляю"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "approved"
+    # Confirming authorises the Telegram half; it does not move stars a second time.
+    assert approved.json()["balance"] == held
+
+    # The bot is handed each approved payout once, and it is the one that reports the end.
+    announced = await client.get("/api/bot/payouts/approved", headers=BOT_HEADERS)
+    assert [item["id"] for item in announced.json()] == [payout_id]
+    assert announced.json()[0]["telegram_user_id"] == 8123
+    assert announced.json()[0]["price_xtr"] == 25
+    assert (await client.get("/api/bot/payouts/approved", headers=BOT_HEADERS)).json() == []
+    open_now = await client.get("/api/bot/payouts/open", headers=BOT_HEADERS)
+    assert [item["id"] for item in open_now.json()] == [payout_id]
+
+    failed = await client.post(
+        f"/api/bot/payouts/{payout_id}/failed",
+        json={"admin_telegram_id": 944763501, "note": "Не хватило Stars на балансе бота"},
+        headers=BOT_HEADERS,
+    )
+    assert failed.status_code == 200, failed.text
+    await login_as(client, "cashout")
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == held + 500
+    mine_now = (await client.get("/api/stars/payouts")).json()
+    assert mine_now[0]["status"] == "failed"
+    assert "Не хватило" in mine_now[0]["admin_note"]
+    assert mine_now[0]["cancellable"] is False
+
+
+async def test_premium_unlocks_exactly_what_the_plan_advertises(client: AsyncClient) -> None:
+    """
+    Every row of the comparison table, checked against the endpoints behind it.
+
+    The rule is additive: what a free account could do before Premium existed it can still do, and
+    Premium raises the ceiling. So each refusal here is about the *extra*, and each one names the
+    subscription rather than failing validation.
+    """
+    await register_partner(client, "limits")
+    await login_as(client, "limits")
+
+    long_post = {"content": "я" * 1001}
+    refused = await client.post("/api/feed", json=long_post)
+    assert refused.status_code == 402
+    assert "Premium" in refused.json()["detail"]
+    assert (await client.post("/api/feed", json={"content": "я" * 1000})).status_code == 201
+    long_bio = await client.patch("/api/users/me", json={"bio": "б" * 281})
+    assert long_bio.status_code == 402
+    assert "Premium" in long_bio.json()["detail"]
+
+    queued = await client.post(
+        "/api/feed",
+        json={
+            "content": "Выйдет позже",
+            "publish_at": (datetime.now(UTC) + timedelta(hours=3)).isoformat(),
+        },
+    )
+    assert queued.status_code == 402
+    assert "Premium" in queued.json()["detail"]
+
+    await client.post("/api/stars/top-up", json={"amount": 1000})
+    assert (await client.post("/api/premium/purchase", json={"plan": "monthly"})).status_code == 200
+
+    assert (await client.post("/api/feed", json={"content": "я" * 4000})).status_code == 201
+    # The schema is the ceiling above that: four thousand is the promise, not the start of one.
+    assert (await client.post("/api/feed", json={"content": "я" * 4001})).status_code == 422
+    assert (await client.patch("/api/users/me", json={"bio": "б" * 560})).status_code == 200
+
+    later = datetime.now(UTC) + timedelta(hours=3)
+    scheduled = await client.post(
+        "/api/feed", json={"content": "Выйдет позже", "publish_at": later.isoformat()}
+    )
+    assert scheduled.status_code == 201, scheduled.text
+    assert scheduled.json()["scheduled"] is True
+    assert scheduled.json()["publish_at"] is not None
+    post_id = scheduled.json()["id"]
+    # Its author sees it in a queue of its own, and nowhere else.
+    assert [item["id"] for item in (await client.get("/api/feed/scheduled")).json()] == [post_id]
+    assert post_id not in [item["id"] for item in (await client.get("/api/feed")).json()]
+    # A moment further out than a year is a lost draft, not a plan.
+    too_far = await client.post(
+        "/api/feed",
+        json={
+            "content": "Через два года",
+            "publish_at": (datetime.now(UTC) + timedelta(days=800)).isoformat(),
+        },
+    )
+    assert too_far.status_code == 422
+
+    # To everybody else it does not exist yet — not in the feed, and not by its own link.
+    await login_demo(client)
+    assert (await client.get(f"/api/feed/{post_id}")).status_code == 404
+    assert post_id not in [
+        item["id"] for item in (await client.get("/api/feed", params={"author": "limits"})).json()
+    ]
+
+    # Publishing it is clearing the moment, and then it is an ordinary post.
+    await login_as(client, "limits")
+    published = await client.patch(f"/api/feed/{post_id}/schedule", json={"publish_at": None})
+    assert published.status_code == 200, published.text
+    assert published.json()["scheduled"] is False
+    assert (await client.get("/api/feed/scheduled")).json() == []
+    await login_demo(client)
+    assert (await client.get(f"/api/feed/{post_id}")).status_code == 200
+
+
+async def test_payout_is_carried_out_by_handing_a_charge_back(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The automatic half of a withdrawal.
+
+    Telegram has no call that sends Stars to a person — but `refundStarPayment` hands a charge back,
+    and a charge handed back is Stars arriving in the account that paid them. So a payout worth
+    exactly what an earlier purchase cost needs nobody: the site names that charge, the bot returns
+    it, and the purchase is spent for good — it can never be refunded a second time.
+    """
+    # Withdrawals are off by default; this is about what happens once they are open.
+    monkeypatch.setattr(main_module, "STAR_PAYOUTS_ENABLED", True)
+    await register_partner(client, "autopay")
+    await login_as(client, "autopay")
+    order = (await client.post("/api/stars/orders", json={"package": "starter"})).json()
+    await client.post(
+        f"/api/bot/orders/{order['bot_url'].split('start=')[1]}/paid",
+        json={"telegram_user_id": 9911, "telegram_charge_id": "auto-charge-1", "amount_xtr": 5},
+        headers=BOT_HEADERS,
+    )
+    asked = await client.post("/api/stars/payouts", json={"stars": 100})
+    assert asked.status_code == 201, asked.text
+    payout_id = asked.json()["id"]
+
+    await login_demo(client)
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+    queue = await client.get("/api/admin/payouts")
+    # The panel knows before anybody decides that this one will not need a person.
+    assert queue.json()[0]["automatic"] is True
+    approved = await client.post(
+        f"/api/admin/payouts/{payout_id}/decision", json={"approved": True, "note": ""}
+    )
+    assert approved.status_code == 200, approved.text
+
+    handed = await client.get("/api/bot/payouts/approved", headers=BOT_HEADERS)
+    assert handed.json()[0]["auto_charge_id"] == "auto-charge-1"
+    assert handed.json()[0]["auto_purchase_id"] == order["id"]
+
+    settled = await client.post(
+        f"/api/bot/payouts/{payout_id}/paid",
+        json={
+            "admin_telegram_id": 9911,
+            "note": "Автоматически: возвращён платёж",
+            "purchase_id": order["id"],
+        },
+        headers=BOT_HEADERS,
+    )
+    assert settled.status_code == 200, settled.text
+
+    # The charge is spent: the site says so, and the refund flow refuses to give it back again.
+    await login_as(client, "autopay")
+    spent = (await client.get(f"/api/stars/orders/{order['id']}")).json()
+    assert spent["status"] == "paid_out"
+    assert spent["refundable"] is False
+    refused = await client.post(
+        f"/api/stars/orders/{order['id']}/refund",
+        json={"reason": "Хочу вернуть платёж, который уже вывел"},
+    )
+    assert refused.status_code == 409
+    assert "использован для вывода" in refused.json()["detail"]
+    assert (await client.get("/api/stars/payouts")).json()[0]["status"] == "paid"
+
+    # And a payout with no charge of the same size is left for a person, without pretending.
+    await client.post("/api/stars/top-up", json={"amount": 400})
+    manual = await client.post("/api/stars/payouts", json={"stars": 200})
+    assert manual.status_code == 201, manual.text
+    await login_demo(client)
+    await client.post(
+        f"/api/admin/payouts/{manual.json()['id']}/decision", json={"approved": True, "note": ""}
+    )
+    waiting = await client.get("/api/bot/payouts/approved", headers=BOT_HEADERS)
+    assert waiting.json()[0]["auto_charge_id"] is None
+
+
+async def test_admin_panel_decides_refunds_and_reads_the_money_log(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """
+    The panel is the second place a refund can be answered, and the only place the money is read.
+
+    Same movement as the bot's buttons, because it is the same code; what the panel cannot do is
+    call Telegram, so an approval taken here waits in the bot's queue for exactly that. Around it:
+    the purchase log, the wallet log, the audit trail with filters, and a broadcast.
+    """
+    await login_demo(client)
+    order = (await client.post("/api/stars/orders", json={"package": "plus"})).json()
+    await client.post(
+        f"/api/bot/orders/{order['bot_url'].split('start=')[1]}/paid",
+        json={"telegram_user_id": 9100, "telegram_charge_id": "panel-charge-1", "amount_xtr": 12},
+        headers=BOT_HEADERS,
+    )
+    await client.post(
+        f"/api/stars/orders/{order['id']}/refund",
+        json={"reason": "Оплатил дважды, второй платёж лишний"},
+    )
+    await db_session.execute(update(User).where(User.username == "leon").values(is_admin=True))
+    await db_session.commit()
+
+    queue = await client.get("/api/admin/refunds")
+    assert queue.status_code == 200, queue.text
+    assert len(queue.json()) == 1
+    waiting = queue.json()[0]
+    assert waiting["stars"] == 250
+    assert waiting["price_xtr"] == 12
+    assert waiting["telegram_charge_id"] == "panel-charge-1"
+    # Nothing blocks it yet, and the panel says so before anybody presses anything.
+    assert waiting["blocked_reason"] is None
+
+    before = (await client.get("/api/users/me")).json()["stars_balance"]
+    decided = await client.post(
+        f"/api/admin/refunds/{waiting['id']}/decision",
+        json={"approved": True, "note": "подтверждаю двойную оплату"},
+    )
+    assert decided.status_code == 200, decided.text
+    assert "бот вернёт" in decided.json()["detail"]
+    assert (await client.get("/api/users/me")).json()["stars_balance"] == before - 250
+
+    # An approval on the site is half of it: the bot picks up the Telegram half exactly once.
+    outstanding = await client.get("/api/bot/refunds/approved", headers=BOT_HEADERS)
+    assert [item["id"] for item in outstanding.json()] == [waiting["id"]]
+    settled = await client.post(
+        f"/api/bot/refunds/{waiting['id']}/settled", headers=BOT_HEADERS
+    )
+    assert settled.json() == {"detail": "settled"}
+    assert (await client.get("/api/bot/refunds/approved", headers=BOT_HEADERS)).json() == []
+
+    # The income side, the wallet side, and the trail.
+    orders = await client.get("/api/admin/star-orders", params={"status": "refunded"})
+    assert orders.status_code == 200, orders.text
+    assert [item["telegram_charge_id"] for item in orders.json()] == ["panel-charge-1"]
+    assert orders.json()[0]["refund_status"] == "approved"
+    ledger = await client.get(
+        "/api/admin/ledger", params={"username": "leon", "kind": "stars_refund"}
+    )
+    assert ledger.status_code == 200, ledger.text
+    assert ledger.json()[0]["amount"] == -250
+    assert ledger.json()[0]["user"]["username"] == "leon"
+
+    trail = await client.get("/api/admin/actions", params={"action": "refund_approved"})
+    assert trail.status_code == 200, trail.text
+    assert trail.json()[0]["details"]["source"] == "panel"
+    assert trail.json()[0]["actor"]["username"] == "leon"
+    assert (await client.get("/api/admin/actions", params={"actor": "nobody-here"})).json() == []
+
+    overview = (await client.get("/api/admin/overview")).json()
+    assert overview["pending_refunds"] == 0
+    # Charged once and given back once: both are true at the same time and both are shown.
+    assert overview["xtr_collected"] == 12
+    assert overview["xtr_refunded"] == 12
+
+    sent = await client.post(
+        "/api/admin/broadcast", json={"text": "Выводы звёзд теперь работают", "scope": "all"}
+    )
+    assert sent.status_code == 200, sent.text
+    assert "Отправлено" in sent.json()["detail"]
+    # Everybody means everybody, the sender included.
+    notices = (await client.get("/api/notifications")).json()
+    assert any("Выводы звёзд" in item["text"] for item in notices)

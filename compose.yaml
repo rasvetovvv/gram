@@ -4,38 +4,89 @@ services:
   postgres:
     image: postgres:18-alpine
     environment:
-      POSTGRES_DB: gram
-      POSTGRES_USER: gram
-      POSTGRES_PASSWORD: gram
+      POSTGRES_DB: ${POSTGRES_DB:-gram}
+      POSTGRES_USER: ${POSTGRES_USER:-gram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     volumes:
       - gram_postgres:/var/lib/postgresql
-    ports:
-      - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gram -d gram"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gram} -d ${POSTGRES_DB:-gram}"]
       interval: 3s
       timeout: 3s
       retries: 20
+    networks:
+      - gram-private
+    restart: unless-stopped
+
+  redis:
+    profiles: ["wire"]
+    image: redis:7.4-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - gram_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - gram-private
     restart: unless-stopped
 
   api:
     build:
       context: ./api
+    init: true
     environment:
-      DATABASE_URL: postgresql+asyncpg://gram:gram@postgres:5432/gram
-      JWT_SECRET: ${JWT_SECRET:-local-only-change-this-gram-secret}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-gram}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-gram}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      WIRE_TICKET_SECRET: ${WIRE_TICKET_SECRET:-}
+      WIRE_TICKET_SECRET_FILE: /run/secrets/wire_ticket_secret
+      WIRE_TICKET_TTL_SECONDS: ${WIRE_TICKET_TTL_SECONDS:-60}
+      WIRE_INTERNAL_SECRET: ${WIRE_INTERNAL_SECRET:-}
+      WIRE_INTERNAL_SECRET_FILE: /run/secrets/wire_internal_secret
+      WIRE_OUTBOX_ENABLED: ${WIRE_OUTBOX_ENABLED:-false}
+      WIRE_REDIS_URL: redis://redis:6379/0
       ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
       REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      ENABLE_INTERNAL_LEDGER_TOPUPS: ${ENABLE_INTERNAL_LEDGER_TOPUPS:-true}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      ENABLE_INTERNAL_LEDGER_TOPUPS: ${ENABLE_INTERNAL_LEDGER_TOPUPS:-false}
       AUTO_SEED: ${AUTO_SEED:-false}
-      # 3000 is the built web container; 3100 is `npm run dev` for local iteration.
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3100}
+      DEMO_EMAIL: ${DEMO_EMAIL:-leon@gram.local}
+      DEMO_USERNAME: ${DEMO_USERNAME:-leon}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:?DEMO_PASSWORD must be set}
+      FOUNDING_ADMINS: ${FOUNDING_ADMINS:-rasvetovvv,gram}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-vexoryxyzbot}
+      BOT_API_SECRET: ${BOT_API_SECRET:?BOT_API_SECRET must be set}
+      REFUND_WINDOW_DAYS: ${REFUND_WINDOW_DAYS:-14}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://vexory.xyz,https://www.vexory.xyz}
+      SITE_PUBLIC_URL: ${SITE_PUBLIC_URL:-https://vexory.xyz}
+      EMAIL_AUTH_ENABLED: ${EMAIL_AUTH_ENABLED:-true}
+      EMAIL_OTP_BYPASS: ${EMAIL_OTP_BYPASS:-false}
+      EMAIL_OTP_SECRET: ${EMAIL_OTP_SECRET:?EMAIL_OTP_SECRET must be set}
+      EMAIL_OTP_TTL_MINUTES: ${EMAIL_OTP_TTL_MINUTES:-10}
+      EMAIL_OTP_MAX_ATTEMPTS: ${EMAIL_OTP_MAX_ATTEMPTS:-5}
+      EMAIL_OTP_RESEND_SECONDS: ${EMAIL_OTP_RESEND_SECONDS:-60}
+      EMAIL_OTP_MAX_SENDS: ${EMAIL_OTP_MAX_SENDS:-5}
+      SMTP_HOST: ${SMTP_HOST:?SMTP_HOST must be set}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:?SMTP_USER must be set}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?SMTP_PASSWORD must be set}
+      SMTP_FROM: ${SMTP_FROM:?SMTP_FROM must be set}
+      SMTP_SSL: ${SMTP_SSL:-0}
+      SMTP_TLS: ${SMTP_TLS:-1}
       MEDIA_ROOT: /app/media
     volumes:
       - gram_media:/app/media
-    ports:
-      - "8000:8000"
+      - ./secrets/wire_ticket_secret:/run/secrets/wire_ticket_secret:ro
+      - ./secrets/wire_internal_secret:/run/secrets/wire_internal_secret:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,20 +95,27 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    networks:
+      gram-private:
+      caddy-public:
+        aliases:
+          - gram-api
     restart: unless-stopped
 
   web:
     build:
       context: ./web
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://vexory.xyz}
+        NEXT_PUBLIC_GRAM_WIRE_ENABLED: ${NEXT_PUBLIC_GRAM_WIRE_ENABLED:-false}
+        NEXT_PUBLIC_GRAM_WIRE_PRIMARY: ${NEXT_PUBLIC_GRAM_WIRE_PRIMARY:-false}
+        NEXT_PUBLIC_GRAM_WIRE_CANARY_ONLY: ${NEXT_PUBLIC_GRAM_WIRE_CANARY_ONLY:-true}
+        NEXT_PUBLIC_GRAM_WIRE_URL: ${NEXT_PUBLIC_GRAM_WIRE_URL:-wss://vexory.xyz/wire}
+        NEXT_PUBLIC_GRAM_WIRE_IDENTITY_PUBLIC_KEY_B64: ${NEXT_PUBLIC_GRAM_WIRE_IDENTITY_PUBLIC_KEY_B64:-}
+    init: true
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
-      # The browser reaches the api through the published port; Next's own /media proxy runs
-      # inside the network and has to use the service name.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://vexory.xyz}
       API_INTERNAL_URL: http://api:8000
-    ports:
-      - "3000:3000"
     depends_on:
       api:
         condition: service_healthy
@@ -66,8 +124,85 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    networks:
+      gram-private:
+      caddy-public:
+        aliases:
+          - gram-web
+    restart: unless-stopped
+
+  gateway:
+    profiles: ["wire"]
+    build:
+      context: ./gateway
+    init: true
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      WIRE_TICKET_SECRET: ${WIRE_TICKET_SECRET:-}
+      WIRE_TICKET_SECRET_FILE: /run/secrets/wire_ticket_secret
+      WIRE_INTERNAL_SECRET: ${WIRE_INTERNAL_SECRET:-}
+      WIRE_INTERNAL_SECRET_FILE: /run/secrets/wire_internal_secret
+      WIRE_SESSION_CHECK_URL: http://api:8000/api/internal/wire/session-check
+      WIRE_IDENTITY_PRIVATE_KEY_B64: ${WIRE_IDENTITY_PRIVATE_KEY_B64:-}
+      WIRE_IDENTITY_PRIVATE_KEY_B64_FILE: /run/secrets/wire_identity_private_key_b64
+      WIRE_METRICS_TOKEN: ${WIRE_METRICS_TOKEN:-}
+      WIRE_METRICS_TOKEN_FILE: /run/secrets/wire_metrics_token
+      WIRE_ALLOWED_ORIGINS: ${WIRE_ALLOWED_ORIGINS:-https://vexory.xyz,https://www.vexory.xyz}
+      WIRE_REQUIRE_CHANNEL_BINDING: ${WIRE_REQUIRE_CHANNEL_BINDING:-false}
+      WIRE_HTTP_ADDR: :4001
+      WIRE_TCP_ADDR: :5222
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    expose:
+      - "4001"
+      - "5222"
+    volumes:
+      - ./secrets/wire_ticket_secret:/run/secrets/wire_ticket_secret:ro
+      - ./secrets/wire_internal_secret:/run/secrets/wire_internal_secret:ro
+      - ./secrets/wire_identity_private_key_b64:/run/secrets/wire_identity_private_key_b64:ro
+      - ./secrets/wire_metrics_token:/run/secrets/wire_metrics_token:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      gram-private:
+      caddy-public:
+        aliases:
+          - gram-wire
+    restart: unless-stopped
+
+  # Telegram Stars payment bot. It remains profile-gated so local `docker compose up`
+  # never starts a bot accidentally; production starts it explicitly with `--profile bot`.
+  bot:
+    profiles: ["bot"]
+    build:
+      context: ./bot
+    init: true
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be set}
+      GRAM_API_URL: http://api:8000
+      GRAM_SITE_URL: ${GRAM_SITE_URL:-https://vexory.xyz}
+      BOT_API_SECRET: ${BOT_API_SECRET:?BOT_API_SECRET must be set}
+      TELEGRAM_ADMIN_ID: ${TELEGRAM_ADMIN_ID:-944763501}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - gram-private
     restart: unless-stopped
 
 volumes:
   gram_postgres:
   gram_media:
+  gram_redis:
+
+networks:
+  gram-private:
+  caddy-public:
+    external: true
+    name: hosting_default
