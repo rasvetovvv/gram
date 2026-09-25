@@ -1,8 +1,9 @@
 "use client";
 
-import { BookOpen, Check, FileWarning, MessageCircle, Moon, Palette, Sparkles, Sun } from "lucide-react";
+import { BookOpen, Check, FileWarning, Globe, MessageCircle, Moon, Palette, Sparkles, Sun } from "lucide-react";
 import Link from "next/link";
 import { useSyncExternalStore } from "react";
+import { LOCALES, useLocale } from "@/lib/i18n";
 import {
   CHAT_ACCENTS,
   CHAT_WALLPAPERS,
@@ -23,6 +24,7 @@ import {
 export function SiteSettingsView() {
   // The store is localStorage plus a change event, which is exactly what this hook is for.
   const prefs = useSyncExternalStore(subscribePrefs, getPrefsSnapshot, getServerPrefsSnapshot);
+  const { locale, setLocale, t } = useLocale();
 
   function update(patch: Partial<SitePrefs>) {
     writePrefs({ ...prefs, ...patch });
@@ -31,26 +33,61 @@ export function SiteSettingsView() {
   return (
     <>
       <div className="mobile-topbar">
-        <span className="wordmark">APPEARANCE</span>
+        <span className="wordmark">{t("APPEARANCE")}</span>
         <Palette size={20} />
       </div>
 
       <header className="channel-header">
         <div>
-          <h1 className="channel-title">Site settings</h1>
-          <p className="channel-subtitle">Theme, chat color and conversation wallpaper</p>
+          <h1 className="channel-title">{t("Site settings")}</h1>
+          <p className="channel-subtitle">{t("Theme, chat color and conversation wallpaper")}</p>
         </div>
       </header>
 
       <div className="space-y-3 px-3 pb-8 sm:px-5">
         <section className="surface p-4">
           <h2 className="m-0 flex items-center gap-2 text-base font-bold">
-            <Moon size={17} className="text-[var(--primary-strong)]" />
-            Theme
+            <Globe size={17} className="text-[var(--primary-strong)]" />
+            {t("Language")}
           </h2>
           <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
-            GRAM is dark-only for now. A light theme would mean rebuilding the entire palette — until
-            it exists, the toggle says so honestly.
+            {t(
+              "Choose the interface language. It applies across the app and is remembered on this device."
+            )}
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {LOCALES.map((option) => {
+              const active = locale === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setLocale(option.value)}
+                  className="flex min-h-12 items-center justify-center gap-2 rounded-[14px] text-sm font-semibold transition"
+                  style={
+                    active
+                      ? { background: "rgba(109,95,196,.22)", color: "var(--identity)" }
+                      : { background: "var(--surface-raised)", color: "var(--muted)" }
+                  }
+                >
+                  {option.native}
+                  {active ? <Check size={15} /> : null}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="surface p-4">
+          <h2 className="m-0 flex items-center gap-2 text-base font-bold">
+            <Moon size={17} className="text-[var(--primary-strong)]" />
+            {t("Theme")}
+          </h2>
+          <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
+            {t(
+              "GRAM is dark-only for now. A light theme would mean rebuilding the entire palette — until it exists, the toggle says so honestly."
+            )}
           </p>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <button
@@ -60,17 +97,17 @@ export function SiteSettingsView() {
               style={{ background: "rgba(109,95,196,.22)", color: "var(--identity)" }}
             >
               <Moon size={16} />
-              Dark
+              {t("Dark")}
               <Check size={15} />
             </button>
             <button
               type="button"
               disabled
-              title="Coming in the next update"
+              title={t("Light — soon")}
               className="flex min-h-12 items-center justify-center gap-2 rounded-[14px] bg-[var(--surface-raised)] text-sm font-semibold text-[var(--dim)]"
             >
               <Sun size={16} />
-              Light — soon
+              {t("Light — soon")}
             </button>
           </div>
         </section>
@@ -78,7 +115,7 @@ export function SiteSettingsView() {
         <section className="surface p-4">
           <h2 className="m-0 flex items-center gap-2 text-base font-bold">
             <MessageCircle size={17} className="text-[var(--primary-strong)]" />
-            Chat color
+            {t("Chat color")}
           </h2>
           <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
             Colors your messages, the send button and &quot;New chat&quot;.
@@ -119,7 +156,7 @@ export function SiteSettingsView() {
         <section className="surface p-4">
           <h2 className="m-0 flex items-center gap-2 text-base font-bold">
             <Sparkles size={17} className="text-[var(--primary-strong)]" />
-            Chat wallpaper
+            {t("Chat wallpaper")}
           </h2>
           <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
             The wallpaper behind your conversation, and the pattern over it.
@@ -146,7 +183,7 @@ export function SiteSettingsView() {
             })}
           </div>
           <label className="mt-4 flex min-h-12 items-center justify-between gap-3 rounded-[14px] bg-[var(--surface-raised)] px-3">
-            <span className="text-sm font-semibold">Pattern over the wallpaper</span>
+            <span className="text-sm font-semibold">{t("Pattern over the wallpaper")}</span>
             <input
               type="checkbox"
               checked={prefs.chatPattern}
@@ -159,18 +196,18 @@ export function SiteSettingsView() {
         <section className="surface p-4">
           <h2 className="m-0 flex items-center gap-2 text-base font-bold">
             <BookOpen size={17} className="text-[var(--primary-strong)]" />
-            Help and documents
+            {t("Help and documents")}
           </h2>
           <p className="mb-3 mt-1 text-sm text-[var(--muted)]">
-            Guides, terms, privacy and a secure support form.
+            {t("Guides, terms, privacy and a secure support form.")}
           </p>
           <div className="grid gap-2 sm:grid-cols-2">
-            <Link href="/help" className="quiet-button justify-start">Help center</Link>
-            <Link href="/faq" className="quiet-button justify-start">FAQ</Link>
-            <Link href="/terms" className="quiet-button justify-start">Terms and policies</Link>
+            <Link href="/help" className="quiet-button justify-start">{t("Help center")}</Link>
+            <Link href="/faq" className="quiet-button justify-start">{t("FAQ")}</Link>
+            <Link href="/terms" className="quiet-button justify-start">{t("Terms and policies")}</Link>
             <Link href="/report" className="quiet-button justify-start text-[var(--danger)]">
               <FileWarning size={15} />
-              Report or contact
+              {t("Report or contact")}
             </Link>
           </div>
         </section>
@@ -180,7 +217,7 @@ export function SiteSettingsView() {
           className="quiet-button w-full"
           onClick={() => update(DEFAULT_PREFS)}
         >
-          Reset appearance
+          {t("Reset appearance")}
         </button>
       </div>
     </>

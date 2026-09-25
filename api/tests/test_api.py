@@ -5813,3 +5813,52 @@ async def test_anonymous_number_resale_pays_the_seller(client: AsyncClient) -> N
     assert seller_after == seller_before + 2500
     # And the seller no longer holds it, so they can buy another.
     assert (await client.get("/api/users/me")).json()["anonymous_number"] is None
+
+
+@pytest.mark.asyncio
+async def test_anonymous_number_list_unlist_and_release(client: AsyncClient) -> None:
+    """Selling (list), taking off the market (unlist), and unbinding (release) all work."""
+    registered = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "numkeep@gram.local",
+            "password": "NumKeep!2026",
+            "username": "numkeep",
+            "display_name": "Number Keeper",
+        },
+    )
+    assert registered.status_code == 201, registered.text
+    await client.post("/api/stars/top-up", json={"amount": 5000})
+    bought = await client.post("/api/numbers/buy", json={"number": "44440000"})
+    assert bought.status_code == 201, bought.text
+    number_id = bought.json()["id"]
+
+    # List for sale.
+    listed = await client.patch(
+        f"/api/numbers/{number_id}/listing", json={"for_sale": True, "price": 3000}
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["status"] == "listed"
+
+    # Take it off the market again.
+    unlisted = await client.patch(
+        f"/api/numbers/{number_id}/listing", json={"for_sale": False}
+    )
+    assert unlisted.status_code == 200, unlisted.text
+    assert unlisted.json()["status"] == "reserved"
+    assert unlisted.json()["price"] is None
+    # Still held, still on the profile.
+    assert (await client.get("/api/users/me")).json()["anonymous_number"] == "+888 4444 0000"
+
+    # Release (unbind) it from the account.
+    released = await client.delete(f"/api/numbers/{number_id}")
+    assert released.status_code == 200, released.text
+    assert released.json()["status"] == "available"
+    assert released.json()["is_owned_by_me"] is False
+    assert (await client.get("/api/users/me")).json()["anonymous_number"] is None
+    # Released, so the account can buy another.
+    again = await client.post("/api/numbers/buy", json={"number": "55550000"})
+    assert again.status_code == 201, again.text
+    # A number nobody else owns is not for sale, so buy-listed on it is refused.
+    only_owner = await client.get("/api/numbers", params={"status": "reserved"})
+    assert only_owner.status_code == 200

@@ -2,6 +2,7 @@
 
 import { AtSign, Phone } from "lucide-react";
 import { useState } from "react";
+import { useLocale } from "@/lib/i18n";
 import { UsernameMarket } from "@/components/market/username-market";
 import { NumberMarket } from "@/components/market/number-market";
 
@@ -13,10 +14,11 @@ type Surface = "usernames" | "numbers";
  */
 export default function MarketPage() {
   const [surface, setSurface] = useState<Surface>("usernames");
+  const { t } = useLocale();
   return (
     <>
       <div className="px-3 pt-3 sm:px-5">
-        <div className="segmented-control" role="tablist" aria-label="Market">
+        <div className="segmented-control" role="tablist" aria-label={t("Market")}>
           <button
             role="tab"
             aria-selected={surface === "usernames"}
@@ -25,7 +27,7 @@ export default function MarketPage() {
             className="flex items-center justify-center gap-2"
           >
             <AtSign size={16} />
-            Usernames
+            {t("Usernames")}
           </button>
           <button
             role="tab"
@@ -35,7 +37,7 @@ export default function MarketPage() {
             className="flex items-center justify-center gap-2"
           >
             <Phone size={16} />
-            Numbers
+            {t("Numbers")}
           </button>
         </div>
       </div>

@@ -22,6 +22,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { api } from "@/lib/api";
+import { useLocale } from "@/lib/i18n";
 import { useUiStore } from "@/store/ui";
 import { useLogout } from "./auth/use-logout";
 import { UserAvatar } from "./user-avatar";
@@ -82,6 +83,7 @@ export function DesktopNavigation() {
   const pathname = usePathname();
   const { me, unread, unreadChats } = useNavigationData();
   const logout = useLogout();
+  const { t } = useLocale();
   const openPremium = useUiStore((state) => state.openPremium);
   const openGifts = useUiStore((state) => state.openGifts);
   const profileHref = me ? `/u/${me.username}` : "/login";
@@ -120,7 +122,7 @@ export function DesktopNavigation() {
                   style={style}
                 >
                   <Icon size={20} strokeWidth={1.9} className="flex-none" />
-                  <span className="nav-copy">{label}</span>
+                  <span className="nav-copy">{t(label)}</span>
                 </button>
               );
             return (
@@ -132,7 +134,7 @@ export function DesktopNavigation() {
                 aria-current={selected ? "page" : undefined}
               >
                 <Icon size={20} strokeWidth={selected ? 2.3 : 1.9} className="flex-none" />
-                <span className="nav-copy">{label}</span>
+                <span className="nav-copy">{t(label)}</span>
                 {count ? (
                   <span
                     className="nav-badge grid place-items-center rounded-full font-extrabold text-white"
@@ -154,23 +156,23 @@ export function DesktopNavigation() {
             style={{ color: "var(--muted)" }}
           >
             <Crown size={20} strokeWidth={1.9} className="text-[var(--premium)]" />
-            <span className="nav-copy">GRAM Premium</span>
+            <span className="nav-copy">{t("GRAM Premium")}</span>
           </button>
           {/* Staff only. Shown rather than hidden behind a memorised URL: an admin needs to see
               the queue is waiting, and the route refuses everyone else on the server anyway. */}
           {me?.is_admin ? (
             <Link href="/admin" className={NAV_ROW} style={{ color: "var(--muted)" }}>
               <Gavel size={20} strokeWidth={1.9} className="text-[var(--primary-strong)]" />
-              <span className="nav-copy">Administration</span>
+              <span className="nav-copy">{t("Administration")}</span>
             </Link>
           ) : null}
           <Link href="/settings" className={NAV_ROW} style={{ color: "var(--muted)" }}>
             <Settings size={20} strokeWidth={1.9} />
-            <span className="nav-copy">Settings</span>
+            <span className="nav-copy">{t("Settings")}</span>
           </Link>
           <Link href="/help" className={NAV_ROW} style={{ color: "var(--muted)" }}>
             <CircleHelp size={20} strokeWidth={1.9} />
-            <span className="nav-copy">Help and rules</span>
+            <span className="nav-copy">{t("Help and rules")}</span>
           </Link>
           {me ? (
             <button
@@ -180,7 +182,7 @@ export function DesktopNavigation() {
               disabled={logout.isPending}
             >
               <LogOut size={20} strokeWidth={1.9} />
-              <span className="nav-copy">Log out</span>
+              <span className="nav-copy">{t("Log out")}</span>
             </button>
           ) : null}
         </div>
@@ -191,6 +193,7 @@ export function DesktopNavigation() {
 export function MobileDock() {
   const pathname = usePathname();
   const { me, unread, unreadChats } = useNavigationData();
+  const { t } = useLocale();
   const items = [
     { href: "/", label: "Home", icon: Home },
     { href: "/discover", label: "Discover", icon: Compass },
@@ -215,7 +218,7 @@ export function MobileDock() {
             href={href}
             className="dock-link"
             data-active={selected}
-            aria-label={label}
+            aria-label={t(label)}
             aria-current={selected ? "page" : undefined}
           >
             <span className="relative grid size-6 place-items-center">
