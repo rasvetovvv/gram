@@ -66,7 +66,7 @@ export function PremiumMarkExplained({
         <button
           type="button"
           className="inline-flex shrink-0 border-0 bg-transparent p-0 align-middle transition-transform duration-150 hover:scale-110 active:scale-95"
-          aria-label={`${label} — подробнее`}
+          aria-label={`${label} — details`}
         >
           <PremiumMark size={size} profileColor={profileColor} label={label} />
         </button>
@@ -89,13 +89,13 @@ export function PremiumMarkExplained({
             <div className="min-w-0">
               <strong className="block text-[15px] font-bold leading-tight">{label}</strong>
               <p className="mb-0 mt-1.5 text-[13px] leading-5 text-[var(--muted)]">
-                У {name} активна подписка GRAM Premium.
+                {name} has an active GRAM Premium subscription.
               </p>
               <Link
                 href="/premium"
                 className="mt-2 inline-block text-[13px] font-semibold text-[var(--link)]"
               >
-                Что это даёт
+                What you get
               </Link>
             </div>
           </div>

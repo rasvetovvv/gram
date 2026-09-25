@@ -65,12 +65,12 @@ export function GiftDesignPanel({
         queryClient.invalidateQueries({ queryKey: ["me"] }),
         queryClient.invalidateQueries({ queryKey: ["stars-wallet"] })
       ]);
-      notify(`«${gift.name}» #${gift.serial_number} ваш`, {
+      notify(`"${gift.name}" #${gift.serial_number} is yours`, {
         variant: "success",
-        detail: "Куплен с рук — предмет уже в коллекции"
+        detail: "Bought from another owner — the item is already in your collection"
       });
     },
-    onError: (error: Error) => notify("Покупка не прошла", { variant: "error", detail: error.message })
+    onError: (error: Error) => notify("Purchase failed", { variant: "error", detail: error.message })
   });
 
   const model = design.data;
@@ -83,7 +83,7 @@ export function GiftDesignPanel({
           type="button"
           onClick={onBack}
           className="icon-button !size-9 bg-[#1a1a1f] text-white"
-          aria-label="Назад к каталогу"
+          aria-label="Back to catalog"
         >
           <ArrowLeft size={18} />
         </button>
@@ -95,18 +95,18 @@ export function GiftDesignPanel({
 
       <div className="mt-3 text-center">
         <h2 className="mb-0 text-2xl font-extrabold leading-tight tracking-[-0.02em]">
-          {model?.name ?? "Подарок"}
+          {model?.name ?? "Gift"}
         </h2>
         <p className="mb-0 mt-1 text-[15px] text-[var(--muted)]">
-          {recipientName ? `для ${recipientName}` : "себе в коллекцию"}
+          {recipientName ? `for ${recipientName}` : "to your own collection"}
         </p>
       </div>
 
       <div className="mt-3 flex justify-center gap-2">
         {(
           [
-            ["new", "Купить новый"],
-            ["resale", `Купить с рук${listings.length ? ` · ${listings.length}` : ""}`]
+            ["new", "Buy new"],
+            ["resale", `Buy resale${listings.length ? ` · ${listings.length}` : ""}`]
           ] as const
         ).map(([value, label]) => (
           <button
@@ -210,32 +210,32 @@ function NewMintTab({
         />
         <strong className="mt-3 block text-xl font-extrabold tracking-[-0.01em]">{design.name}</strong>
         <p className="mb-0 mt-1 max-w-[34ch] text-[13px] leading-5 text-[var(--muted)]">
-          Модель, узор и фон назначатся случайно
+          Model, pattern and backdrop are assigned at random
         </p>
         <p className="mb-0 mt-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--faint)]">
-          {design.models.length} моделей · {design.backdrops.length} фонов ·{" "}
-          {design.symbols.length} узоров
+          {design.models.length} models · {design.backdrops.length} backdrops ·{" "}
+          {design.symbols.length} patterns
         </p>
       </div>
 
       <div className="mt-3 overflow-hidden rounded-[18px] bg-[#141419]">
-        <Row label="Выпуск">
+        <Row label="Edition">
           <strong>
-            {design.minted.toLocaleString("ru-RU")} из {design.edition_size.toLocaleString("ru-RU")}
+            {design.minted.toLocaleString("ru-RU")} of {design.edition_size.toLocaleString("ru-RU")}
           </strong>
         </Row>
-        <Row label="Осталось">
+        <Row label="Remaining">
           <strong className={design.sold_out ? "text-[var(--danger)]" : "text-[var(--online)]"}>
-            {design.sold_out ? "распродано" : design.remaining.toLocaleString("ru-RU")}
+            {design.sold_out ? "sold out" : design.remaining.toLocaleString("ru-RU")}
           </strong>
         </Row>
-        <Row label="Комбинаций">
+        <Row label="Combinations">
           <strong>{variants.toLocaleString("ru-RU")}</strong>
         </Row>
         {design.resale_count ? (
-          <Row label="С рук">
+          <Row label="Resale">
             <strong className="text-[var(--stars)]">
-              от {design.resale_floor_stars} ★ · {design.resale_count} шт
+              from {design.resale_floor_stars} ★ · {design.resale_count} available
             </strong>
           </Row>
         ) : null}
@@ -250,7 +250,7 @@ function NewMintTab({
             ringColor="transparent"
           />
           <span className="min-w-0 flex-1 truncate text-[14px]">
-            Получатель: <strong>{recipientName ?? `@${recipientUsername}`}</strong>
+            Recipient: <strong>{recipientName ?? `@${recipientUsername}`}</strong>
           </span>
         </div>
       ) : null}
@@ -258,7 +258,7 @@ function NewMintTab({
       {runs.length > 1 ? (
         <fieldset className="mt-3 border-0 p-0">
           <legend className="mb-1.5 px-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--faint)]">
-            Сколько
+            How many
           </legend>
           <div className="flex gap-2">
             {runs.map((count) => (
@@ -287,12 +287,12 @@ function NewMintTab({
             value={message}
             onChange={(event) => setMessage(event.target.value.slice(0, 200))}
             rows={2}
-            placeholder="Добавить сообщение (необязательно)"
-            aria-label="Сообщение к подарку"
+            placeholder="Add a message (optional)"
+            aria-label="Message for the gift"
             className="mt-3 w-full resize-none rounded-[16px] bg-[#141419] p-3 text-[15px] outline-none placeholder:text-[var(--dim)]"
           />
           <label className="mt-2 flex min-h-11 cursor-pointer items-center justify-between rounded-[16px] bg-[#141419] px-3 text-[15px]">
-            Скрыть моё имя
+            Hide my name
             <input
               type="checkbox"
               checked={hideMyName}
@@ -320,12 +320,12 @@ function NewMintTab({
       >
         <GiftIcon size={18} />
         {submitting
-          ? "Отправляем…"
+          ? "Sending…"
           : `${actionLabel}${quantity > 1 ? ` ×${quantity}` : ""} · ${total} ★`}
       </button>
       {balance < total && !design.sold_out ? (
         <p className="mb-0 mt-2 text-center text-[13px] font-semibold text-[var(--stars)]">
-          Недостаточно звёзд на балансе
+          Not enough stars in your balance
         </p>
       ) : null}
     </>
@@ -347,8 +347,8 @@ function ResaleTab({
     return (
       <div className="empty-state mt-4">
         <ShoppingBag className="mx-auto mb-3 text-[var(--muted)]" />
-        <p className="font-bold text-white">Никто не продаёт этот подарок</p>
-        <p className="text-sm">Выпуск можно купить новым — на вкладке рядом.</p>
+        <p className="font-bold text-white">No one is selling this gift</p>
+        <p className="text-sm">You can buy a new one from the edition — on the adjacent tab.</p>
       </div>
     );
   }
@@ -376,7 +376,7 @@ function ResaleTab({
             ) : item.is_mine ? (
               <>
                 <Check size={14} />
-                ваш
+                yours
               </>
             ) : (
               <>

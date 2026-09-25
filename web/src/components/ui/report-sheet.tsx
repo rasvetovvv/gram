@@ -7,12 +7,12 @@ import { BottomSheet } from "./bottom-sheet";
 
 /** The reference's own reasons, in its own order. */
 export const REPORT_REASONS: { value: PostReportReason; label: string; hint: string }[] = [
-  { value: "spam", label: "Спам", hint: "Реклама, накрутка, повторяющиеся записи." },
-  { value: "abuse", label: "Оскорбления", hint: "Травля, вражда, угрозы." },
-  { value: "adult", label: "Взрослый контент", hint: "Не для всех и без предупреждения." },
-  { value: "fraud", label: "Обман", hint: "Мошенничество, фальшивые продажи." },
-  { value: "violence", label: "Насилие", hint: "Жестокость и призывы к ней." },
-  { value: "other", label: "Другое", hint: "Опишите, что не так." }
+  { value: "spam", label: "Spam", hint: "Ads, engagement farming, repetitive posts." },
+  { value: "abuse", label: "Abuse", hint: "Harassment, hostility, threats." },
+  { value: "adult", label: "Adult content", hint: "Not for everyone and posted without warning." },
+  { value: "fraud", label: "Deception", hint: "Scams, fake sales." },
+  { value: "violence", label: "Violence", hint: "Cruelty and calls for it." },
+  { value: "other", label: "Other", hint: "Describe what's wrong." }
 ];
 
 /**
@@ -44,7 +44,7 @@ export function ReportSheet({
     <BottomSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Пожаловаться"
+      title="Report"
       description={subject}
       footer={
         <button
@@ -53,15 +53,15 @@ export function ReportSheet({
           disabled={pending}
           onClick={() => onSend(reason, comment)}
         >
-          {pending ? "Отправляем…" : "Отправить жалобу"}
+          {pending ? "Sending…" : "Submit report"}
         </button>
       }
     >
       <div className="pb-2">
-        <h2 className="m-0 text-[19px] font-bold">Пожаловаться</h2>
+        <h2 className="m-0 text-[19px] font-bold">Report</h2>
         <p className="mb-4 mt-1 text-[13px] text-[var(--muted)]">{note}</p>
 
-        <div role="radiogroup" aria-label="Причина жалобы" className="grid gap-1.5">
+        <div role="radiogroup" aria-label="Reason for report" className="grid gap-1.5">
           {REPORT_REASONS.map((option) => (
             <button
               key={option.value}
@@ -94,13 +94,13 @@ export function ReportSheet({
         </div>
 
         <label className="mt-3 grid gap-1.5">
-          <span className="text-[0.95rem] font-bold">Что случилось</span>
+          <span className="text-[0.95rem] font-bold">What happened</span>
           <textarea
             className="field min-h-20 resize-none px-4 py-3 text-sm"
             value={comment}
             maxLength={300}
-            placeholder="Необязательно"
-            aria-label="Подробности жалобы"
+            placeholder="Optional"
+            aria-label="Report details"
             onChange={(event) => setComment(event.target.value)}
           />
         </label>

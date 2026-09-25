@@ -9,7 +9,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { api } from "@/lib/api";
 
-const schema = z.object({ content: z.string().trim().max(200, "Не больше 200 символов") });
+const schema = z.object({ content: z.string().trim().max(200, "No more than 200 characters") });
 type Values = z.infer<typeof schema>;
 
 /**
@@ -61,13 +61,13 @@ export function NoteDialog({
         {variant === "bubble" ? (
           <button className="flex max-w-[190px] items-center gap-2 rounded-full bg-[#2a2a31]/95 px-3 py-2 text-left text-xs font-medium text-white shadow-[0_9px_24px_rgba(0,0,0,.38)] backdrop-blur-md">
             <NotebookPen size={14} className="flex-none text-[var(--link)]" />
-            <span className="truncate">{note || "Заметка…"}</span>
+            <span className="truncate">{note || "Note…"}</span>
           </button>
         ) : (
           <button className="group flex w-full items-center gap-3 rounded-[18px] bg-[var(--surface)] px-4 py-3.5 text-left shadow-[inset_0_0_0_1px_var(--line)] transition-colors hover:bg-[var(--surface-raised)]">
             <span className="grid size-10 flex-none place-items-center rounded-[14px] bg-[var(--surface-raised)] text-[var(--link)]"><NotebookPen size={19} /></span>
-            <span className="min-w-0 flex-1"><span className="block text-sm font-bold">Заметка в профиле</span><span className="mt-0.5 block truncate text-xs text-[var(--muted)]">{note || "Короткая строка, которую увидят все"}</span></span>
-            <span className="text-xs font-bold text-[var(--link)]">{note ? "ИЗМЕНИТЬ" : "ДОБАВИТЬ"}</span>
+            <span className="min-w-0 flex-1"><span className="block text-sm font-bold">Profile note</span><span className="mt-0.5 block truncate text-xs text-[var(--muted)]">{note || "A short line everyone will see"}</span></span>
+            <span className="text-xs font-bold text-[var(--link)]">{note ? "EDIT" : "ADD"}</span>
           </button>
         )}
       </Dialog.Trigger>
@@ -76,17 +76,17 @@ export function NoteDialog({
         <Dialog.Content className="fixed left-1/2 top-1/2 z-[90] w-[calc(100%-2rem)] max-w-[480px] -translate-x-1/2 -translate-y-1/2 rounded-[24px] border border-[var(--sheet-line)] bg-[var(--sheet)] p-5 shadow-2xl">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <Dialog.Title className="text-lg font-bold">Заметка в профиле</Dialog.Title>
+              <Dialog.Title className="text-lg font-bold">Profile note</Dialog.Title>
               <Dialog.Description className="mt-1 text-sm leading-5 text-[var(--muted)]">
-                Её увидит каждый, кто откроет ваш профиль.
+                Everyone who opens your profile will see it.
               </Dialog.Description>
             </div>
-            <Dialog.Close className="icon-button -mr-2 -mt-2" aria-label="Закрыть"><X size={20} /></Dialog.Close>
+            <Dialog.Close className="icon-button -mr-2 -mt-2" aria-label="Close"><X size={20} /></Dialog.Close>
           </div>
           <form onSubmit={form.handleSubmit((values) => save.mutate(values))} className="mt-5">
-            <textarea autoFocus rows={4} maxLength={200} className="field resize-none p-4 text-sm leading-6" placeholder="Например: открыт к сотрудничеству, пишите в личку" {...form.register("content")} />
+            <textarea autoFocus rows={4} maxLength={200} className="field resize-none p-4 text-sm leading-6" placeholder="For example: open to collaboration, DM me" {...form.register("content")} />
             <div className="mt-2 min-h-5 text-xs text-[var(--danger)]">{form.formState.errors.content?.message ?? save.error?.message}</div>
-            <div className="mt-3 flex justify-end"><button className="signal-button" disabled={save.isPending}><Save size={17} />{save.isPending ? "Сохраняем…" : "Сохранить"}</button></div>
+            <div className="mt-3 flex justify-end"><button className="signal-button" disabled={save.isPending}><Save size={17} />{save.isPending ? "Saving…" : "Save"}</button></div>
           </form>
         </Dialog.Content>
       </Dialog.Portal>

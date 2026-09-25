@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDownLeft,
+  ArrowDownToLine,
   ArrowUpRight,
   ChartColumn,
   Check,
@@ -16,16 +17,18 @@ import {
 import { useEffect, useRef, useMemo, useState } from "react";
 import { socialApi } from "@/lib/social-api";
 import type { StarTransaction } from "@/lib/social-types";
+import { PayoutSheet } from "./payout-sheet";
 import { SendStarsSheet, type SendStarsForm } from "./send-stars-sheet";
 import styles from "./stars.module.css";
+import { StarReceiptSheet } from "./star-receipt-sheet";
 import { TopUpSheet } from "./top-up-sheet";
 
 type LedgerFilter = "all" | "credit" | "spend";
 
 const filterLabels: Record<LedgerFilter, string> = {
-  all: "Все операции",
-  credit: "Зачисления",
-  spend: "Списания"
+  all: "All transactions",
+  credit: "Credits",
+  spend: "Debits"
 };
 
 function formatNumber(value: number) {
@@ -42,17 +45,22 @@ function formatDate(value: string) {
 }
 
 const KIND_LABELS: Record<string, string> = {
-  welcome: "стартовый баланс",
-  top_up: "пополнения",
-  transfer_sent: "переводы",
-  transfer_received: "полученные переводы",
-  subscription: "подписки авторам",
+  welcome: "starting balance",
+  top_up: "top-ups",
+  stars_telegram: "purchases via Telegram",
+  stars_refund: "payment refunds",
+  stars_refund_reversed: "reversed refunds",
+  transfer_sent: "transfers",
+  transfer_received: "received transfers",
+  subscription: "creator subscriptions",
   premium_purchase: "GRAM Premium",
-  gift_purchase: "подарки",
-  gift_sale: "продажу подарков",
-  username_purchase: "коллекционные юзернеймы",
-  username_sale: "продажу юзернеймов",
-  refund: "возвраты"
+  gift_purchase: "gifts",
+  gift_sale: "gift sales",
+  username_purchase: "collectible usernames",
+  username_sale: "username sales",
+  username_offer_hold: "username bids",
+  username_offer_refund: "bid refunds",
+  refund: "refunds"
 };
 
 function kindLabel(kind: string) {
@@ -61,16 +69,16 @@ function kindLabel(kind: string) {
 
 function transactionMeta(transaction: StarTransaction) {
   if (transaction.kind === "refund") {
-    return { label: "Возврат", icon: RotateCcw, tone: styles.refund };
+    return { label: "Refund", icon: RotateCcw, tone: styles.refund };
   }
   if (transaction.amount >= 0) {
-    return { label: "Зачисление", icon: ArrowDownLeft, tone: styles.credit };
+    return { label: "Credit", icon: ArrowDownLeft, tone: styles.credit };
   }
-  return { label: "Списание", icon: ArrowUpRight, tone: styles.spend };
+  return { label: "Debit", icon: ArrowUpRight, tone: styles.spend };
 }
 
 function messageFrom(error: unknown) {
-  return error instanceof Error ? error.message : "Не удалось загрузить данные";
+  return error instanceof Error ? error.message : "Couldn’t load data";
 }
 
 export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: string }) {
@@ -78,8 +86,11 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
   const [filter, setFilter] = useState<LedgerFilter>("all");
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
+  const [payoutOpen, setPayoutOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [statsOpen, setStatsOpen] = useState(false);
+  // Which operation has its receipt open. The row is the button, so the whole record travels.
+  const [openReceipt, setOpenReceipt] = useState<StarTransaction | null>(null);
   /* The transfer form remounts with the sheet, so the ?to= recipient is held here and
    * dropped after the first visit — otherwise every later open would re-prefill it. */
   const [prefill, setPrefill] = useState(initialRecipient);
@@ -103,18 +114,11 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
     await queryClient.invalidateQueries({ queryKey: ["me"] });
   }
 
-  const topUp = useMutation({
-    mutationFn: (amount: number) => socialApi.topUpStars(amount),
-    onSuccess: async (nextWallet, amount) => {
-      queryClient.setQueryData(["stars", "wallet"], nextWallet);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["stars", "transactions"] }),
-        refreshBalanceConsumers()
-      ]);
-      setNotice(`Баланс пополнен на ${formatNumber(amount)} ★`);
-      setTopUpOpen(false);
-    }
-  });
+  /*
+   * Topping up is a Telegram Stars payment inside GRAM's own bot, so the sheet owns that flow
+   * end to end: it opens the order, watches it, and refreshes these caches when the money lands.
+   * There is no in-app "credit yourself" path left to call from here.
+   */
 
   const sendStars = useMutation({
     mutationFn: ({ to_username, amount, message }: SendStarsForm) =>
@@ -125,14 +129,14 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
         queryClient.invalidateQueries({ queryKey: ["stars", "transactions"] }),
         refreshBalanceConsumers()
       ]);
-      setNotice(`Отправлено ${formatNumber(receipt.amount)} ★ пользователю @${receipt.recipient.username}`);
+      setNotice(`Sent ${formatNumber(receipt.amount)} ★ to @${receipt.recipient.username}`);
       setSendOpen(false);
     }
   });
 
   const filteredTransactions = useMemo(() => {
     const items = transactions.data ?? [];
-    // Refunds are credits, so they belong to «Зачисления» rather than a tab of their own.
+    // Refunds are credits, so they belong to “Credits” rather than a tab of their own.
     if (filter === "credit") return items.filter((item) => item.amount > 0);
     if (filter === "spend") return items.filter((item) => item.amount < 0);
     return items;
@@ -157,11 +161,13 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
   }, [transactions.data]);
 
   const balance = wallet.data?.balance ?? null;
+  /* Absent reads as open, so an older response cannot hide a working button. */
+  const payoutsOpen = wallet.data?.payouts_enabled !== false;
 
   return (
     <div className={styles.page}>
       <div className="mobile-topbar">
-        <span className="wordmark">ЗВЁЗДЫ</span>
+        <span className="wordmark">STARS</span>
         <Star size={20} className="text-[var(--stars)]" fill="currentColor" />
       </div>
 
@@ -175,8 +181,8 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
         <span className={styles.heroStar} aria-hidden="true">
           <Star size={72} strokeWidth={1.1} fill="currentColor" />
         </span>
-        <h1>Звёзды GRAM</h1>
-        <p>Звёзды нужны для оплаты контента, подарков и услуг внутри GRAM.</p>
+        <h1>GRAM Stars</h1>
+        <p>Stars are used to pay for content, gifts, and services within GRAM.</p>
       </header>
 
       {notice ? (
@@ -184,17 +190,17 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
           <span>
             <Check size={17} /> {notice}
           </span>
-          <X size={16} aria-label="Скрыть уведомление" />
+          <X size={16} aria-label="Hide notification" />
         </button>
       ) : null}
 
       <section className={styles.balanceCard} aria-labelledby="stars-balance-title">
         <div className={styles.balanceValue}>
           {wallet.isPending ? (
-            <span className={styles.balanceSkeleton} aria-label="Баланс загружается" />
+            <span className={styles.balanceSkeleton} aria-label="Balance loading" />
           ) : wallet.isError ? (
             <button className={styles.retryLink} type="button" onClick={() => wallet.refetch()}>
-              Повторить загрузку
+              Retry loading
             </button>
           ) : (
             <>
@@ -204,17 +210,32 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
           )}
         </div>
         <p className={styles.balanceCaption} id="stars-balance-title">
-          Ваш баланс
+          Your balance
         </p>
 
         <div className={styles.balanceActions}>
           <button className={styles.actionPrimary} type="button" onClick={() => setTopUpOpen(true)}>
-            <Plus size={19} /> Пополнить
+            <Plus size={19} /> Top up
           </button>
           <button className={styles.actionSecondary} type="button" onClick={() => setSendOpen(true)}>
-            <Send size={18} /> Отправить
+            <Send size={18} /> Send
+          </button>
+          {/* The way out, next to the way in — when it is open. It is settled by a person on the
+              Telegram side, so it can be closed; saying that on the button beats a form that can
+              only refuse. */}
+          <button
+            className={styles.actionSecondary}
+            type="button"
+            disabled={!payoutsOpen}
+            title={payoutsOpen ? undefined : "Star withdrawals are temporarily unavailable"}
+            onClick={() => setPayoutOpen(true)}
+          >
+            <ArrowDownToLine size={18} /> Withdraw
           </button>
         </div>
+        {payoutsOpen ? null : (
+          <p className={styles.payoutClosed}>Star withdrawals are temporarily unavailable</p>
+        )}
 
         <button
           className={styles.disclosure}
@@ -224,7 +245,7 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
           aria-controls="stars-statistics"
         >
           <ChartColumn size={17} />
-          Статистика
+          Statistics
           <ChevronDown
             size={16}
             style={{
@@ -237,24 +258,24 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
 
       {statsOpen ? (
         <section className={styles.card} id="stars-statistics">
-          <p className={styles.rowTitle}>Статистика операций</p>
+          <p className={styles.rowTitle}>Transaction statistics</p>
           <dl className={styles.statGrid}>
             <div>
-              <dt>Зачислено</dt>
+              <dt>Credited</dt>
               <dd style={{ color: "var(--online)" }}>+{formatNumber(ledgerStats.credited)} ★</dd>
             </div>
             <div>
-              <dt>Списано</dt>
+              <dt>Debited</dt>
               <dd style={{ color: "var(--stars)" }}>−{formatNumber(ledgerStats.spent)} ★</dd>
             </div>
             <div>
-              <dt>Операций</dt>
+              <dt>Transactions</dt>
               <dd>{formatNumber(ledgerStats.operations)}</dd>
             </div>
           </dl>
           {ledgerStats.topKind ? (
             <p className={styles.rowSubtitle} style={{ marginTop: 10, whiteSpace: "normal" }}>
-              Больше всего уходит на {kindLabel(ledgerStats.topKind.kind)} —{" "}
+              Most goes to {kindLabel(ledgerStats.topKind.kind)} —{" "}
               {formatNumber(ledgerStats.topKind.amount)} ★
             </p>
           ) : null}
@@ -267,27 +288,27 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
             <Send size={19} />
           </span>
           <div className="min-w-0 flex-1">
-            <p className={styles.rowTitle}>Telegram-бот</p>
-            <p className={styles.rowSubtitle}>Покупка звёзд и Premium прямо в Telegram</p>
+            <p className={styles.rowTitle}>Telegram bot</p>
+            <p className={styles.rowSubtitle}>Buy stars and Premium right in Telegram</p>
           </div>
           {/* Nothing links a GRAM account to Telegram yet, so the control says so plainly. */}
           <button
             className={styles.rowAction}
             type="button"
             disabled
-            title="Привязка Telegram появится позже"
+            title="Telegram linking is coming later"
           >
-            Скоро
+            Soon
           </button>
         </div>
       </section>
 
       <section className={styles.ledger} aria-labelledby="ledger-title">
         <h2 id="ledger-title" className="sr-only">
-          История операций
+          Transaction history
         </h2>
 
-        <div className={styles.tabs} role="tablist" aria-label="Фильтр операций">
+        <div className={styles.tabs} role="tablist" aria-label="Transaction filter">
           {(Object.keys(filterLabels) as LedgerFilter[]).map((key) => (
             <button
               key={key}
@@ -303,13 +324,13 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
             </button>
           ))}
           {wallet.data ? (
-            <span className={styles.updatedAt}>Обновлено {formatDate(wallet.data.updated_at)}</span>
+            <span className={styles.updatedAt}>Updated {formatDate(wallet.data.updated_at)}</span>
           ) : null}
         </div>
 
         <div className={styles.ledgerBody} id="ledger-panel" role="tabpanel">
           {transactions.isPending ? (
-            <div className={styles.ledgerLoading} aria-label="История загружается">
+            <div className={styles.ledgerLoading} aria-label="History loading">
               <span />
               <span />
               <span />
@@ -319,10 +340,10 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
               <span>
                 <Star size={26} />
               </span>
-              <strong>История не загрузилась</strong>
+              <strong>History failed to load</strong>
               <p>{messageFrom(transactions.error)}</p>
               <button type="button" onClick={() => transactions.refetch()}>
-                Попробовать снова
+                Try again
               </button>
             </div>
           ) : filteredTransactions.length === 0 ? (
@@ -330,35 +351,43 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
               <span>
                 <Star size={26} />
               </span>
-              <strong>{filter === "all" ? "Пока нет операций" : "Нет операций в этом разделе"}</strong>
-              <p>Пополнения и траты появятся здесь с итоговым балансом.</p>
+              <strong>{filter === "all" ? "No transactions yet" : "No transactions in this section"}</strong>
+              <p>Top-ups and spending will appear here with a running balance.</p>
             </div>
           ) : (
-            <ul className={styles.transactionList}>
+            <ul key={filter} className={`panel-enter ${styles.transactionList}`}>
               {filteredTransactions.map((transaction) => {
                 const meta = transactionMeta(transaction);
                 const Icon = meta.icon;
                 return (
                   <li key={transaction.id}>
-                    <span className={`${styles.transactionIcon} ${meta.tone}`}>
-                      <Icon size={19} />
-                    </span>
-                    <span className={styles.transactionCopy}>
-                      <strong>{transaction.description}</strong>
-                      <small>
-                        {meta.label} · {formatDate(transaction.created_at)}
-                        {transaction.counterparty ? ` · @${transaction.counterparty.username}` : ""}
-                      </small>
-                    </span>
-                    <span
-                      className={
-                        transaction.amount >= 0 ? styles.positiveAmount : styles.negativeAmount
-                      }
+                    {/* The row is the receipt's own button: every operation can be opened. */}
+                    <button
+                      type="button"
+                      className={styles.transactionRow}
+                      onClick={() => setOpenReceipt(transaction)}
+                      aria-label={`Receipt: ${transaction.description}`}
                     >
-                      {transaction.amount > 0 ? "+" : ""}
-                      {formatNumber(transaction.amount)} ★
-                      <small>Баланс {formatNumber(transaction.balance_after)}</small>
-                    </span>
+                      <span className={`${styles.transactionIcon} ${meta.tone}`}>
+                        <Icon size={19} />
+                      </span>
+                      <span className={styles.transactionCopy}>
+                        <strong>{transaction.description}</strong>
+                        <small>
+                          {meta.label} · {formatDate(transaction.created_at)}
+                          {transaction.counterparty ? ` · @${transaction.counterparty.username}` : ""}
+                        </small>
+                      </span>
+                      <span
+                        className={
+                          transaction.amount >= 0 ? styles.positiveAmount : styles.negativeAmount
+                        }
+                      >
+                        {transaction.amount > 0 ? "+" : ""}
+                        {formatNumber(transaction.amount)} ★
+                        <small>Balance {formatNumber(transaction.balance_after)}</small>
+                      </span>
+                    </button>
                   </li>
                 );
               })}
@@ -367,16 +396,15 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
         </div>
       </section>
 
+      <StarReceiptSheet
+        transaction={openReceipt}
+        onClose={() => setOpenReceipt(null)}
+      />
+
       <TopUpSheet
         open={topUpOpen}
-        onOpenChange={(open) => {
-          setTopUpOpen(open);
-          if (!open) topUp.reset();
-        }}
-        balance={balance}
-        pending={topUp.isPending}
-        errorMessage={topUp.isError ? messageFrom(topUp.error) : null}
-        onConfirm={(amount) => topUp.mutate(amount)}
+        onOpenChange={setTopUpOpen}
+        onCredited={() => setNotice("Stars credited — payment completed in Telegram")}
       />
 
       <SendStarsSheet
@@ -393,6 +421,13 @@ export function StarsWalletView({ initialRecipient = "" }: { initialRecipient?: 
         pending={sendStars.isPending || wallet.isPending}
         errorMessage={sendStars.isError ? messageFrom(sendStars.error) : null}
         onSubmit={(values) => sendStars.mutate(values)}
+      />
+
+      <PayoutSheet
+        open={payoutOpen}
+        onOpenChange={setPayoutOpen}
+        balance={balance ?? 0}
+        enabled={payoutsOpen}
       />
     </div>
   );

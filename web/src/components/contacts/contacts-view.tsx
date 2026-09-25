@@ -17,7 +17,7 @@ import { useToast } from "../ui/toast";
 type Tab = "following" | "followers";
 
 /**
- * Контакты: the two sides of the social graph, reached from the feed menu.
+ * Contacts: the two sides of the social graph, reached from the feed menu.
  *
  * Each row goes straight to writing rather than to another profile page — a contact list whose
  * only action is "look at them again" is a directory, not a contact list.
@@ -43,7 +43,7 @@ export function ContactsView() {
       router.push(`/chats?chat=${chat.id}`);
     },
     onError: (error: Error) =>
-      notify("Не удалось открыть чат", { variant: "error", detail: error.message })
+      notify("Couldn't open chat", { variant: "error", detail: error.message })
   });
 
   const rows = people.data ?? [];
@@ -51,23 +51,23 @@ export function ContactsView() {
   return (
     <>
       <div className="mobile-topbar">
-        <span className="wordmark">КОНТАКТЫ</span>
+        <span className="wordmark">CONTACTS</span>
         <UsersRound size={20} />
       </div>
 
       <header className="channel-header">
         <div>
-          <h1 className="channel-title">Контакты</h1>
-          <p className="channel-subtitle">Кого вы читаете и кто читает вас</p>
+          <h1 className="channel-title">Contacts</h1>
+          <p className="channel-subtitle">Who you follow and who follows you</p>
         </div>
       </header>
 
       <div className="px-3 pb-3 sm:px-5">
-        <div className="segmented-control" role="tablist" aria-label="Сторона связей">
+        <div className="segmented-control" role="tablist" aria-label="Connections side">
           {(
             [
-              ["following", "Подписки"],
-              ["followers", "Подписчики"]
+              ["following", "Following"],
+              ["followers", "Followers"]
             ] as const
           ).map(([value, label]) => (
             <button
@@ -99,65 +99,71 @@ export function ContactsView() {
         {people.isError ? (
           <div className="empty-state">
             <RefreshCw className="mx-auto mb-3 text-[var(--danger)]" />
-            <p className="font-bold text-white">Не удалось загрузить</p>
+            <p className="font-bold text-white">Couldn&apos;t load</p>
             <p className="text-sm">{people.error.message}</p>
             <button className="quiet-button mt-3" onClick={() => people.refetch()}>
               <RefreshCw size={16} />
-              Повторить
+              Retry
             </button>
           </div>
         ) : null}
 
-        {rows.map((user) => (
-          <div
-            key={user.id}
-            className="flex items-center gap-3 rounded-[16px] px-3 py-2.5 transition-colors hover:bg-white/[0.04]"
-          >
-            <Link href={`/u/${user.username}`} className="flex min-w-0 flex-1 items-center gap-3">
-              <UserAvatar
-                src={user.avatar_url}
-                name={user.display_name}
-                online={user.is_online}
-                size={44}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span
-                    className="truncate text-[15px] font-semibold"
-                    style={{ color: nameColor(user.profile_color) }}
-                  >
-                    {user.display_name}
+        {rows.length ? (
+          /* Keyed by the side being shown: two lists of avatars are hard to tell apart, so the
+             switch needs to be visible in the list and not only in the strip above it. */
+          <div key={tab} className="panel-enter">
+            {rows.map((user) => (
+              <div
+                key={user.id}
+                className="flex items-center gap-3 rounded-[16px] px-3 py-2.5 transition-colors hover:bg-white/[0.04]"
+              >
+                <Link href={`/u/${user.username}`} className="flex min-w-0 flex-1 items-center gap-3">
+                  <UserAvatar
+                    src={user.avatar_url}
+                    name={user.display_name}
+                    online={user.is_online}
+                    size={44}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span
+                        className="truncate text-[15px] font-semibold"
+                        style={{ color: nameColor(user.profile_color) }}
+                      >
+                        {user.display_name}
+                      </span>
+                      {user.verified ? <VerifiedMark size={15} /> : null}{user.is_admin ? <AdminMark size={14} /> : null}
+                      {user.is_premium ? (
+                        <PremiumMark size={14} profileColor={user.profile_color} />
+                      ) : null}
+                    </span>
+                    <span className="block truncate text-[13px] text-[var(--muted)]">
+                      @{user.username}
+                    </span>
                   </span>
-                  {user.verified ? <VerifiedMark size={15} /> : null}{user.is_admin ? <AdminMark size={14} /> : null}
-                  {user.is_premium ? (
-                    <PremiumMark size={14} profileColor={user.profile_color} />
-                  ) : null}
-                </span>
-                <span className="block truncate text-[13px] text-[var(--muted)]">
-                  @{user.username}
-                </span>
-              </span>
-            </Link>
-            <button
-              type="button"
-              aria-label={`Написать ${user.display_name}`}
-              onClick={() => write.mutate(user)}
-              disabled={write.isPending}
-              className="grid size-10 flex-none place-items-center rounded-full bg-[var(--surface-raised)] text-[var(--ink)] transition active:scale-95 disabled:opacity-50"
-            >
-              <MessageSquare size={18} />
-            </button>
+                </Link>
+                <button
+                  type="button"
+                  aria-label={`Message ${user.display_name}`}
+                  onClick={() => write.mutate(user)}
+                  disabled={write.isPending}
+                  className="grid size-10 flex-none place-items-center rounded-full bg-[var(--surface-raised)] text-[var(--ink)] transition active:scale-95 disabled:opacity-50"
+                >
+                  <MessageSquare size={18} />
+                </button>
+              </div>
+            ))}
           </div>
-        ))}
+        ) : null}
 
         {!people.isLoading && !people.isError && !rows.length ? (
           <div className="empty-state">
             <UserRoundPlus className="mx-auto mb-3 text-[var(--primary-strong)]" />
             <p className="font-bold text-white">
-              {tab === "following" ? "Вы пока ни на кого не подписаны" : "Пока никто не подписался"}
+              {tab === "following" ? "You're not following anyone yet" : "No one has followed you yet"}
             </p>
             <Link href="/discover" className="quiet-button mt-3">
-              Найти людей
+              Find people
             </Link>
           </div>
         ) : null}

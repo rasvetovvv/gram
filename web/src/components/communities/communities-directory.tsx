@@ -18,20 +18,20 @@ import styles from "./communities.module.css";
 
 const communitySchema = z
   .object({
-    title: z.string().trim().min(3, "Минимум 3 символа").max(48, "Не больше 48 символов"),
+    title: z.string().trim().min(3, "At least 3 characters").max(48, "No more than 48 characters"),
     slug: z
       .string()
       .trim()
-      .min(3, "Минимум 3 символа")
-      .max(32, "Не больше 32 символов")
-      .regex(/^[a-z][a-z0-9_-]+$/, "Начните с буквы; дальше — латиница, цифры, _ или -"),
-    description: z.string().trim().min(10, "Расскажите о сообществе чуть подробнее").max(400),
+      .min(3, "At least 3 characters")
+      .max(32, "No more than 32 characters")
+      .regex(/^[a-z][a-z0-9_-]+$/, "Start with a letter; then Latin letters, digits, _ or -"),
+    description: z.string().trim().min(10, "Tell us a little more about the community").max(400),
     is_paid: z.boolean(),
     monthly_price: z.number().int().min(0).max(10000)
   })
   .superRefine((value, context) => {
     if (value.is_paid && value.monthly_price < 5) {
-      context.addIssue({ code: "custom", path: ["monthly_price"], message: "От 5 звёзд в месяц" });
+      context.addIssue({ code: "custom", path: ["monthly_price"], message: "From 5 stars per month" });
     }
   });
 
@@ -52,7 +52,7 @@ export function CommunityAvatar({ community, size = "large" }: { community: Comm
 }
 
 function messageFrom(error: unknown) {
-  return error instanceof Error ? error.message : "Не удалось выполнить действие";
+  return error instanceof Error ? error.message : "Couldn't complete the action";
 }
 
 export function CommunitiesDirectory() {
@@ -112,32 +112,32 @@ export function CommunitiesDirectory() {
     <main className={styles.page}>
       <header className={styles.directoryHeader}>
         <div>
-          <h1>Сообщества</h1>
-          <p>Темы, авторы и пространства, к которым хочется возвращаться</p>
+          <h1>Communities</h1>
+          <p>Topics, authors and spaces worth coming back to</p>
         </div>
-        <button className={styles.primaryButton} type="button" onClick={() => setCreateOpen(true)}><Plus size={19} /> Создать</button>
+        <button className={styles.primaryButton} type="button" onClick={() => setCreateOpen(true)}><Plus size={19} /> Create</button>
         <BottomSheet
           open={createOpen}
           onOpenChange={setCreateOpen}
-          title="Новое сообщество"
-          description="Название, адрес и правила доступа можно изменить позже."
+          title="New community"
+          description="You can change the name, address and access rules later."
           headerRight={
-            <Dialog.Close className={styles.iconButton} aria-label="Закрыть"><X size={20} /></Dialog.Close>
+            <Dialog.Close className={styles.iconButton} aria-label="Close"><X size={20} /></Dialog.Close>
           }
           footer={
             <>
               {createCommunity.isError ? <div className="pb-2"><p className={styles.formError} role="alert">{messageFrom(createCommunity.error)}</p></div> : null}
               {/* The submit control is pinned to the sheet footer, so it reaches the form by id. */}
               <button className={`${styles.primaryButton} w-full`} type="submit" form="create-community-form" disabled={createCommunity.isPending}>
-                {createCommunity.isPending ? "Создаём…" : "Создать сообщество"}
+                {createCommunity.isPending ? "Creating…" : "Create community"}
               </button>
             </>
           }
         >
           <div className={styles.dialogHeading}>
             <div>
-              <h2>Новое сообщество</h2>
-              <p>Название, адрес и правила доступа можно изменить позже.</p>
+              <h2>New community</h2>
+              <p>You can change the name, address and access rules later.</p>
             </div>
           </div>
           <form
@@ -146,10 +146,10 @@ export function CommunitiesDirectory() {
             onSubmit={form.handleSubmit((values) => createCommunity.mutate(values))}
           >
             <label>
-              <span>Название</span>
+              <span>Name</span>
               <input
                 autoFocus
-                placeholder="Например, Тихая типографика"
+                placeholder="For example, Quiet Typography"
                 aria-invalid={Boolean(form.formState.errors.title)}
                 {...form.register("title", {
                   onChange: (event) => {
@@ -169,25 +169,25 @@ export function CommunitiesDirectory() {
               {form.formState.errors.title ? <small role="alert">{form.formState.errors.title.message}</small> : null}
             </label>
             <label>
-              <span>Адрес</span>
+              <span>Address</span>
               <span className={styles.slugField}><b>gram.app/</b><input placeholder="quiet_type" {...form.register("slug")} /></span>
               {form.formState.errors.slug ? <small role="alert">{form.formState.errors.slug.message}</small> : null}
             </label>
             <label>
-              <span>Описание</span>
-              <textarea rows={4} placeholder="О чём это пространство и для кого оно создано" {...form.register("description")} />
+              <span>Description</span>
+              <textarea rows={4} placeholder="What this space is about and who it's for" {...form.register("description")} />
               {form.formState.errors.description ? <small role="alert">{form.formState.errors.description.message}</small> : null}
             </label>
             <div className={styles.accessRow}>
               <span>
                 <LockKeyhole size={18} />
-                <span><strong>Платный доступ <em>Скоро</em></strong><small>Для новых сообществ пока недоступен</small></span>
+                <span><strong>Paid access <em>Soon</em></strong><small>Not yet available for new communities</small></span>
               </span>
               <button
                 type="button"
                 role="switch"
                 aria-checked="false"
-                aria-label="Платный доступ пока недоступен"
+                aria-label="Paid access isn't available yet"
                 className={styles.switch}
                 disabled
               ><i /></button>
@@ -199,10 +199,10 @@ export function CommunitiesDirectory() {
       <div className="mx-auto mb-3 w-full max-w-[720px] px-1">
         <div className="segmented-control">
           <button type="button" data-active={scope === "mine"} onClick={() => setScope("mine")}>
-            Мои
+            Mine
           </button>
           <button type="button" data-active={scope === "all"} onClick={() => setScope("all")}>
-            Обзор
+            Browse
           </button>
         </div>
       </div>
@@ -213,30 +213,30 @@ export function CommunitiesDirectory() {
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Поиск каналов"
-          aria-label="Поиск каналов"
+          placeholder="Search channels"
+          aria-label="Search channels"
         />
-        {query ? <button type="button" onClick={() => setQuery("")} aria-label="Очистить поиск"><X size={17} /></button> : null}
+        {query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={17} /></button> : null}
       </label>
 
       {communities.isPending ? (
-        <div className={styles.directoryLoading} aria-label="Сообщества загружаются"><span /><span /><span /></div>
+        <div className={styles.directoryLoading} aria-label="Communities are loading"><span /><span /><span /></div>
       ) : communities.isError ? (
         <div className={styles.emptyState}>
           <Users size={30} />
-          <strong>Не удалось загрузить сообщества</strong>
+          <strong>Couldn&apos;t load communities</strong>
           <p>{messageFrom(communities.error)}</p>
-          <button type="button" onClick={() => communities.refetch()}>Попробовать снова</button>
+          <button type="button" onClick={() => communities.refetch()}>Try again</button>
         </div>
       ) : visibleCommunities.length === 0 ? (
         <div className={styles.emptyState}>
           <Search size={30} />
-          <strong>{query ? "Ничего не найдено" : "Здесь появятся сообщества"}</strong>
-          <p>{query ? "Попробуйте другой запрос или создайте пространство сами." : "Создайте первое пространство и пригласите участников."}</p>
-          {query ? <button type="button" onClick={() => setQuery("")}>Сбросить поиск</button> : null}
+          <strong>{query ? "Nothing found" : "Communities will show up here"}</strong>
+          <p>{query ? "Try another search or create a space yourself." : "Create the first space and invite members."}</p>
+          {query ? <button type="button" onClick={() => setQuery("")}>Reset search</button> : null}
         </div>
       ) : (
-        <section className={styles.directoryList} aria-label="Каталог сообществ">
+        <section key={scope} className={`panel-enter ${styles.directoryList}`} aria-label="Community directory">
           {visibleCommunities.map((community) => {
             const isMutating = membership.isPending && membership.variables?.slug === community.slug;
             return (
@@ -252,13 +252,13 @@ export function CommunitiesDirectory() {
                     <span className={styles.communityDescription}>{community.description}</span>
                     <span className={styles.communityCounts}>
                       <span><Users size={14} /> {community.members_count.toLocaleString("ru-RU")}</span>
-                      <span>{community.posts_count.toLocaleString("ru-RU")} публикаций</span>
-                      {community.is_paid ? <span className={styles.paidBadge}><Star size={12} fill="currentColor" /> {community.monthly_price}/мес</span> : null}
+                      <span>{community.posts_count.toLocaleString("ru-RU")} posts</span>
+                      {community.is_paid ? <span className={styles.paidBadge}><Star size={12} fill="currentColor" /> {community.monthly_price}/mo</span> : null}
                     </span>
                   </span>
                 </Link>
                 {community.is_owner ? (
-                  <button className={styles.ownerButton} type="button" disabled><Check size={16} /> Владелец</button>
+                  <button className={styles.ownerButton} type="button" disabled><Check size={16} /> Owner</button>
                 ) : (
                   <button
                     className={community.is_member ? styles.memberButton : styles.joinButton}
@@ -266,7 +266,7 @@ export function CommunitiesDirectory() {
                     disabled={isMutating}
                     onClick={() => membership.mutate({ slug: community.slug, joined: community.is_member })}
                   >
-                    {isMutating ? "Сохраняем…" : community.is_member ? "Вы участник" : community.is_paid ? `Вступить · ${community.monthly_price} ★` : "Вступить"}
+                    {isMutating ? "Saving…" : community.is_member ? "Joined" : community.is_paid ? `Join · ${community.monthly_price} ★` : "Join"}
                   </button>
                 )}
               </article>

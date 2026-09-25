@@ -65,22 +65,22 @@ export function ChatRowMenu({ chat, children }: { chat: Chat; children: React.Re
       const said =
         patch.pinned !== undefined
           ? patch.pinned
-            ? "Чат закреплён"
-            : "Чат откреплён"
+            ? "Chat pinned"
+            : "Chat unpinned"
           : patch.archived !== undefined
             ? patch.archived
-              ? "Чат в архиве"
-              : "Чат из архива"
+              ? "Chat archived"
+              : "Chat unarchived"
             : patch.muted !== undefined
               ? patch.muted
-                ? "Уведомления выключены"
-                : "Уведомления включены"
+                ? "Notifications off"
+                : "Notifications on"
               : patch.marked_unread
-                ? "Помечено непрочитанным"
-                : "Помечено прочитанным";
+                ? "Marked as unread"
+                : "Marked as read";
       notify(said, { variant: "success" });
     },
-    onError: (error: Error) => notify("Не получилось", { variant: "error", detail: error.message })
+    onError: (error: Error) => notify("Something went wrong", { variant: "error", detail: error.message })
   });
 
   const remove = useMutation({
@@ -90,41 +90,41 @@ export function ChatRowMenu({ chat, children }: { chat: Chat; children: React.Re
       await refresh();
       // Leaving the deleted conversation open would show an empty thread with no way back.
       router.push("/chats");
-      notify("Чат удалён", { variant: "success" });
+      notify("Chat deleted", { variant: "success" });
     },
     onError: (error: Error) =>
-      notify("Не удалось удалить", { variant: "error", detail: error.message })
+      notify("Couldn't delete", { variant: "error", detail: error.message })
   });
 
   const unread = chat.unread_count > 0 || chat.marked_unread;
   const items = [
     {
       key: "pin",
-      label: chat.pinned ? "Открепить" : "Закрепить",
+      label: chat.pinned ? "Unpin" : "Pin",
       icon: chat.pinned ? PinOff : Pin,
       run: () => state.mutate({ pinned: !chat.pinned })
     },
     {
       key: "unread",
-      label: unread ? "Пометить прочитанным" : "Пометить непрочитанным",
+      label: unread ? "Mark as read" : "Mark as unread",
       icon: unread ? CheckCheck : MailOpen,
       run: () => state.mutate({ marked_unread: !unread })
     },
     {
       key: "mute",
-      label: chat.muted ? "Включить уведомления" : "Выключить уведомления",
+      label: chat.muted ? "Turn on notifications" : "Turn off notifications",
       icon: chat.muted ? Bell : BellOff,
       run: () => state.mutate({ muted: !chat.muted })
     },
     {
       key: "archive",
-      label: chat.archived ? "Из архива" : "В архив",
+      label: chat.archived ? "Unarchive" : "Archive",
       icon: chat.archived ? ArchiveRestore : Archive,
       run: () => state.mutate({ archived: !chat.archived })
     },
     {
       key: "delete",
-      label: "Удалить",
+      label: "Delete",
       icon: Trash2,
       danger: true,
       run: () => setConfirmDelete(true)
@@ -157,9 +157,9 @@ export function ChatRowMenu({ chat, children }: { chat: Chat; children: React.Re
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
-        title="Удалить чат?"
-        description={`Переписка с ${chat.title ?? chat.participant?.display_name ?? "этим чатом"} исчезнет из вашего списка. У собеседника она останется.`}
-        confirmLabel={remove.isPending ? "Удаляем…" : "Удалить"}
+        title="Delete chat?"
+        description={`The conversation with ${chat.title ?? chat.participant?.display_name ?? "this chat"} will disappear from your list. It will stay on the other person's side.`}
+        confirmLabel={remove.isPending ? "Deleting…" : "Delete"}
         error={remove.error?.message}
         pending={remove.isPending}
         onConfirm={() => remove.mutate()}
@@ -169,7 +169,7 @@ export function ChatRowMenu({ chat, children }: { chat: Chat; children: React.Re
 }
 
 /**
- * The list header's overflow menu: Избранное, mark-everything-read, and the Telegram import
+ * The list header's overflow menu: Saved messages, mark-everything-read, and the Telegram import
  * the reference offers. Import has no backend here, so it says so rather than pretending.
  */
 export function ChatListMenu({ onOpenSaved }: { onOpenSaved: () => void }) {
@@ -182,9 +182,9 @@ export function ChatListMenu({ onOpenSaved }: { onOpenSaved: () => void }) {
         queryClient.invalidateQueries({ queryKey: ["chats"] }),
         queryClient.invalidateQueries({ queryKey: ["chat-folders"] })
       ]);
-      notify("Все чаты прочитаны", { variant: "success" });
+      notify("All chats marked as read", { variant: "success" });
     },
-    onError: (error: Error) => notify("Не получилось", { variant: "error", detail: error.message })
+    onError: (error: Error) => notify("Something went wrong", { variant: "error", detail: error.message })
   });
 
   return (
@@ -193,7 +193,7 @@ export function ChatListMenu({ onOpenSaved }: { onOpenSaved: () => void }) {
         <button
           type="button"
           className="inline-flex size-10 shrink-0 items-center justify-center rounded-full transition active:bg-white/10"
-          aria-label="Меню"
+          aria-label="Menu"
         >
           <MoreVertical size={22} />
         </button>
@@ -208,23 +208,23 @@ export function ChatListMenu({ onOpenSaved }: { onOpenSaved: () => void }) {
         >
           <DropdownMenu.Item className={ITEM} onSelect={onOpenSaved}>
             <Bookmark size={18} className="text-[var(--muted)]" />
-            Избранное
+            Saved messages
           </DropdownMenu.Item>
           <DropdownMenu.Item className={ITEM} onSelect={() => readAll.mutate()}>
             <CheckCheck size={18} className="text-[var(--muted)]" />
-            Отметить все прочитанными
+            Mark all as read
           </DropdownMenu.Item>
           <DropdownMenu.Item
             className={ITEM}
             onSelect={() =>
-              notify("Импорт из Telegram", {
+              notify("Import from Telegram", {
                 variant: "info",
-                detail: "Появится в следующем обновлении"
+                detail: "Coming in the next update"
               })
             }
           >
             <Download size={18} className="text-[var(--muted)]" />
-            Импорт из Telegram
+            Import from Telegram
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>

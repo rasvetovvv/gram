@@ -2,19 +2,19 @@
 
 import * as Popover from "@radix-ui/react-popover";
 import { Smile } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 
 /**
  * The composer's emoji keyboard, following the reference's own panel: a translucent 20px
  * sheet above the field, a category strip, and a dense grid.
  *
- * The set is grouped the way the reference groups it ("Смайлы и люди" first). It is written
+ * The set is grouped the way the reference groups it ("Smileys & people" first). It is written
  * out rather than pulled from a package so the panel costs nothing to load.
  */
 const GROUPS: { key: string; label: string; glyph: string; emoji: string[] }[] = [
   {
     key: "people",
-    label: "Смайлы и люди",
+    label: "Smileys & people",
     glyph: "😀",
     emoji: [
       "😀","😃","😄","😁","😆","😅","🤣","😂","🙂","🙃","😉","😊","😇","🥰","😍","🤩",
@@ -31,7 +31,7 @@ const GROUPS: { key: string; label: string; glyph: string; emoji: string[] }[] =
   },
   {
     key: "nature",
-    label: "Животные и природа",
+    label: "Animals & nature",
     glyph: "🐶",
     emoji: [
       "🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐻‍❄️","🐨","🐯","🦁","🐮","🐷","🐸","🐵",
@@ -46,7 +46,7 @@ const GROUPS: { key: string; label: string; glyph: string; emoji: string[] }[] =
   },
   {
     key: "food",
-    label: "Еда и напитки",
+    label: "Food & drink",
     glyph: "🍎",
     emoji: [
       "🍏","🍎","🍐","🍊","🍋","🍌","🍉","🍇","🍓","🫐","🍈","🍒","🍑","🥭","🍍","🥥",
@@ -60,7 +60,7 @@ const GROUPS: { key: string; label: string; glyph: string; emoji: string[] }[] =
   },
   {
     key: "activity",
-    label: "Активности",
+    label: "Activities",
     glyph: "⚽",
     emoji: [
       "⚽","🏀","🏈","⚾","🥎","🎾","🏐","🏉","🥏","🎱","🪀","🏓","🏸","🏒","🏑","🥍",
@@ -72,7 +72,7 @@ const GROUPS: { key: string; label: string; glyph: string; emoji: string[] }[] =
   },
   {
     key: "travel",
-    label: "Путешествия",
+    label: "Travel & places",
     glyph: "🚗",
     emoji: [
       "🚗","🚕","🚙","🚌","🚎","🏎️","🚓","🚑","🚒","🚐","🛻","🚚","🚛","🚜","🦯","🦽",
@@ -86,7 +86,7 @@ const GROUPS: { key: string; label: string; glyph: string; emoji: string[] }[] =
   },
   {
     key: "objects",
-    label: "Предметы",
+    label: "Objects",
     glyph: "💡",
     emoji: [
       "⌚","📱","💻","⌨️","🖥️","🖨️","🖱️","💽","💾","💿","📀","📼","📷","📸","📹","🎥",
@@ -101,7 +101,7 @@ const GROUPS: { key: string; label: string; glyph: string; emoji: string[] }[] =
   },
   {
     key: "symbols",
-    label: "Символы",
+    label: "Symbols",
     glyph: "❤️",
     emoji: [
       "❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💔","❣️","💕","💞","💓","💗","💖",
@@ -115,7 +115,7 @@ const GROUPS: { key: string; label: string; glyph: string; emoji: string[] }[] =
   },
   {
     key: "flags",
-    label: "Флаги",
+    label: "Flags",
     glyph: "🏁",
     emoji: [
       "🏁","🚩","🎌","🏴","🏳️","🏳️‍🌈","🏳️‍⚧️","🏴‍☠️","🇷🇺","🇺🇦","🇧🇾","🇰🇿","🇺🇸","🇬🇧","🇩🇪","🇫🇷",
@@ -126,7 +126,7 @@ const GROUPS: { key: string; label: string; glyph: string; emoji: string[] }[] =
   }
 ];
 
-export function EmojiPicker({ onPick }: { onPick: (emoji: string) => void }) {
+function EmojiPickerPanel({ onPick }: { onPick: (emoji: string) => void }) {
   const [group, setGroup] = useState(GROUPS[0].key);
   const active = GROUPS.find((item) => item.key === group) ?? GROUPS[0];
 
@@ -136,7 +136,7 @@ export function EmojiPicker({ onPick }: { onPick: (emoji: string) => void }) {
         <button
           type="button"
           className="inline-flex size-9 flex-none items-center justify-center rounded-full text-[var(--muted)] transition hover:bg-white/10 hover:text-[var(--ink)] active:scale-95"
-          aria-label="Эмодзи"
+          aria-label="Emoji"
         >
           <Smile size={22} />
         </button>
@@ -152,7 +152,7 @@ export function EmojiPicker({ onPick }: { onPick: (emoji: string) => void }) {
         >
           <div
             role="tablist"
-            aria-label="Категории эмодзи"
+            aria-label="Emoji categories"
             className="flex flex-none items-center gap-0.5 overflow-x-auto border-b border-white/[0.06] px-1.5 py-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             {GROUPS.map((item) => (
@@ -193,3 +193,9 @@ export function EmojiPicker({ onPick }: { onPick: (emoji: string) => void }) {
     </Popover.Root>
   );
 }
+
+/**
+ * Memoised: it sits inside the composer, so without this it re-rendered — Radix root, portal
+ * presence and all — on every single keystroke. The caller passes a stable `onPick`.
+ */
+export const EmojiPicker = memo(EmojiPickerPanel);

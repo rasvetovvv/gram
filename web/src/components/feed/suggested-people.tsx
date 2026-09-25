@@ -7,7 +7,7 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import type { User } from "@/lib/types";
 import { nameStyle } from "@/lib/profile-color";
-import { compactNumber } from "@/lib/utils";
+import { compactNumber, plural } from "@/lib/utils";
 import { UserAvatar } from "../user-avatar";
 import { AdminMark } from "../admin-mark";
 import { VerifiedMark } from "../verified-mark";
@@ -15,7 +15,7 @@ import { VerifiedMark } from "../verified-mark";
 type Suggested = User & { is_following?: boolean };
 
 /**
- * "Возможно знакомые люди", copied from the reference: a horizontal rail of 150px cards
+ * "People you may know", copied from the reference: a horizontal rail of 150px cards
  * injected between posts, each dismissable and with a white follow pill. Dismissals are
  * kept client-side because the API has no "not interested" signal.
  */
@@ -23,7 +23,7 @@ export function SuggestedPeople() {
   const queryClient = useQueryClient();
   const [hidden, setHidden] = useState<string[]>([]);
   // `/users/recommended` omits is_following, so followed ids are tracked here to give the
-  // button an immediate confirmed state instead of snapping back to "Подписаться".
+  // button an immediate confirmed state instead of snapping back to "Follow".
   const [followed, setFollowed] = useState<string[]>([]);
   const { data = [] } = useQuery({ queryKey: ["recommended-users"], queryFn: api.recommendedUsers });
 
@@ -45,13 +45,13 @@ export function SuggestedPeople() {
   if (!people.length) return null;
 
   return (
-    <section className="border-t border-[var(--line)] py-3" aria-label="Возможно знакомые люди">
+    <section className="border-t border-[var(--line)] py-3" aria-label="People you may know">
       <div className="flex items-center justify-between px-4 pb-3">
         <h2 className="m-0 text-[13px] font-semibold uppercase tracking-[0.04em] text-[var(--faint)]">
-          Возможно знакомые люди
+          People you may know
         </h2>
         <Link href="/discover" className="text-sm text-[var(--identity)] transition-colors hover:text-white">
-          Показать все
+          Show all
         </Link>
       </div>
       <div className="flex snap-x gap-2.5 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -62,7 +62,7 @@ export function SuggestedPeople() {
           >
             <button
               type="button"
-              aria-label={`Скрыть ${user.display_name}`}
+              aria-label={`Hide ${user.display_name}`}
               onClick={() => setHidden((current) => [...current, user.id])}
               className="absolute right-1.5 top-1.5 z-10 grid size-6 place-items-center rounded-full border-0 bg-transparent text-[var(--faint)] transition hover:bg-[var(--surface-raised)] hover:text-[var(--ink)] active:scale-90"
             >
@@ -85,8 +85,8 @@ export function SuggestedPeople() {
             <p className="mb-0 truncate text-[13px] leading-tight text-[var(--faint)]">@{user.username}</p>
             <p className="mb-0 mt-1 truncate text-[12px] leading-tight tracking-[-0.01em] text-[var(--faint)]">
               {user.followers_count > 0
-                ? `${compactNumber(user.followers_count)} подписчиков`
-                : "Популярный профиль"}
+                ? `${compactNumber(user.followers_count)} ${plural(user.followers_count, "follower", "followers", "followers")}`
+                : "Popular profile"}
             </p>
             <button
               type="button"
@@ -100,10 +100,10 @@ export function SuggestedPeople() {
             >
               {followed.includes(user.id) ? (
                 <>
-                  <Check size={15} />Читаете
+                  <Check size={15} />Following
                 </>
               ) : (
-                "Подписаться"
+                "Follow"
               )}
             </button>
           </article>

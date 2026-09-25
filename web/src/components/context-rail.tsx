@@ -16,13 +16,13 @@ import { AdminMark } from "./admin-mark";
 import { VerifiedMark } from "./verified-mark";
 
 /**
- * The right column, rebuilt to the reference's own two blocks: «Что происходит» over the
- * trending tags, and «Кого читать» over people to follow.
+ * The right column, rebuilt to the reference's own two blocks: "What's happening" over the
+ * trending tags, and "Who to follow" over people to follow.
  *
  * It used to show recent conversations and listed usernames — neither of which the reference
  * puts here, and both of which duplicated a place that already exists in the rail.
  */
-const POSTS_PLURAL = ["пост", "поста", "постов"];
+const POSTS_PLURAL = ["post", "posts", "posts"];
 
 function plural(count: number, forms: string[]) {
   const mod100 = count % 100;
@@ -56,12 +56,12 @@ export function ContextRail() {
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-[#8b8f98]"
-          placeholder="Люди, посты, @юзы"
+          placeholder="People, posts, @handles"
         />
       </form>
 
       <section className="surface mt-6 overflow-hidden p-0">
-        <h2 className="m-0 px-4 pb-1 pt-4 text-[19px] font-extrabold">Что происходит</h2>
+        <h2 className="m-0 px-4 pb-1 pt-4 text-[19px] font-extrabold">What&apos;s happening</h2>
         {trends.length ? (
           trends.map((trend) => (
             <Link
@@ -70,7 +70,7 @@ export function ContextRail() {
               className="block px-4 py-2.5 transition-colors hover:bg-[#17171d]"
             >
               <span className="block text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--faint)]">
-                В тренде
+                Trending
               </span>
               <span className="mt-0.5 block truncate text-[15px] font-bold">#{trend.tag}</span>
               <span className="block text-[13px] text-[var(--muted)]">
@@ -79,42 +79,42 @@ export function ContextRail() {
             </Link>
           ))
         ) : (
-          <p className="m-0 px-4 pb-4 text-sm text-[var(--muted)]">Пока ничего не набрало обороты.</p>
+          <p className="m-0 px-4 pb-4 text-sm text-[var(--muted)]">Nothing has taken off yet.</p>
         )}
         <Link
           href="/discover"
           className="flex min-h-11 items-center px-4 text-sm font-semibold text-[var(--link)] transition-colors hover:bg-[#17171d]"
         >
-          Показать больше
+          Show more
         </Link>
       </section>
 
       <section className="surface mt-4 overflow-hidden p-0">
-        <h2 className="m-0 px-4 pb-2 pt-4 text-[19px] font-extrabold">Кого читать</h2>
+        <h2 className="m-0 px-4 pb-2 pt-4 text-[19px] font-extrabold">Who to follow</h2>
         {people.slice(0, 5).map((person) => (
           <SuggestedRow key={person.id} person={person} />
         ))}
         {people.length ? null : (
-          <p className="m-0 px-4 pb-4 text-sm text-[var(--muted)]">Некого предложить — пока.</p>
+          <p className="m-0 px-4 pb-4 text-sm text-[var(--muted)]">No one to suggest — for now.</p>
         )}
         <Link
           href="/discover"
           className="flex min-h-11 items-center px-4 text-sm font-semibold text-[var(--link)] transition-colors hover:bg-[#17171d]"
         >
-          Показать ещё
+          Show more
         </Link>
       </section>
 
       <p className="mt-8 px-2 text-xs leading-5 text-[#858792]">
-        GRAM · локальная версия
+        GRAM · local build
         <br />
-        Коллекции · Конфиденциальность
+        Collections · Privacy
       </p>
     </aside>
   );
 }
 
-/** One person with a follow action, as the reference's «Читать» row does it. */
+/** One person with a follow action, as the reference's "Follow" row does it. */
 function SuggestedRow({ person }: { person: User }) {
   const queryClient = useQueryClient();
   const { notify } = useToast();
@@ -125,10 +125,10 @@ function SuggestedRow({ person }: { person: User }) {
         queryClient.invalidateQueries({ queryKey: ["recommended-users"] }),
         queryClient.invalidateQueries({ queryKey: ["feed"] })
       ]);
-      notify(`Вы подписались на @${person.username}`, { variant: "success" });
+      notify(`You followed @${person.username}`, { variant: "success" });
     },
     onError: (error: Error) =>
-      notify("Не удалось подписаться", { variant: "error", detail: error.message })
+      notify("Couldn't follow", { variant: "error", detail: error.message })
   });
 
   return (
@@ -164,7 +164,7 @@ function SuggestedRow({ person }: { person: User }) {
         disabled={follow.isPending}
         className="h-8 flex-none rounded-full bg-white px-3.5 text-[13px] font-bold text-black transition active:scale-95 disabled:opacity-60"
       >
-        Читать
+        Follow
       </button>
     </div>
   );

@@ -32,10 +32,10 @@ export function DraftsSheet({
     mutationFn: (id: string) => api.deletePostDraft(id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["post-drafts"] });
-      notify("Черновик удалён", { variant: "success" });
+      notify("Draft deleted", { variant: "success" });
     },
     onError: (error: Error) =>
-      notify("Не удалось удалить", { variant: "error", detail: error.message })
+      notify("Couldn't delete", { variant: "error", detail: error.message })
   });
 
   const items = drafts.data ?? [];
@@ -43,13 +43,13 @@ export function DraftsSheet({
     <BottomSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Черновики"
-      description="Незаконченные записи, сохранённые на сервере"
+      title="Drafts"
+      description="Unfinished posts saved on the server"
     >
       <div className="pb-2">
-        <h2 className="m-0 text-[19px] font-bold">Черновики</h2>
+        <h2 className="m-0 text-[19px] font-bold">Drafts</h2>
         <p className="mb-4 mt-1 text-[13px] text-[var(--muted)]">
-          Начните на телефоне, закончите за столом. Опубликованный черновик исчезает сам.
+          Start on your phone, finish at your desk. A published draft disappears on its own.
         </p>
 
         {drafts.isLoading ? (
@@ -73,7 +73,7 @@ export function DraftsSheet({
                   className="min-w-0 flex-1 border-0 bg-transparent p-0 text-left"
                 >
                   <span className="block truncate text-[0.95rem] font-semibold">
-                    {draft.content.trim() || "Без текста"}
+                    {draft.content.trim() || "No text"}
                   </span>
                   <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-[var(--muted)]">
                     <span>{relativeTime(draft.updated_at)}</span>
@@ -92,7 +92,7 @@ export function DraftsSheet({
                 <button
                   type="button"
                   className="icon-button !size-9"
-                  aria-label={`Удалить черновик: ${draft.content.slice(0, 40) || "без текста"}`}
+                  aria-label={`Delete draft: ${draft.content.slice(0, 40) || "no text"}`}
                   disabled={remove.isPending}
                   onClick={() => remove.mutate(draft.id)}
                 >
@@ -104,7 +104,7 @@ export function DraftsSheet({
         ) : (
           <p className="m-0 flex items-center gap-2 rounded-[14px] bg-white/[0.04] p-3 text-[13px] text-[var(--muted)]">
             <FileText size={15} className="flex-none" />
-            Пока ничего не сохранено. «Сохранить черновик» — в меню «Ещё» рядом с полем ввода.
+            Nothing saved yet. &quot;Save draft&quot; is in the &quot;More&quot; menu next to the input field.
           </p>
         )}
       </div>

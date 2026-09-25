@@ -19,8 +19,8 @@ import { VerifiedMark } from "../verified-mark";
 const PICK_ACCENT = "#0ea5e9";
 
 /**
- * Full-screen picker shared by "Новое сообщение", "Секретный чат", group creation and
- * "Добавить участников", copied from the reference's own screen: a bordered header with a
+ * Full-screen picker shared by "New message", "Secret chat", group creation and
+ * "Add members", copied from the reference's own screen: a bordered header with a
  * back arrow and one trailing action, a pill search field, and 60px person rows.
  *
  * `mode` decides whether tapping a row commits immediately or accumulates a selection —
@@ -142,7 +142,7 @@ function PickerBody({
         <button
           type="button"
           onClick={onClose}
-          aria-label="Назад"
+          aria-label="Back"
           className="inline-flex size-10 items-center justify-center rounded-full transition active:bg-white/10"
         >
           <ArrowLeft size={24} />
@@ -171,7 +171,7 @@ function PickerBody({
               key={user.id}
               type="button"
               onClick={() => toggle(user)}
-              aria-label={`Убрать ${user.display_name}`}
+              aria-label={`Remove ${user.display_name}`}
               className="flex w-14 shrink-0 flex-col items-center gap-1"
             >
               <span className="relative">
@@ -218,11 +218,11 @@ function PickerBody({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading ? (
-          <p className="m-0 px-3 py-4 text-center text-[13px] text-[var(--muted)]">Поиск…</p>
+          <p className="m-0 px-3 py-4 text-center text-[13px] text-[var(--muted)]">Searching…</p>
         ) : null}
         {!loading && !people.length ? (
           <p className="m-0 px-3 py-4 text-center text-[13px] text-[var(--muted)]">
-            {needle ? "Никого не нашли" : "Некого предложить"}
+            {needle ? "No one found" : "No one to suggest"}
           </p>
         ) : null}
         {people.map((user) => {

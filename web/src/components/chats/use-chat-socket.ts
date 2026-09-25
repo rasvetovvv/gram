@@ -1,9 +1,59 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { API_URL, api } from "@/lib/api";
 import type { Message } from "@/lib/types";
+
+/**
+ * Fold one message into a cached thread, optimistic rows included.
+ *
+ * A message I sent appears twice unless something reconciles the two copies: once as the
+ * optimistic bubble drawn on submit, and again as the server's row arriving over the socket or
+ * from the mutation's response. They carry different ids, so identity is re-established by
+ * content: the pending row is *replaced* rather than appended to, and its `client_key` is
+ * carried onto the server row so the list keeps drawing it under the same key. Without that the
+ * swap is an unmount plus a remount, and the bubble visibly blinks.
+ */
+export function mergeMessage(current: Message[], incoming: Message): Message[] {
+  const index = current.findIndex((item) => item.id === incoming.id);
+  if (index >= 0) {
+    const next = current.slice();
+    next[index] = {
+      ...next[index],
+      ...incoming,
+      // `read` is the sender's business and can arrive blank; keep what the last poll knew.
+      read: incoming.read ?? next[index].read,
+      client_key: next[index].client_key ?? incoming.client_key,
+      pending: false
+    };
+    return next;
+  }
+  if (incoming.is_mine) {
+    const text = incoming.content.trim();
+    const waiting = current.findIndex(
+      (item) => item.pending && item.is_mine && item.content.trim() === text
+    );
+    if (waiting >= 0) {
+      const next = current.slice();
+      next[waiting] = {
+        ...incoming,
+        client_key: current[waiting].client_key ?? incoming.client_key,
+        pending: false
+      };
+      return next;
+    }
+  }
+  return [...current, { ...incoming, pending: false }];
+}
+
+/** Who is typing right now, as the strip under the header reads it. */
+export type TypingPeer = { userId: string; displayName: string };
+
+/** How long a typing hint stands before it is assumed stale. */
+const TYPING_TTL = 3200;
+/** And how often one is sent while somebody keeps typing. */
+const TYPING_THROTTLE = 2200;
 
 /**
  * Live conversation updates over the socket the API already exposes.
@@ -11,6 +61,15 @@ import type { Message } from "@/lib/types";
  * Polling alone made a reply take up to eight seconds to appear, which read as "you have to
  * re-open the chat". The socket patches the cache directly; the poll stays as the fallback
  * for a dropped connection, so a missed frame still heals itself.
+ *
+ * Three things travel the other way, and each one closes a gap that polling could not:
+ *
+ * - **read receipts.** Fetching the thread is what marks it read, so a message that arrived while
+ *   the thread was *already open* stayed unread for as long as the reader kept looking at it — the
+ *   badge in the list disagreed with what was on screen. Every arriving message now answers with
+ *   a receipt, and the sender's tick doubles the moment it lands rather than on their next poll.
+ * - **typing.** Sent while somebody writes, forgotten a moment later, never stored.
+ * - **the keepalive**, which the server now answers instead of rejecting.
  */
 export function useChatSocket(chatId: string | undefined) {
   const queryClient = useQueryClient();
@@ -18,12 +77,48 @@ export function useChatSocket(chatId: string | undefined) {
   // server: one broadcast reaches every member and cannot know who each of them is.
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
   const myId = me?.id;
+  const [typing, setTyping] = useState<TypingPeer | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const lastTypingSent = useRef(0);
+  const typingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  /** Send a frame if the socket is up. Returns whether it went. */
+  const send = useCallback((frame: Record<string, unknown>) => {
+    const socket = socketRef.current;
+    if (socket?.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify(frame));
+    return true;
+  }, []);
+
+  /**
+   * Tell the chat this reader has caught up.
+   *
+   * Over the socket when it is up — this fires on every arriving message, and a round trip each
+   * time would be waste — and over HTTP when it is not, so a dropped connection does not leave a
+   * badge lit on a conversation the reader is looking at.
+   */
+  const markRead = useCallback(() => {
+    if (!chatId) return;
+    if (send({ type: "read" })) return;
+    api.markChatRead(chatId).catch(() => {
+      // A failed receipt is not worth a message to the reader: the next open marks it anyway.
+    });
+  }, [chatId, send]);
+
+  /** Throttled: one hint every couple of seconds is enough to keep the strip alive. */
+  const notifyTyping = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTypingSent.current < TYPING_THROTTLE) return;
+    lastTypingSent.current = now;
+    send({ type: "typing" });
+  }, [send]);
 
   useEffect(() => {
     if (!chatId) return;
     const url = `${API_URL.replace(/^http/, "ws")}/ws/chats/${chatId}`;
     let socket: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
     let attempts = 0;
     let closed = false;
 
@@ -31,16 +126,14 @@ export function useChatSocket(chatId: string | undefined) {
       const owned: Message = { ...incoming, is_mine: incoming.sender_id === myId };
       queryClient.setQueryData<Message[]>(["messages", chatId], (current) => {
         if (!current) return current;
-        const index = current.findIndex((item) => item.id === owned.id);
-        if (index >= 0) {
-          const next = current.slice();
-          // `read` is the sender's business and arrives blank; keep what the last poll knew.
-          next[index] = { ...next[index], ...owned, read: next[index].read };
-          return next;
-        }
-        return [...current, owned];
+        return mergeMessage(current, owned);
       });
       queryClient.invalidateQueries({ queryKey: ["chats"] });
+      // Somebody else's message, seen by a reader who has this conversation open and this tab in
+      // front of them: that is what "read" means, so say so instead of waiting for a re-open.
+      if (!owned.is_mine && typeof document !== "undefined" && !document.hidden) {
+        send({ type: "read" });
+      }
     };
 
     const drop = (messageId: string) => {
@@ -50,11 +143,35 @@ export function useChatSocket(chatId: string | undefined) {
       queryClient.invalidateQueries({ queryKey: ["chats"] });
     };
 
+    /** Somebody read up to `at`: every message of mine older than that now has two ticks. */
+    const readUpTo = (at: string | undefined) => {
+      const boundary = at ? new Date(at).getTime() : Date.now();
+      queryClient.setQueryData<Message[]>(["messages", chatId], (current) =>
+        current?.map((item) =>
+          item.is_mine && !item.read && new Date(item.created_at).getTime() <= boundary
+            ? { ...item, read: true }
+            : item
+        )
+      );
+    };
+
+    const showTyping = (peer: TypingPeer) => {
+      setTyping(peer);
+      if (typingTimer.current) clearTimeout(typingTimer.current);
+      // Nothing says "stopped typing", so the hint expires on its own.
+      typingTimer.current = setTimeout(() => setTyping(null), TYPING_TTL);
+    };
+
     const connect = () => {
       if (closed) return;
       socket = new WebSocket(url);
+      socketRef.current = socket;
       socket.onopen = () => {
         attempts = 0;
+        // An idle socket behind a proxy is a socket about to be cut.
+        heartbeat = setInterval(() => {
+          if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ping" }));
+        }, 50_000);
       };
       socket.onmessage = (event) => {
         try {
@@ -62,13 +179,29 @@ export function useChatSocket(chatId: string | undefined) {
             type: string;
             message?: Message;
             message_id?: string;
+            user_id?: string;
+            display_name?: string;
+            at?: string;
           };
+          if (frame.type === "pong" || frame.type === "ready") return;
+          if (frame.type === "typing") {
+            if (frame.user_id && frame.user_id !== myId) {
+              showTyping({ userId: frame.user_id, displayName: frame.display_name ?? "Someone" });
+            }
+            return;
+          }
+          if (frame.type === "chat_read") {
+            if (frame.user_id !== myId) readUpTo(frame.at);
+            return;
+          }
           if (frame.type === "message_deleted" && frame.message_id) {
             drop(frame.message_id);
           } else if (frame.type === "message_reacted") {
             // Whose reaction is whose cannot be read off a neutral frame, so this one refetches.
             queryClient.invalidateQueries({ queryKey: ["messages", chatId] });
           } else if (frame.message) {
+            // A message from the person who was typing answers the question the hint asked.
+            if (frame.message.sender_id !== myId) setTyping(null);
             patch(frame.message);
           }
         } catch {
@@ -76,6 +209,9 @@ export function useChatSocket(chatId: string | undefined) {
         }
       };
       socket.onclose = () => {
+        if (heartbeat) clearInterval(heartbeat);
+        heartbeat = undefined;
+        if (socketRef.current === socket) socketRef.current = null;
         if (closed) return;
         // Back off so a server restart does not turn into a reconnect storm.
         attempts += 1;
@@ -87,7 +223,23 @@ export function useChatSocket(chatId: string | undefined) {
     return () => {
       closed = true;
       if (retry) clearTimeout(retry);
+      if (heartbeat) clearInterval(heartbeat);
+      if (typingTimer.current) clearTimeout(typingTimer.current);
+      setTyping(null);
+      socketRef.current = null;
       socket?.close();
     };
-  }, [chatId, myId, queryClient]);
+  }, [chatId, myId, queryClient, send]);
+
+  // A conversation left open in a background tab is not being read. Coming back to it is.
+  useEffect(() => {
+    if (!chatId) return;
+    const onVisible = () => {
+      if (!document.hidden) markRead();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [chatId, markRead]);
+
+  return { typing, notifyTyping, markRead };
 }

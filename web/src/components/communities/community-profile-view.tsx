@@ -4,14 +4,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Tabs from "@radix-ui/react-tabs";
 import { ArrowLeft, BadgeCheck, CalendarDays, Check, Copy, Crown, FileText, Flag, Gift, Hash, ImageIcon, Link2, MapPin, Share2, Sparkles, Star, Users } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { socialApi } from "@/lib/social-api";
 import type { CommunityPerson } from "@/lib/social-types";
+import { plural } from "@/lib/utils";
 import { VerifiedMark } from "../verified-mark";
 import { PostCard } from "../feed/post-card";
 import { PostComposer } from "../feed/post-composer";
 import { CommunityReportSheet } from "../chats/report-sheets";
+import { StaffCommunityControls } from "../admin/staff-controls";
 import { useToast } from "../ui/toast";
 import { ChannelManageSheet } from "./channel-manage-sheet";
 import { CommunityAvatar, communityTitle } from "./communities-directory";
@@ -20,7 +23,7 @@ import styles from "./communities.module.css";
 
 
 function messageFrom(error: unknown) {
-  return error instanceof Error ? error.message : "Не удалось выполнить действие";
+  return error instanceof Error ? error.message : "Couldn't complete the action";
 }
 
 
@@ -37,6 +40,7 @@ function PersonAvatar({ person, size = 42 }: { person: CommunityPerson; size?: n
 
 export function CommunityProfileView({ slug }: { slug: string }) {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const { notify } = useToast();
   const [managing, setManaging] = useState(false);
   const [reporting, setReporting] = useState(false);
@@ -49,6 +53,18 @@ export function CommunityProfileView({ slug }: { slug: string }) {
     queryKey: ["community-stories", slug],
     queryFn: () => socialApi.communityStories(slug),
   });
+
+  /*
+   * A channel opened by one of its extra handles moves to its own address.
+   *
+   * The API answers to every handle, but everything that later refreshes this page — attaching an
+   * address, joining, publishing — invalidates the canonical key. Left on an alias, the page kept
+   * showing what the channel looked like before the change.
+   */
+  const canonical = community.data?.slug;
+  useEffect(() => {
+    if (canonical && canonical !== slug) router.replace(`/c/${canonical}`);
+  }, [canonical, router, slug]);
 
   const membership = useMutation({
     mutationFn: (joined: boolean) => joined ? socialApi.leaveCommunity(slug) : socialApi.joinCommunity(slug),
@@ -66,16 +82,16 @@ export function CommunityProfileView({ slug }: { slug: string }) {
     onSuccess: async (nextCommunity) => {
       queryClient.setQueryData(["community", slug], nextCommunity);
       await queryClient.invalidateQueries({ queryKey: ["communities"] });
-      notify(nextCommunity.is_verified ? "Галочка выдана" : "Галочка снята", { variant: "success" });
+      notify(nextCommunity.is_verified ? "Verification granted" : "Verification removed", { variant: "success" });
     },
     onError: (error: unknown) =>
-      notify("Не удалось изменить галочку", { variant: "error", detail: messageFrom(error) })
+      notify("Couldn't change verification", { variant: "error", detail: messageFrom(error) })
   });
 
 
   async function shareCommunity() {
     const url = window.location.href;
-    const title = community.data ? communityTitle(community.data) : "Сообщество GRAM";
+    const title = community.data ? communityTitle(community.data) : "GRAM community";
     let usedNativeShare = false;
     try {
       if (typeof navigator.share === "function") {
@@ -84,9 +100,9 @@ export function CommunityProfileView({ slug }: { slug: string }) {
       } else {
         await navigator.clipboard.writeText(url);
       }
-      setShareNotice(usedNativeShare ? "Ссылка отправлена" : "Ссылка скопирована");
+      setShareNotice(usedNativeShare ? "Link shared" : "Link copied");
     } catch (error) {
-      if ((error as DOMException).name !== "AbortError") setShareNotice("Не удалось поделиться ссылкой");
+      if ((error as DOMException).name !== "AbortError") setShareNotice("Couldn't share the link");
     }
   }
 
@@ -99,10 +115,10 @@ export function CommunityProfileView({ slug }: { slug: string }) {
       <main className={`${styles.page} ${styles.profilePage}`}>
         <div className={styles.emptyState}>
           <Users size={30} />
-          <strong>Сообщество не открылось</strong>
+          <strong>Couldn&apos;t open the community</strong>
           <p>{messageFrom(community.error)}</p>
-          <button type="button" onClick={() => community.refetch()}>Попробовать снова</button>
-          <Link href="/communities">Вернуться в каталог</Link>
+          <button type="button" onClick={() => community.refetch()}>Try again</button>
+          <Link href="/communities">Back to the directory</Link>
         </div>
       </main>
     );
@@ -120,15 +136,15 @@ export function CommunityProfileView({ slug }: { slug: string }) {
   return (
     <main className={`${styles.page} ${styles.profilePage}`}>
       <div className={styles.profileTopbar}>
-        <Link href="/communities" aria-label="Назад к сообществам"><ArrowLeft size={21} /></Link>
+        <Link href="/communities" aria-label="Back to communities"><ArrowLeft size={21} /></Link>
         <span>
           <strong className="inline-flex items-center gap-1">
             {title}
             {item.is_verified ? <VerifiedMark size={14} /> : null}
           </strong>
-          <small>{item.posts_count} публикаций</small>
+          <small>{item.posts_count} posts</small>
         </span>
-        <button type="button" onClick={shareCommunity} aria-label="Поделиться сообществом"><Share2 size={19} /></button>
+        <button type="button" onClick={shareCommunity} aria-label="Share community"><Share2 size={19} /></button>
       </div>
 
       <section className={styles.communityProfile}>
@@ -141,17 +157,17 @@ export function CommunityProfileView({ slug }: { slug: string }) {
           <CommunityAvatar community={item} />
           <div className={styles.profileActions}>
             <button className={styles.shareButton} type="button" onClick={shareCommunity}>
-              {shareNotice?.includes("скопирована") ? <Check size={17} /> : <Copy size={17} />}
-              {shareNotice ?? "Скопировать ссылку"}
+              {shareNotice?.includes("copied") ? <Check size={17} /> : <Copy size={17} />}
+              {shareNotice ?? "Copy link"}
             </button>
             {item.is_owner ? (
-              /* The reference gives an owner «Управление» here, not a badge that does nothing. */
+              /* The reference gives an owner “Manage” here, not a badge that does nothing. */
               <button
                 className={styles.ownerButton}
                 type="button"
                 onClick={() => setManaging(true)}
               >
-                <Crown size={16} /> Управление
+                <Crown size={16} /> Manage
               </button>
             ) : (
               <button
@@ -160,7 +176,7 @@ export function CommunityProfileView({ slug }: { slug: string }) {
                 disabled={membership.isPending}
                 onClick={() => membership.mutate(item.is_member)}
               >
-                {membership.isPending ? "Сохраняем…" : item.is_member ? "Отписаться" : item.is_paid ? `Подписаться · ${item.monthly_price} ★` : "Подписаться"}
+                {membership.isPending ? "Saving…" : item.is_member ? "Unsubscribe" : item.is_paid ? `Subscribe · ${item.monthly_price} ★` : "Subscribe"}
               </button>
             )}
             {/* A complaint about somebody else's community, on the same terms as one about a post. */}
@@ -168,20 +184,20 @@ export function CommunityProfileView({ slug }: { slug: string }) {
               <button
                 type="button"
                 className={styles.reportButton}
-                aria-label="Пожаловаться на сообщество"
-                title="Пожаловаться на сообщество"
+                aria-label="Report community"
+                title="Report community"
                 onClick={() => setReporting(true)}
               >
                 <Flag size={16} />
               </button>
             )}
-            {/* Staff only: the tick is GRAM's to give, so it is not in the owner's «Управление». */}
+            {/* Staff only: the tick is GRAM's to give, so it is not in the owner's “Manage”. */}
             {me.data?.is_admin ? (
               <button
                 type="button"
                 className={styles.reportButton}
-                aria-label={item.is_verified ? "Снять галочку канала" : "Выдать галочку каналу"}
-                title={item.is_verified ? "Снять галочку канала" : "Выдать галочку каналу"}
+                aria-label={item.is_verified ? "Remove channel verification" : "Grant channel verification"}
+                title={item.is_verified ? "Remove channel verification" : "Grant channel verification"}
                 aria-pressed={item.is_verified}
                 disabled={verification.isPending}
                 onClick={() => verification.mutate(!item.is_verified)}
@@ -199,13 +215,36 @@ export function CommunityProfileView({ slug }: { slug: string }) {
             {item.is_verified ? <VerifiedMark size={19} /> : null}
           </h1>
           <span>@{item.slug}</span>
+          {/* Extra addresses, written the way a profile writes its own: the channel answers to
+              every one of them, and a reader should be able to see which. */}
+          {(item.usernames ?? []).filter((handle) => handle !== item.slug).length ? (
+            <span className="mt-0.5 block text-[0.85rem] leading-5 text-[var(--muted)]">
+              also{" "}
+              {(item.usernames ?? [])
+                .filter((handle) => handle !== item.slug)
+                .map((handle, index) => (
+                  <span key={handle}>
+                    {index ? ", " : ""}
+                    <Link href={`/c/${handle}`} className="font-semibold text-[var(--link)]">
+                      @{handle}
+                    </Link>
+                  </span>
+                ))}
+            </span>
+          ) : null}
           <p>{item.description}</p>
           {item.owner ? (
             <span className={styles.ownerChip}>
               <PersonAvatar person={item.owner} size={28} />
-              <span><strong>{item.owner.display_name}</strong><small>Владелец</small></span>
+              <span><strong>{item.owner.display_name}</strong><small>Owner</small></span>
             </span>
           ) : null}
+          {/* Staff decisions about the community itself, without a trip to the panel. */}
+          <StaffCommunityControls
+            slug={item.slug}
+            title={title}
+            ownerUsername={item.owner?.username}
+          />
           <div className="mt-3 grid gap-2 text-[0.9rem] text-[var(--muted)]">
             {item.category ? <span className="flex items-center gap-2"><Hash size={15} className="flex-none" />{item.category}</span> : null}
             {item.location ? <span className="flex items-center gap-2"><MapPin size={15} className="flex-none" />{item.location}</span> : null}
@@ -217,13 +256,13 @@ export function CommunityProfileView({ slug }: { slug: string }) {
             ) : null}
             <span className="flex items-center gap-2">
               <CalendarDays size={15} className="flex-none" />
-              Создан {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", year: "numeric" }).format(new Date(item.created_at))}
+              Created {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", year: "numeric" }).format(new Date(item.created_at))}
             </span>
           </div>
           <div className={styles.profileMeta}>
-            <span><strong>{item.members_count.toLocaleString("ru-RU")}</strong> подписчиков</span>
-            <span><strong>{item.posts_count.toLocaleString("ru-RU")}</strong> публикаций</span>
-            {item.is_paid ? <span className={styles.paidBadge}><Star size={13} fill="currentColor" /> {item.monthly_price} в месяц</span> : <span>Открытый доступ</span>}
+            <span><strong>{item.members_count.toLocaleString("ru-RU")}</strong> {plural(item.members_count, "subscriber", "subscribers", "subscribers")}</span>
+            <span><strong>{item.posts_count.toLocaleString("ru-RU")}</strong> {plural(item.posts_count, "post", "posts", "posts")}</span>
+            {item.is_paid ? <span className={styles.paidBadge}><Star size={13} fill="currentColor" /> {item.monthly_price} per month</span> : <span>Open access</span>}
           </div>
         </div>
       </section>
@@ -233,29 +272,29 @@ export function CommunityProfileView({ slug }: { slug: string }) {
       <Tabs.Root value={tab} onValueChange={setTab}>
         <Tabs.List
           className="sticky top-0 z-30 mt-4 flex h-[50px] overflow-x-auto border-y border-[var(--line)] bg-[rgba(6,6,8,.95)] px-2 backdrop-blur-xl [scrollbar-width:none]"
-          aria-label="Разделы канала"
+          aria-label="Channel sections"
         >
-          <ChannelTab value="posts" label="Посты" />
+          <ChannelTab value="posts" label="Posts" />
           <ChannelTab
             value="stories"
-            label={stories.data?.length ? `Истории • ${stories.data.length}` : "Истории"}
+            label={stories.data?.length ? `Stories • ${stories.data.length}` : "Stories"}
           />
-          <ChannelTab value="media" label={mediaPosts.length ? `Медиа • ${mediaPosts.length}` : "Медиа"} />
-          <ChannelTab value="gifts" label="Подарки" />
-          <ChannelTab value="about" label="О канале" />
+          <ChannelTab value="media" label={mediaPosts.length ? `Media • ${mediaPosts.length}` : "Media"} />
+          <ChannelTab value="gifts" label="Gifts" />
+          <ChannelTab value="about" label="About" />
         </Tabs.List>
 
-        <Tabs.Content value="posts" className="outline-none">
+        <Tabs.Content value="posts" className="panel-enter outline-none">
       <section className={styles.postsSection} aria-labelledby="community-posts-title">
         <div className={styles.sectionHeading}>
-          <div><h2 id="community-posts-title">Публикации</h2><p>Новости и обсуждения пространства</p></div>
+          <div><h2 id="community-posts-title">Posts</h2><p>News and discussions from the space</p></div>
           <FileText size={20} />
         </div>
 
         {canPublish ? (
           <section
             className="border-b border-[var(--line)] px-3 py-3 sm:px-5"
-            aria-label="Новая запись канала"
+            aria-label="New channel post"
           >
             {/*
               The product's own composer: pictures, a link card and a pasted music link, the
@@ -264,7 +303,7 @@ export function CommunityProfileView({ slug }: { slug: string }) {
             <PostComposer
               avatarUrl={item.avatar_url ?? null}
               displayName={title}
-              placeholder="Напишите подписчикам канала…"
+              placeholder="Write to the channel's subscribers…"
               communitySlug={slug}
               onPublish={async (content, imageUrls, link, videoUrl, pollOptions, sensitive, file) => {
                 await socialApi.createCommunityPost(slug, content, {
@@ -285,19 +324,19 @@ export function CommunityProfileView({ slug }: { slug: string }) {
         ) : item.is_member ? null : (
           <div className={styles.joinPrompt}>
             <Star size={22} />
-            <p>Подпишитесь, чтобы не пропускать публикации канала.</p>
+            <p>Subscribe so you don&apos;t miss the channel&apos;s posts.</p>
             <button type="button" disabled={membership.isPending} onClick={() => membership.mutate(false)}>
-              {item.is_paid ? `Подписаться за ${item.monthly_price} ★` : "Подписаться"}
+              {item.is_paid ? `Subscribe for ${item.monthly_price} ★` : "Subscribe"}
             </button>
           </div>
         )}
 
         {posts.isPending ? (
-          <div className={styles.postsLoading} aria-label="Публикации загружаются"><span /><span /></div>
+          <div className={styles.postsLoading} aria-label="Posts are loading"><span /><span /></div>
         ) : posts.isError ? (
           <div className={styles.inlineLoadError}>
             <span>{messageFrom(posts.error)}</span>
-            <button type="button" onClick={() => posts.refetch()}>Повторить</button>
+            <button type="button" onClick={() => posts.refetch()}>Retry</button>
           </div>
         ) : posts.data.length ? (
           <div className="space-y-3 px-3 py-4 sm:px-5">
@@ -308,14 +347,14 @@ export function CommunityProfileView({ slug }: { slug: string }) {
         ) : (
           <div className={styles.postsEmpty}>
             <FileText size={25} />
-            <strong>Публикаций пока нет</strong>
-            <p>{canPublish ? "Начните разговор первой записью." : "Первая запись появится здесь."}</p>
+            <strong>No posts yet</strong>
+            <p>{canPublish ? "Start the conversation with the first post." : "The first post will appear here."}</p>
           </div>
         )}
       </section>
         </Tabs.Content>
 
-        <Tabs.Content value="stories" className="outline-none">
+        <Tabs.Content value="stories" className="panel-enter outline-none">
           {stories.isPending ? (
             <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-3">
               <div className="skeleton aspect-[3/4] rounded-[16px]" />
@@ -343,43 +382,43 @@ export function CommunityProfileView({ slug }: { slug: string }) {
           ) : (
             <div className={styles.postsEmpty}>
               <Sparkles size={25} />
-              <strong>Историй пока нет</strong>
+              <strong>No stories yet</strong>
               <p>
                 {item.is_owner
-                  ? "Добавьте историю канала — она будет видна подписчикам."
-                  : "Новые истории канала появятся здесь."}
+                  ? "Add a channel story — subscribers will see it."
+                  : "New channel stories will appear here."}
               </p>
             </div>
           )}
         </Tabs.Content>
 
-        <Tabs.Content value="gifts" className="outline-none">
+        <Tabs.Content value="gifts" className="panel-enter outline-none">
           <div className={styles.postsEmpty}>
             <Gift size={25} />
-            <strong>Подарков пока нет</strong>
+            <strong>No gifts yet</strong>
             <p>
               {item.is_owner
-                ? "Подписчики смогут дарить подарки каналу."
-                : "Станьте первым, кто подарит подарок каналу."}
+                ? "Subscribers will be able to send gifts to the channel."
+                : "Be the first to send a gift to the channel."}
             </p>
             {/* Honest about what this button does today: the collectible goes to the owner,
                 because a channel cannot yet hold one of its own. */}
             {item.owner && !item.is_owner ? (
               <Link className={styles.joinButton} href={`/u/${item.owner.username}?gift=1`}>
-                Подарить владельцу
+Gift the owner
               </Link>
             ) : null}
           </div>
         </Tabs.Content>
 
-        <Tabs.Content value="media" className="outline-none">
+        <Tabs.Content value="media" className="panel-enter outline-none">
           {mediaPosts.length ? (
             <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-3">
               {mediaPosts.map((post) => (
                 <span
                   key={post.id}
                   role="img"
-                  aria-label={`Медиа публикации: ${post.content.slice(0, 60)}`}
+                  aria-label={`Post media: ${post.content.slice(0, 60)}`}
                   className="block aspect-square rounded-[16px] bg-[#121216] bg-cover bg-center"
                   style={{ backgroundImage: `url("${sanitizeUrl(post.image_urls?.[0] ?? post.media_url ?? "")}")` }}
                 />
@@ -388,21 +427,21 @@ export function CommunityProfileView({ slug }: { slug: string }) {
           ) : (
             <div className={styles.postsEmpty}>
               <ImageIcon size={25} />
-              <strong>Медиа пока нет</strong>
-              <p>Изображения из публикаций канала появятся здесь.</p>
+              <strong>No media yet</strong>
+              <p>Images from the channel&apos;s posts will appear here.</p>
             </div>
           )}
         </Tabs.Content>
 
-        <Tabs.Content value="about" className="outline-none">
+        <Tabs.Content value="about" className="panel-enter outline-none">
           <div className="px-3 py-4 sm:px-4">
             <p className="mb-0 text-[0.95rem] leading-6 text-[#e7e9ea]">
-              {item.description || "Владелец пока не добавил описание канала."}
+              {item.description || "The owner hasn't added a channel description yet."}
             </p>
           </div>
       <section className={styles.membersSection} aria-labelledby="members-title">
         <div className={styles.sectionHeading}>
-          <div><h2 id="members-title">Подписчики</h2><p>{item.members_count.toLocaleString("ru-RU")} человек на канале</p></div>
+          <div><h2 id="members-title">Subscribers</h2><p>{item.members_count.toLocaleString("ru-RU")} people in the channel</p></div>
           <Users size={20} />
         </div>
         {members.length ? (
@@ -411,12 +450,12 @@ export function CommunityProfileView({ slug }: { slug: string }) {
               <Link href={`/u/${member.username}`} key={member.id ?? member.username}>
                 <PersonAvatar person={member} size={48} />
                 <span>{member.display_name}</span>
-                <small>{member.role === "owner" ? "Владелец" : member.role === "admin" ? "Админ" : `@${member.username}`}</small>
+                <small>{member.role === "owner" ? "Owner" : member.role === "admin" ? "Admin" : `@${member.username}`}</small>
               </Link>
             ))}
           </div>
         ) : (
-          <p className={styles.membersUnavailable}>Состав участников появится после первого вступления.</p>
+          <p className={styles.membersUnavailable}>The member list will appear after the first person joins.</p>
         )}
       </section>
 

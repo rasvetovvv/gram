@@ -11,9 +11,9 @@ import { useToast } from "../ui/toast";
 import { GiftImage, giftArtProps } from "./gift-image";
 
 const SORTS: { value: GiftMarketSort; label: string }[] = [
-  { value: "recent", label: "Новые лоты" },
-  { value: "price-asc", label: "Дешевле" },
-  { value: "price-desc", label: "Дороже" }
+  { value: "recent", label: "Newest lots" },
+  { value: "price-asc", label: "Cheapest" },
+  { value: "price-desc", label: "Priciest" }
 ];
 
 /**
@@ -44,13 +44,13 @@ export function GiftMarketPanel({ balance }: { balance: number }) {
         queryClient.invalidateQueries({ queryKey: ["stars-wallet"] }),
         queryClient.invalidateQueries({ queryKey: ["notifications"] })
       ]);
-      notify(`«${gift.name}» #${gift.serial_number} ваш`, {
+      notify(`"${gift.name}" #${gift.serial_number} is yours`, {
         variant: "success",
-        detail: "Куплен на маркете"
+        detail: "Bought on the market"
       });
     },
     onError: (error: Error) =>
-      notify("Покупка не прошла", { variant: "error", detail: error.message })
+      notify("Purchase failed", { variant: "error", detail: error.message })
   });
 
   const items = market.data ?? [];
@@ -68,7 +68,7 @@ export function GiftMarketPanel({ balance }: { balance: number }) {
       <div className="mb-2.5 flex items-center justify-between gap-2 px-1">
         <h2 className="m-0 flex items-center gap-1.5 text-[13px] font-semibold uppercase tracking-[0.04em] text-[var(--faint)]">
           <ShoppingBag size={14} />
-          Маркет · {items.length}
+          Market · {items.length}
         </h2>
         <div className="flex gap-1.5">
           {SORTS.map((item) => (
@@ -103,7 +103,7 @@ export function GiftMarketPanel({ balance }: { balance: number }) {
             />
             <span className="min-w-0 flex-1 overflow-hidden">
               <strong className="block truncate text-sm">
-                {item.name} #{item.serial_number.toLocaleString("ru-RU")}
+                {item.name} #{item.serial_number.toLocaleString("en-US")}
               </strong>
               <span className="block truncate text-xs text-[var(--muted)]">
                 {item.model ?? "—"} · {item.backdrop ?? "—"} ·{" "}
@@ -113,7 +113,7 @@ export function GiftMarketPanel({ balance }: { balance: number }) {
               </span>
               {item.listed_at ? (
                 <span className="block text-[11px] text-[var(--faint)]">
-                  выставлен {relativeTime(item.listed_at)}
+                  listed {relativeTime(item.listed_at)}
                 </span>
               ) : null}
             </span>
@@ -123,13 +123,13 @@ export function GiftMarketPanel({ balance }: { balance: number }) {
               disabled={
                 item.is_mine || balance < item.price_stars || (buy.isPending && buy.variables?.gift_id === item.gift_id)
               }
-              aria-label={`Купить ${item.name} за ${item.price_stars} звёзд`}
+              aria-label={`Buy ${item.name} for ${item.price_stars} stars`}
               className="flex min-h-10 flex-none items-center gap-1.5 rounded-full border-0 bg-[var(--stars)] px-3.5 text-[13px] font-extrabold text-black disabled:opacity-45"
             >
               {buy.isPending && buy.variables?.gift_id === item.gift_id ? (
                 "…"
               ) : item.is_mine ? (
-                "ваш лот"
+                "your lot"
               ) : (
                 <>
                   <Star size={14} fill="currentColor" />

@@ -1,163 +1,265 @@
 "use client";
 
-import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowLeft, Check, CreditCard, Star, Wallet, X } from "lucide-react";
-import { useState } from "react";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, Check, Copy, ExternalLink, Loader2, Send, Star, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { api } from "@/lib/api";
+import type { StarOrder } from "@/lib/types";
 import { BottomSheet } from "../ui/bottom-sheet";
+import { useToast } from "../ui/toast";
 import styles from "./stars.module.css";
 
 /*
- * The reference offers exactly this ladder of packs, in this order, as a divided list in a
- * bottom sheet. It prices each row in UAH; GRAM has no pricing backend, so we show the
- * star amount alone rather than invent a tariff — a fabricated price would be the one
- * thing on this surface a user could act on and be wrong about.
+ * Stars are bought with Telegram Stars, and the charge happens inside GRAM's own bot.
+ *
+ * The site never sees a card: it opens an order, hands over a deep link, and waits for the bot to
+ * report the charge. So this sheet has two screens — the shop, and one order being paid — and the
+ * second one polls rather than guesses, because the money arrives out of band.
  */
-const PACKS = [100, 150, 250, 350, 500, 750, 1000, 1500, 2500, 5000, 10_000];
-
-const CUSTOM_MIN = 10;
-const CUSTOM_MAX = 10_000;
-
-/* Bounds mirror the API: /api/stars/top-up accepts amount >= 10, and the ladder tops out
- * at 10 000, so the typed path and the packs can never disagree. */
-const customAmountSchema = z.object({
-  amount: z
-    .number({ error: "Введите количество звёзд" })
-    .int("Только целое количество")
-    .min(CUSTOM_MIN, `Минимум ${CUSTOM_MIN} звёзд`)
-    .max(CUSTOM_MAX, "Максимум 10 000 звёзд за раз")
-});
-
-type CustomAmountForm = z.infer<typeof customAmountSchema>;
-
 function formatNumber(value: number) {
-  return new Intl.NumberFormat("ru-RU").format(value);
+  return new Intl.NumberFormat("en-US").format(value);
 }
-
-type FlowProps = {
-  balance: number | null;
-  pending: boolean;
-  errorMessage: string | null;
-  onConfirm: (amount: number) => void;
-};
 
 export function TopUpSheet({
   open,
   onOpenChange,
-  ...flow
-}: FlowProps & {
+  onCredited
+}: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Called once an order is paid, so the screen behind can refresh what it shows. */
+  onCredited?: () => void;
 }) {
   return (
     <BottomSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Пополнить баланс"
-      description="Выберите количество звёзд и способ пополнения"
+      title="Top up balance"
+      description="Payment goes through Telegram Stars in the GRAM bot"
       headerRight={
         <button
           type="button"
           className="icon-button !size-8 text-[var(--muted)]"
-          aria-label="Закрыть"
+          aria-label="Close"
           onClick={() => onOpenChange(false)}
         >
           <X size={18} />
         </button>
       }
     >
-      {/*
-       * Radix unmounts sheet content on close, so the flow's step and selection reset by
-       * construction — no effect has to chase the `open` prop back to a clean state.
-       */}
-      <TopUpFlow {...flow} />
+      {/* Radix unmounts the content on close, so the flow resets by construction. */}
+      <TopUpFlow onCredited={onCredited} onDone={() => onOpenChange(false)} />
     </BottomSheet>
   );
 }
 
-function TopUpFlow({ balance, pending, errorMessage, onConfirm }: FlowProps) {
-  const [step, setStep] = useState<"amount" | "method">("amount");
-  const [amount, setAmount] = useState<number | null>(null);
-  const [customOpen, setCustomOpen] = useState(false);
+function TopUpFlow({
+  onCredited,
+  onDone
+}: {
+  onCredited?: () => void;
+  onDone: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const { notify } = useToast();
+  const [orderId, setOrderId] = useState<string | null>(null);
 
-  const form = useForm<CustomAmountForm>({
-    resolver: zodResolver(customAmountSchema),
-    defaultValues: { amount: 100 }
+  const packages = useQuery({ queryKey: ["star-packages"], queryFn: api.starPackages });
+  // An unfinished order from an earlier visit: it is still payable, so it is offered rather than
+  // buried under a new one.
+  const recent = useQuery({ queryKey: ["star-orders"], queryFn: () => api.starOrders(5) });
+
+  const create = useMutation({
+    mutationFn: (slug: string) => api.createStarOrder(slug),
+    onSuccess: (order) => {
+      setOrderId(order.id);
+      // Opened here, in the click's own task, so the browser does not read it as a popup.
+      window.open(order.bot_url, "_blank", "noopener,noreferrer");
+    },
+    onError: (error: Error) =>
+      notify("Couldn't open payment", { variant: "error", detail: error.message })
   });
 
-  function choose(next: number) {
-    setAmount(next);
-    setStep("method");
+  if (orderId) {
+    return (
+      <PendingOrder
+        orderId={orderId}
+        onBack={() => setOrderId(null)}
+        onDone={onDone}
+        onCredited={async () => {
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["me"] }),
+            queryClient.invalidateQueries({ queryKey: ["stars", "wallet"] }),
+            queryClient.invalidateQueries({ queryKey: ["stars", "transactions"] }),
+            queryClient.invalidateQueries({ queryKey: ["star-orders"] })
+          ]);
+          onCredited?.();
+        }}
+      />
+    );
   }
 
-  if (step === "amount") {
+  const openOrder = (recent.data ?? []).find((order) => order.status === "pending");
+
+  return (
+    <>
+      <div className={styles.sheetHeading}>
+        <p>Choose a package</p>
+      </div>
+
+      {openOrder ? (
+        <button
+          type="button"
+          className={styles.optionRow}
+          onClick={() => setOrderId(openOrder.id)}
+        >
+          <span className={styles.methodChip}>
+            <Loader2 size={19} className="animate-spin" />
+          </span>
+          <span className={styles.optionLabel}>
+            Unfinished payment
+            <span className={styles.optionMeta}>
+              {formatNumber(openOrder.stars)} ★ for {openOrder.price_xtr} Telegram Stars
+            </span>
+          </span>
+          <span className={styles.optionTrail}>
+            <ExternalLink size={17} />
+          </span>
+        </button>
+      ) : null}
+
+      <div className={styles.optionList}>
+        {packages.isLoading ? (
+          <p className={styles.sheetNote}>Loading packages…</p>
+        ) : packages.isError ? (
+          <p className={styles.formError} role="alert">
+            {packages.error.message}
+          </p>
+        ) : (
+          (packages.data ?? []).map((item) => (
+            <button
+              key={item.slug}
+              type="button"
+              className={styles.optionRow}
+              disabled={create.isPending}
+              onClick={() => create.mutate(item.slug)}
+            >
+              <Star size={26} fill="currentColor" strokeWidth={1.4} />
+              <span className={styles.optionLabel}>
+                {formatNumber(item.stars)} stars
+                <span className={styles.optionMeta}>
+                  {item.bonus_percent > 0
+                    ? `${item.per_xtr} ★ per 1 Telegram Star · +${item.bonus_percent}% bonus`
+                    : `${item.per_xtr} ★ per 1 Telegram Star`}
+                </span>
+              </span>
+              <span className={styles.optionTrail}>
+                <strong>{item.price_xtr}</strong>
+                <Send size={14} />
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+
+      <p className={styles.sheetNote}>
+        Payment goes through Telegram Stars inside the GRAM bot. After paying, stars are credited
+        automatically — no card or external payment services involved.
+      </p>
+    </>
+  );
+}
+
+/**
+ * One order being paid.
+ *
+ * The charge happens in Telegram, so nothing here can know it has landed: the order is polled
+ * while the sheet is open, and the screen changes only when the server says the money arrived.
+ */
+function PendingOrder({
+  orderId,
+  onBack,
+  onDone,
+  onCredited
+}: {
+  orderId: string;
+  onBack: () => void;
+  onDone: () => void;
+  onCredited: () => Promise<void>;
+}) {
+  const { notify } = useToast();
+  // The credit is a one-off event, but the poll keeps answering "paid" — a ref remembers that the
+  // caches were already refreshed without turning it into render state.
+  const settled = useRef(false);
+  const order = useQuery({
+    queryKey: ["star-order", orderId],
+    queryFn: () => api.starOrder(orderId),
+    // Paid orders stop being news; anything still open is checked every few seconds.
+    refetchInterval: (query) =>
+      query.state.data && query.state.data.status !== "pending" ? false : 3000
+  });
+
+  const cancel = useMutation({
+    mutationFn: () => api.cancelStarOrder(orderId),
+    onSuccess: () => {
+      notify("Order cancelled", { variant: "success", detail: "The link will no longer open payment" });
+      onBack();
+    },
+    onError: (error: Error) =>
+      notify("Couldn't cancel", { variant: "error", detail: error.message })
+  });
+
+  const current: StarOrder | undefined = order.data;
+  const status = current?.status;
+  useEffect(() => {
+    if (status !== "paid" || settled.current) return;
+    settled.current = true;
+    void onCredited();
+  }, [onCredited, status]);
+
+  if (!current) {
+    return <p className={styles.sheetNote}>Opening order…</p>;
+  }
+
+  if (current.status === "paid") {
     return (
       <>
         <div className={styles.sheetHeading}>
-          <p>Выберите количество</p>
+          <p>Paid</p>
         </div>
-
         <div className={styles.optionList}>
-          {PACKS.map((pack) => (
-            <button
-              key={pack}
-              type="button"
-              className={styles.optionRow}
-              onClick={() => choose(pack)}
-            >
-              <Star size={26} fill="currentColor" strokeWidth={1.4} />
-              <span className={styles.optionLabel}>{formatNumber(pack)} звёзд</span>
-              <span className={styles.optionTrail}>
-                {amount === pack ? <Check size={18} className={styles.optionCheck} /> : null}
-              </span>
-            </button>
-          ))}
-
-          <button
-            type="button"
-            className={styles.optionRow}
-            aria-expanded={customOpen}
-            onClick={() => setCustomOpen((value) => !value)}
-          >
-            <Star size={26} strokeWidth={1.4} />
+          <span className={styles.optionRow}>
+            <span className={styles.methodChip}>
+              <Check size={19} />
+            </span>
             <span className={styles.optionLabel}>
-              Другая сумма
+              {formatNumber(current.stars)} ★ credited
               <span className={styles.optionMeta}>
-                От {formatNumber(CUSTOM_MIN)} до {formatNumber(CUSTOM_MAX)} звёзд
+                Charged {current.price_xtr} Telegram Stars
               </span>
             </span>
+          </span>
+        </div>
+        <button type="button" className={styles.actionPrimary} onClick={onDone}>
+          Done
+        </button>
+      </>
+    );
+  }
+
+  if (current.status !== "pending") {
+    return (
+      <>
+        <div className={styles.sheetHeading}>
+          <p>Order closed</p>
+          <button type="button" className={styles.sheetBack} onClick={onBack}>
+            <ArrowLeft size={15} /> Packages
           </button>
         </div>
-
-        {customOpen ? (
-          <form
-            className={styles.form}
-            onSubmit={form.handleSubmit((values) => choose(values.amount))}
-          >
-            <label className={styles.field}>
-              <span>Количество</span>
-              <span className={styles.amountInput}>
-                <input
-                  autoFocus
-                  inputMode="numeric"
-                  aria-invalid={Boolean(form.formState.errors.amount)}
-                  {...form.register("amount", { valueAsNumber: true })}
-                />
-                <Star size={18} fill="currentColor" />
-              </span>
-              {form.formState.errors.amount ? (
-                <small role="alert">{form.formState.errors.amount.message}</small>
-              ) : null}
-            </label>
-            <button className={styles.actionPrimary} type="submit">
-              Продолжить
-            </button>
-          </form>
-        ) : null}
-
         <p className={styles.sheetNote}>
-          Звёзды оплачивают подарки, подписки и коллекционные юзернеймы внутри GRAM.
+          {current.status === "expired"
+            ? "The payment link expired — pick a package again, it only takes a second."
+            : "This order was cancelled. Pick a package again to pay."}
         </p>
       </>
     );
@@ -166,71 +268,62 @@ function TopUpFlow({ balance, pending, errorMessage, onConfirm }: FlowProps) {
   return (
     <>
       <div className={styles.sheetHeading}>
-        <p>Способ пополнения</p>
-        <button type="button" className={styles.sheetBack} onClick={() => setStep("amount")}>
-          <ArrowLeft size={15} /> Сумма
+        <p>Payment in Telegram</p>
+        <button type="button" className={styles.sheetBack} onClick={onBack}>
+          <ArrowLeft size={15} /> Packages
         </button>
       </div>
 
       <div className={styles.optionList}>
-        <button
-          type="button"
-          className={styles.optionRow}
-          disabled={pending}
-          onClick={() => amount !== null && onConfirm(amount)}
-        >
-          <span className={styles.methodChip}>
-            <Wallet size={19} />
-          </span>
+        <span className={styles.optionRow}>
+          <Star size={26} fill="currentColor" strokeWidth={1.4} />
           <span className={styles.optionLabel}>
-            Внутренний баланс аккаунта
+            {formatNumber(current.stars)} ★
             <span className={styles.optionMeta}>
-              {pending ? "Зачисляем…" : "Зачисление сразу, без оплаты картой"}
+              Price — {current.price_xtr} Telegram Stars
             </span>
           </span>
           <span className={styles.optionTrail}>
-            {amount !== null ? `${formatNumber(amount)} ★` : null}
+            <Loader2 size={17} className="animate-spin" />
           </span>
-        </button>
+        </span>
+      </div>
 
-        {/*
-         * No processor is wired to GRAM yet, so this row states that plainly instead of
-         * opening a form that could not charge anything. It stays visible because the method
-         * belongs in the flow the moment the provider is connected.
-         */}
+      <a
+        className={styles.actionPrimary}
+        href={current.bot_url}
+        target="_blank"
+        rel="noreferrer"
+      >
+        <ExternalLink size={17} />
+        Open the bot and pay
+      </a>
+
+      <div className="mt-2 flex gap-2">
         <button
           type="button"
-          className={styles.optionRow}
-          disabled
-          title="Оплата картой станет доступна после подключения платёжного провайдера"
+          className="quiet-button flex-1 !min-h-11"
+          onClick={async () => {
+            await navigator.clipboard.writeText(current.bot_url);
+            notify("Link copied", { variant: "success" });
+          }}
         >
-          <span className={styles.methodChip}>
-            <CreditCard size={19} />
-          </span>
-          <span className={styles.optionLabel}>
-            Банковская карта
-            <span className={styles.optionMeta}>Списание с карты и чек по операции</span>
-          </span>
-          <span className={styles.pendingBadge}>Ожидает подключения</span>
+          <Copy size={16} />
+          Link
+        </button>
+        <button
+          type="button"
+          className="quiet-button flex-1 !min-h-11"
+          disabled={cancel.isPending}
+          onClick={() => cancel.mutate()}
+        >
+          Cancel order
         </button>
       </div>
 
-      {errorMessage ? (
-        <p className={styles.formError} role="alert">
-          {errorMessage}
-        </p>
-      ) : null}
-
       <p className={styles.sheetNote}>
-        Оплата картой заработает после подключения платёжного провайдера. Сейчас доступно только
-        зачисление с внутреннего баланса аккаунта — оно попадает в историю операций наравне с
-        остальными.
-        {balance !== null ? (
-          <>
-            {" "}
-            Текущий баланс — <strong>{formatNumber(balance)} ★</strong>.
-          </>
-        ) : null}
+        The bot will send an invoice for {current.price_xtr} Telegram Stars. Once payment goes through, the stars
+        will appear here on their own — you can leave this window open.
       </p>
     </>
   );

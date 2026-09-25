@@ -45,11 +45,11 @@ export function PostEditSheet({
         queryClient.invalidateQueries({ queryKey: ["feed"] }),
         queryClient.invalidateQueries({ queryKey: ["post", post.id] })
       ]);
-      notify("Запись изменена", { variant: "success" });
+      notify("Post updated", { variant: "success" });
       onOpenChange(false);
     },
     onError: (error: Error) =>
-      notify("Не удалось изменить", { variant: "error", detail: error.message })
+      notify("Couldn't update", { variant: "error", detail: error.message })
   });
 
   const unchanged =
@@ -62,8 +62,8 @@ export function PostEditSheet({
     <BottomSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Редактировать запись"
-      description="Текст записи и ссылка под ней"
+      title="Edit post"
+      description="The post text and the link beneath it"
       footer={
         <button
           type="button"
@@ -71,23 +71,23 @@ export function PostEditSheet({
           disabled={save.isPending || !content.trim() || unchanged}
           onClick={() => save.mutate()}
         >
-          {save.isPending ? "Сохраняем…" : "Сохранить"}
+          {save.isPending ? "Saving…" : "Save"}
         </button>
       }
     >
       <div className="pb-2">
-        <h2 className="m-0 text-[19px] font-bold">Редактировать запись</h2>
+        <h2 className="m-0 text-[19px] font-bold">Edit post</h2>
         <p className="mb-4 mt-1 text-[13px] text-[var(--muted)]">
-          Лайки, комментарии и просмотры останутся на месте — рядом с датой появится «ред.».
+          Likes, comments, and views stay put — an &quot;edited&quot; note appears next to the date.
         </p>
 
         <label className="grid gap-1.5">
-          <span className="text-[0.95rem] font-bold">Текст</span>
+          <span className="text-[0.95rem] font-bold">Text</span>
           <textarea
             className="field min-h-32 resize-none px-4 py-3 text-[15px] leading-6"
             value={content}
             maxLength={4000}
-            aria-label="Текст записи"
+            aria-label="Post text"
             onChange={(event) => setContent(event.target.value)}
           />
         </label>
@@ -95,16 +95,16 @@ export function PostEditSheet({
         {post.image_urls?.length || post.video_url ? (
           <label className="mt-3 flex items-center gap-3 rounded-[16px] bg-[var(--surface-raised)] p-3">
             <span className="min-w-0 flex-1">
-              <span className="block text-[0.95rem] font-bold">Материалы 18+</span>
+              <span className="block text-[0.95rem] font-bold">18+ content</span>
               <span className="block text-[12px] leading-4 text-[var(--muted)]">
-                Вложения придут закрытыми — читатель решит, смотреть ли.
+                Attachments arrive hidden — the reader decides whether to look.
               </span>
             </span>
             <button
               type="button"
               role="switch"
               aria-checked={sensitive}
-              aria-label="Материалы 18+"
+              aria-label="18+ content"
               onClick={() => setSensitive((current) => !current)}
               className="relative h-6 w-11 flex-none rounded-full transition"
               style={{ background: sensitive ? "var(--stars)" : "rgba(255,255,255,.16)" }}
@@ -119,24 +119,24 @@ export function PostEditSheet({
         ) : null}
 
         <div className="mt-3 grid gap-2 rounded-[16px] bg-[var(--surface-raised)] p-3">
-          <span className="text-[0.95rem] font-bold">Ссылка под записью</span>
+          <span className="text-[0.95rem] font-bold">Link beneath the post</span>
           <span className="text-[12px] leading-4 text-[var(--muted)]">
-            Пустое поле убирает карточку. Открытие спросит подтверждение — как в ленте.
+            An empty field removes the card. Opening it asks for confirmation — just like in the feed.
           </span>
           <input
             className="field px-4"
             value={linkUrl}
             inputMode="url"
             placeholder="https://…"
-            aria-label="Ссылка записи"
+            aria-label="Post link"
             onChange={(event) => setLinkUrl(event.target.value)}
           />
           <input
             className="field px-4"
             value={linkTitle}
             maxLength={120}
-            placeholder="Подпись ссылки"
-            aria-label="Подпись ссылки"
+            placeholder="Link caption"
+            aria-label="Link caption"
             onChange={(event) => setLinkTitle(event.target.value)}
           />
         </div>

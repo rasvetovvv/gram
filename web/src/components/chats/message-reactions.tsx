@@ -17,7 +17,7 @@ export function useReaction(chatId: string, messageId: string) {
     mutationFn: (emoji: string) => api.toggleReaction(chatId, messageId, emoji),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["messages", chatId] }),
     onError: (error: Error) =>
-      notify("Не удалось поставить реакцию", { variant: "error", detail: error.message })
+      notify("Couldn't add reaction", { variant: "error", detail: error.message })
   });
 }
 
@@ -36,7 +36,7 @@ export function ReactionPicker({
           key={emoji}
           type="button"
           disabled={disabled}
-          aria-label={`Реакция ${emoji}`}
+          aria-label={`React with ${emoji}`}
           onClick={() => onPick(emoji)}
           className="grid size-9 place-items-center rounded-full border-0 bg-transparent text-[20px] leading-none transition hover:bg-white/[0.08] active:scale-90 disabled:opacity-50"
         >
@@ -69,7 +69,7 @@ export function ReactionChips({
           type="button"
           onClick={() => reaction.mutate(item.emoji)}
           disabled={reaction.isPending}
-          aria-label={`${item.mine ? "Убрать реакцию" : "Поставить реакцию"} ${item.emoji}`}
+          aria-label={`${item.mine ? "Remove reaction" : "Add reaction"} ${item.emoji}`}
           aria-pressed={item.mine}
           className="flex h-7 items-center gap-1 rounded-full border-0 px-1.5 text-[13px] transition active:scale-95 disabled:opacity-60"
           style={{

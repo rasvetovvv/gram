@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import type { Post } from "@/lib/types";
 import { compactNumber } from "@/lib/utils";
 import { BottomSheet } from "../ui/bottom-sheet";
+import { TopUpButton } from "../stars/top-up-button";
 import { useToast } from "../ui/toast";
 
 const PRESETS = [5, 25, 100, 500];
@@ -42,14 +43,14 @@ export function PostStarsSheet({
         queryClient.invalidateQueries({ queryKey: ["me"] }),
         queryClient.invalidateQueries({ queryKey: ["stars"] })
       ]);
-      notify(`Отправлено ${amount} ★`, {
+      notify(`Sent ${amount} ★`, {
         variant: "success",
-        detail: `@${post.author.username} узнает об этом`
+        detail: `@${post.author.username} will be notified`
       });
       onOpenChange(false);
     },
     onError: (error: Error) =>
-      notify("Не удалось отправить", { variant: "error", detail: error.message })
+      notify("Couldn't send", { variant: "error", detail: error.message })
   });
 
   const short = amount > balance;
@@ -57,23 +58,28 @@ export function PostStarsSheet({
     <BottomSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Поддержать звёздами"
-      description={`Публикация @${post.author.username}`}
+      title="Support with stars"
+      description={`Post by @${post.author.username}`}
       footer={
-        <button
-          type="button"
-          className="profile-primary-action w-full"
-          disabled={send.isPending || short || amount < 1}
-          onClick={() => send.mutate()}
-        >
-          {send.isPending ? "Отправляем…" : short ? "Недостаточно звёзд" : `Отправить ${amount} ★`}
-        </button>
+        short ? (
+          // An empty wallet has one honest answer, and it is the payment rather than a sentence.
+          <TopUpButton label="Top up stars" className="profile-primary-action w-full" />
+        ) : (
+          <button
+            type="button"
+            className="profile-primary-action w-full"
+            disabled={send.isPending || amount < 1}
+            onClick={() => send.mutate()}
+          >
+            {send.isPending ? "Sending…" : `Send ${amount} ★`}
+          </button>
+        )
       }
     >
       <div className="pb-2">
-        <h2 className="m-0 text-[19px] font-bold">Поддержать звёздами</h2>
+        <h2 className="m-0 text-[19px] font-bold">Support with stars</h2>
         <p className="mb-4 mt-1 text-[13px] text-[var(--muted)]">
-          Звёзды уйдут автору сразу. На балансе: {compactNumber(balance)} ★
+          Stars go to the author right away. Balance: {compactNumber(balance)} ★
         </p>
 
         <div className="flex flex-wrap gap-2">
@@ -97,26 +103,26 @@ export function PostStarsSheet({
         </div>
 
         <label className="mt-4 grid gap-1.5">
-          <span className="text-[0.95rem] font-bold">Сколько</span>
+          <span className="text-[0.95rem] font-bold">How many</span>
           <input
             className="field px-4"
             type="number"
             min={1}
             max={1_000_000}
             value={amount}
-            aria-label="Количество звёзд"
+            aria-label="Number of stars"
             onChange={(event) => setAmount(Math.max(0, Number(event.target.value) || 0))}
           />
         </label>
 
         <label className="mt-3 grid gap-1.5">
-          <span className="text-[0.95rem] font-bold">Сообщение</span>
+          <span className="text-[0.95rem] font-bold">Message</span>
           <input
             className="field px-4"
             value={message}
             maxLength={160}
-            placeholder="Необязательно"
-            aria-label="Сообщение к переводу"
+            placeholder="Optional"
+            aria-label="Message with your transfer"
             onChange={(event) => setMessage(event.target.value)}
           />
         </label>

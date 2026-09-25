@@ -92,20 +92,20 @@ function ForwardBody({
       ]);
       notify(result.detail, {
         variant: "success",
-        detail: picked.length > 1 ? `Чатов: ${picked.length}` : undefined
+        detail: picked.length > 1 ? `Chats: ${picked.length}` : undefined
       });
       onDone();
       onClose();
     },
     onError: (error: Error) =>
-      notify("Не удалось переслать", { variant: "error", detail: error.message })
+      notify("Couldn't forward", { variant: "error", detail: error.message })
   });
 
   return (
     <motion.div
       role="dialog"
       aria-modal="true"
-      aria-label="Переслать"
+      aria-label="Forward"
       initial={reduceMotion ? undefined : { opacity: 0, y: 24 }}
       animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
       exit={reduceMotion ? undefined : { opacity: 0, y: 24 }}
@@ -116,15 +116,15 @@ function ForwardBody({
         <button
           type="button"
           onClick={onClose}
-          aria-label="Назад"
+          aria-label="Back"
           className="inline-flex size-10 items-center justify-center rounded-full transition active:bg-white/10"
         >
           <ArrowLeft size={24} />
         </button>
         <h2 className="m-0 flex-1 text-[18px] font-medium">
-          Переслать
+          Forward
           <span className="ml-2 text-[13px] text-[var(--muted)]">
-            {messageIds.length === 1 ? "1 сообщение" : `${messageIds.length} сообщений`}
+            {messageIds.length === 1 ? "1 message" : `${messageIds.length} messages`}
           </span>
         </h2>
         <button
@@ -134,7 +134,7 @@ function ForwardBody({
           className="h-9 rounded-full px-4 text-[15px] font-medium transition disabled:opacity-50"
           style={picked.length ? { background: PICK_ACCENT, color: "#fff" } : { color: "var(--muted)" }}
         >
-          Отправить
+          Send
         </button>
       </div>
 
@@ -145,8 +145,8 @@ function ForwardBody({
             autoFocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Куда переслать"
-            aria-label="Куда переслать"
+            placeholder="Forward to"
+            aria-label="Forward to"
             className="min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-[var(--muted)]"
           />
         </div>
@@ -155,7 +155,7 @@ function ForwardBody({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {options.length ? null : (
           <p className="m-0 px-3 py-4 text-center text-[13px] text-[var(--muted)]">
-            {needle ? "Ничего не нашли" : "Пока нет чатов"}
+            {needle ? "Nothing found" : "No chats yet"}
           </p>
         )}
         {options.map((chat) => {
@@ -181,9 +181,9 @@ function ForwardBody({
                 </span>
                 <span className="block truncate text-[13px] text-[var(--muted)]">
                   {chat.is_group
-                    ? `${chat.members_count ?? 0} участника`
+                    ? `${chat.members_count ?? 0} members`
                     : chat.id === fromChatId
-                      ? "этот чат"
+                      ? "this chat"
                       : `@${chat.participant?.username ?? ""}`}
                 </span>
               </span>
@@ -211,7 +211,7 @@ function ChatFace({ chat }: { chat: Chat }) {
     return (
       <UserAvatar
         src={chat.avatar_url}
-        name={chat.title ?? "Чат"}
+        name={chat.title ?? "Chat"}
         size={44}
         radius={chat.kind === "saved" ? "50%" : "12px"}
       />

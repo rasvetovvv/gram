@@ -13,7 +13,7 @@ export default async function GiftsPage({
   searchParams: Promise<{ to?: string }>;
 }) {
   const { to } = await searchParams;
-  // `?to=` arrives from "Отправить подарок" in a profile header.
+  // `?to=` arrives from "Send a gift" in a profile header.
   const recipient = to ? to.trim().replace(/^@+/, "").toLowerCase() : "";
   redirect(recipient ? `/?gifts=1&to=${encodeURIComponent(recipient)}` : "/?gifts=1");
 }

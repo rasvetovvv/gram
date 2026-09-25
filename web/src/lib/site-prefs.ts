@@ -7,7 +7,15 @@
  * default first and every component can react through plain CSS rather than through props.
  */
 export type ChatAccent = "violet" | "blue" | "teal" | "green" | "rose" | "orange" | "purple";
-export type ChatWallpaper = "aurora" | "dusk" | "forest" | "ink" | "plain";
+export type ChatWallpaper =
+  | "aurora"
+  | "dusk"
+  | "forest"
+  | "ink"
+  | "plain"
+  | "midnight"
+  | "neon"
+  | "constellation";
 export type SiteTheme = "dark";
 
 export type SitePrefs = {
@@ -27,37 +35,60 @@ export const DEFAULT_PREFS: SitePrefs = {
 /**
  * Accent options, each carrying the outgoing-bubble colour it produces.
  *
- * The set and its order follow the reference's «Цвет» row, with the brand colour in the lead
+ * The set and its order follow the reference's «Color» row, with the brand color in the lead
  * position it holds there.
  */
 export const CHAT_ACCENTS: { value: ChatAccent; label: string; color: string }[] = [
   { value: "violet", label: "GRAM", color: "#6d5fc4" },
-  { value: "blue", label: "Синий", color: "#2f80ed" },
-  { value: "teal", label: "Бирюзовый", color: "#12a594" },
-  { value: "green", label: "Зелёный", color: "#1f9d63" },
-  { value: "rose", label: "Розовый", color: "#c2447c" },
-  { value: "orange", label: "Оранжевый", color: "#d97706" },
-  { value: "purple", label: "Фиолетовый", color: "#8b5cf6" }
+  { value: "blue", label: "Blue", color: "#2f80ed" },
+  { value: "teal", label: "Teal", color: "#12a594" },
+  { value: "green", label: "Green", color: "#1f9d63" },
+  { value: "rose", label: "Rose", color: "#c2447c" },
+  { value: "orange", label: "Orange", color: "#d97706" },
+  { value: "purple", label: "Purple", color: "#8b5cf6" }
 ];
 
-export const CHAT_WALLPAPERS: { value: ChatWallpaper; label: string; preview: string }[] = [
+export const CHAT_WALLPAPERS: {
+  value: ChatWallpaper;
+  label: string;
+  preview: string;
+  premium?: boolean;
+}[] = [
   {
     value: "aurora",
-    label: "Аврора",
+    label: "Aurora",
     preview: "linear-gradient(160deg,#7a5cc4 0%,#8f5fbd 38%,#c86fa8 72%,#e08aa0 100%)"
   },
   {
     value: "dusk",
-    label: "Сумерки",
+    label: "Dusk",
     preview: "linear-gradient(160deg,#2b3d6b 0%,#3f4f86 45%,#6a5a9b 100%)"
   },
   {
     value: "forest",
-    label: "Лес",
+    label: "Forest",
     preview: "linear-gradient(160deg,#1d4d3f 0%,#2f6b4f 45%,#5d8f5a 100%)"
   },
-  { value: "ink", label: "Чернила", preview: "linear-gradient(160deg,#191a20 0%,#25262f 100%)" },
-  { value: "plain", label: "Без фона", preview: "var(--canvas)" }
+  { value: "ink", label: "Ink", preview: "linear-gradient(160deg,#191a20 0%,#25262f 100%)" },
+  { value: "plain", label: "No wallpaper", preview: "var(--canvas)" },
+  {
+    value: "midnight",
+    label: "Midnight",
+    preview: "radial-gradient(circle at 22% 15%,#214b78 0%,transparent 38%),linear-gradient(155deg,#07111e,#111a31 62%,#241c3b)",
+    premium: true
+  },
+  {
+    value: "neon",
+    label: "Neon",
+    preview: "radial-gradient(circle at 78% 18%,#16b8b1 0%,transparent 30%),radial-gradient(circle at 18% 82%,#8c3cff 0%,transparent 38%),#0c0b18",
+    premium: true
+  },
+  {
+    value: "constellation",
+    label: "Constellation",
+    preview: "radial-gradient(circle at 28% 24%,#c4d9ff 0 1px,transparent 2px),radial-gradient(circle at 72% 68%,#ad8cff 0 1px,transparent 2px),linear-gradient(160deg,#080d1b,#19122e)",
+    premium: true
+  }
 ];
 
 let snapshot: SitePrefs | null = null;

@@ -83,7 +83,7 @@ export function AccountSwitcher({ variant }: { variant: "login" | "app" }) {
   return (
     <div className={styles.accountList}>
       {variant === "login" ? (
-        <p className={styles.accountHint}>Аккаунты на этом устройстве</p>
+        <p className={styles.accountHint}>Accounts on this device</p>
       ) : null}
 
       {variant === "app" && active ? (
@@ -97,7 +97,7 @@ export function AccountSwitcher({ variant }: { variant: "login" | "app" }) {
             />
             <span className={styles.accountMeta}>
               <span className={styles.accountName}>{active.user.display_name}</span>
-              <span className={styles.accountHandle}>@{active.user.username} · сейчас</span>
+              <span className={styles.accountHandle}>@{active.user.username} · now</span>
             </span>
           </span>
           <span className={styles.accountCheck} aria-hidden>
@@ -124,14 +124,14 @@ export function AccountSwitcher({ variant }: { variant: "login" | "app" }) {
               <span className={styles.accountName}>{slot.user.display_name}</span>
               <span className={styles.accountHandle}>
                 @{slot.user.username}
-                {slot.active ? " · сейчас" : ""}
+                {slot.active ? " · now" : ""}
               </span>
             </span>
           </button>
           <button
             type="button"
             className={styles.accountForget}
-            aria-label={`Выйти из @${slot.user.username} на этом устройстве`}
+            aria-label={`Sign out of @${slot.user.username} on this device`}
             disabled={busy}
             onClick={() => drop.mutate(slot.user.id)}
           >
@@ -157,13 +157,13 @@ export function AccountSwitcher({ variant }: { variant: "login" | "app" }) {
             />
             <span className={styles.accountMeta}>
               <span className={styles.accountName}>{account.display_name}</span>
-              <span className={styles.accountHandle}>@{account.username} · нужен пароль</span>
+              <span className={styles.accountHandle}>@{account.username} · password needed</span>
             </span>
           </button>
           <button
             type="button"
             className={styles.accountForget}
-            aria-label={`Убрать @${account.username} из списка`}
+            aria-label={`Remove @${account.username} from the list`}
             onClick={() => {
               forgetAccount(account.id);
               refresh();
@@ -193,7 +193,7 @@ export function AccountSwitcher({ variant }: { variant: "login" | "app" }) {
         <span className={styles.accountAddIcon}>
           <Plus size={18} />
         </span>
-        Добавить аккаунт
+        Add account
       </button>
     </div>
   );

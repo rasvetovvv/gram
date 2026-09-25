@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   CalendarDays,
   Check,
+  Download,
   Gift,
   Image as ImageIcon,
   Link2,
@@ -21,8 +22,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { API_URL, api } from "@/lib/api";
 import type { Chat, User } from "@/lib/types";
 import { nameColor } from "@/lib/profile-color";
 import { UserAvatar } from "../user-avatar";
@@ -30,10 +31,16 @@ import { PremiumMarkExplained } from "../premium-mark";
 import { VerifiedMark, VerifiedMarkExplained } from "../verified-mark";
 import { GiftImage, giftArtProps } from "../gifts/gift-image";
 import { ConfirmDialog } from "../ui/confirm-dialog";
+import { MediaViewer } from "../ui/media-viewer";
 import { useToast } from "../ui/toast";
+import { GroupAccessBlock } from "./group-access-block";
 import { PeoplePicker } from "./people-picker";
+import { VideoBadge, readableSize } from "./message-attachments";
 
 type Tab = "gifts" | "media" | "links" | "files";
+
+/** One formatter for every shelf row, built once rather than per render. */
+const SHARED_AT = new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short" });
 
 /**
  * The panel behind the conversation header, reached by tapping the title — the reference's
@@ -117,10 +124,10 @@ export function ChatInfoPanel({
     onSuccess: async () => {
       setView({ renaming: false });
       await refresh();
-      notify("Название обновлено", { variant: "success" });
+      notify("Name updated", { variant: "success" });
     },
     onError: (error: Error) =>
-      notify("Не удалось переименовать", { variant: "error", detail: error.message })
+      notify("Couldn't rename", { variant: "error", detail: error.message })
   });
 
   const addMembers = useMutation({
@@ -128,22 +135,22 @@ export function ChatInfoPanel({
     onSuccess: async (_chat, users) => {
       setAdding(false);
       await refresh();
-      notify(users.length === 1 ? "Участник добавлен" : "Участники добавлены", {
+      notify(users.length === 1 ? "Member added" : "Members added", {
         variant: "success"
       });
     },
     onError: (error: Error) =>
-      notify("Не удалось добавить", { variant: "error", detail: error.message })
+      notify("Couldn't add", { variant: "error", detail: error.message })
   });
 
   const kick = useMutation({
     mutationFn: (username: string) => api.removeGroupMember(chat.id, username),
     onSuccess: async (_result, username) => {
       await refresh();
-      notify(`@${username} удалён(а) из группы`, { variant: "success" });
+      notify(`@${username} removed from the group`, { variant: "success" });
     },
     onError: (error: Error) =>
-      notify("Не удалось удалить участника", { variant: "error", detail: error.message })
+      notify("Couldn't remove member", { variant: "error", detail: error.message })
   });
 
   const leave = useMutation({
@@ -153,9 +160,9 @@ export function ChatInfoPanel({
       onClose();
       await refresh();
       router.push("/chats");
-      notify("Вы вышли из группы", { variant: "success" });
+      notify("You left the group", { variant: "success" });
     },
-    onError: (error: Error) => notify("Не получилось", { variant: "error", detail: error.message })
+    onError: (error: Error) => notify("Something went wrong", { variant: "error", detail: error.message })
   });
 
   const iAmOwner = (info.data?.members ?? []).some(
@@ -163,16 +170,51 @@ export function ChatInfoPanel({
   );
   const peer = chat.participant;
   const subtitle = isGroup
-    ? `${chat.members_count ?? info.data?.members.length ?? 0} участника`
+    ? `${chat.members_count ?? info.data?.members.length ?? 0} members`
     : chat.kind === "saved"
-      ? "только для вас"
+      ? "just for you"
       : peer?.is_official
-        ? (peer.role_title ?? "служебные уведомления").toLowerCase()
+        ? (peer.role_title ?? "service notifications").toLowerCase()
         : peer?.is_online
-          ? "в сети"
+          ? "online"
           : `@${peer?.username ?? ""}`;
   const gifts = info.data?.gifts ?? [];
   const links = info.data?.links ?? [];
+  const files = info.data?.files ?? [];
+
+  /**
+   * Pictures and clips shared here, and which of them the full-screen viewer is showing.
+   *
+   * `media` is memoised rather than defaulted inline: `?? []` builds a new array on every render,
+   * which would rebuild the viewer's item list on every render too.
+   */
+  const media = useMemo(() => info.data?.media ?? [], [info.data?.media]);
+  const [viewer, setViewer] = useState<number | null>(null);
+  const viewerItems = useMemo(
+    () =>
+      media.map((item) => ({
+        url: item.url,
+        kind: item.kind === "video" ? ("video" as const) : ("image" as const),
+        caption: `${item.sender_name} · ${SHARED_AT.format(new Date(item.created_at))}`
+      })),
+    [media]
+  );
+
+  /**
+   * Close the panel and put the message on screen.
+   *
+   * A shelf that only shows *what* was shared is half an answer; the other half is where it sits
+   * in the conversation. The row has to be scrolled to after the panel's exit animation has
+   * released the layout, hence the frame's delay.
+   */
+  function jumpTo(messageId: string) {
+    onClose();
+    setTimeout(() => {
+      document
+        .getElementById(`message-${messageId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 220);
+  }
 
   return (
     <>
@@ -181,7 +223,7 @@ export function ChatInfoPanel({
           <motion.div
             role="dialog"
             aria-modal="true"
-            aria-label="О чате"
+            aria-label="About chat"
             initial={reduceMotion ? undefined : { opacity: 0, x: 28 }}
             animate={reduceMotion ? undefined : { opacity: 1, x: 0 }}
             exit={reduceMotion ? undefined : { opacity: 0, x: 28 }}
@@ -191,19 +233,19 @@ export function ChatInfoPanel({
             <div className="flex flex-none items-center gap-2 border-b border-[var(--sheet-line)] px-2 py-3">
               <button
                 type="button"
-                aria-label="Назад"
+                aria-label="Back"
                 onClick={onClose}
                 className="inline-flex size-10 items-center justify-center rounded-full transition active:bg-white/10"
               >
                 <ArrowLeft size={24} />
               </button>
               <h2 className="m-0 flex-1 text-[18px] font-medium">
-                {isGroup ? "О группе" : "О чате"}
+                {isGroup ? "About group" : "About chat"}
               </h2>
               {isGroup ? (
                 <button
                   type="button"
-                  aria-label="Добавить участников"
+                  aria-label="Add members"
                   onClick={() => setAdding(true)}
                   className="inline-flex size-10 items-center justify-center rounded-full transition active:bg-white/10"
                 >
@@ -217,7 +259,7 @@ export function ChatInfoPanel({
                 {isGroup || !peer ? (
                   <UserAvatar
                     src={chat.avatar_url}
-                    name={chat.title ?? "Чат"}
+                    name={chat.title ?? "Chat"}
                     size={96}
                     radius="28px"
                   />
@@ -236,12 +278,12 @@ export function ChatInfoPanel({
                       value={draftTitle}
                       maxLength={100}
                       onChange={(event) => setView({ draftTitle: event.target.value })}
-                      aria-label="Название группы"
+                      aria-label="Group name"
                       className="min-w-0 flex-1 border-0 border-b border-[var(--sheet-line)] bg-transparent pb-1.5 text-center text-[19px] font-bold outline-none"
                     />
                     <button
                       type="button"
-                      aria-label="Сохранить название"
+                      aria-label="Save name"
                       disabled={!draftTitle.trim() || rename.isPending}
                       onClick={() => rename.mutate()}
                       className="inline-flex size-9 items-center justify-center rounded-full text-white disabled:opacity-50"
@@ -251,7 +293,7 @@ export function ChatInfoPanel({
                     </button>
                     <button
                       type="button"
-                      aria-label="Отменить"
+                      aria-label="Cancel"
                       onClick={() => {
                         setView({ renaming: false, draftTitle: chat.title ?? "" });
                       }}
@@ -265,10 +307,10 @@ export function ChatInfoPanel({
                     type="button"
                     // A group's name is edited by tapping it, as in the reference.
                     onClick={() => setView({ renaming: true })}
-                    aria-label="Переименовать группу"
+                    aria-label="Rename group"
                     className="flex items-center gap-2 border-0 bg-transparent p-0 text-[19px] font-bold"
                   >
-                    {chat.title ?? "Группа"}
+                    {chat.title ?? "Group"}
                     <Pencil size={15} className="text-[var(--muted)]" />
                   </button>
                 ) : (
@@ -282,7 +324,7 @@ export function ChatInfoPanel({
                     {peer?.verified ? (
                       <VerifiedMarkExplained
                         name={peer.display_name}
-                        label="Личность подтверждена GRAM"
+                        label="Identity verified by GRAM"
                         size={17}
                       />
                     ) : null}
@@ -298,7 +340,7 @@ export function ChatInfoPanel({
                 <p className="m-0 text-[13px] text-[var(--muted)]">{subtitle}</p>
                 {chat.kind === "secret" ? (
                   <p className="m-0 text-[12px] text-emerald-400/80">
-                    Секретный чат — переписка помечена и скрыта от общего поиска
+                    Secret chat — the conversation is flagged and hidden from general search
                   </p>
                 ) : null}
               </div>
@@ -310,7 +352,7 @@ export function ChatInfoPanel({
                     className="flex min-w-[86px] flex-col items-center gap-1.5 rounded-[16px] bg-white/[0.06] px-4 py-3 text-[12px] text-[var(--muted)] transition active:scale-95"
                   >
                     <MessageSquare size={20} className="text-[var(--ink)]" />
-                    Профиль
+                    Profile
                   </Link>
                 ) : null}
                 {!isGroup && peer ? (
@@ -323,7 +365,7 @@ export function ChatInfoPanel({
                     className="flex min-w-[86px] flex-col items-center gap-1.5 rounded-[16px] bg-white/[0.06] px-4 py-3 text-[12px] text-[var(--muted)] transition active:scale-95"
                   >
                     <Gift size={20} className="text-[var(--ink)]" />
-                    Подарок
+                    Gift
                   </button>
                 ) : null}
                 {isGroup ? (
@@ -333,7 +375,7 @@ export function ChatInfoPanel({
                     className="flex min-w-[86px] flex-col items-center gap-1.5 rounded-[16px] bg-white/[0.06] px-4 py-3 text-[12px] text-[var(--danger)] transition active:scale-95"
                   >
                     <LogOut size={20} />
-                    Выйти
+                    Leave
                   </button>
                 ) : null}
               </div>
@@ -342,10 +384,12 @@ export function ChatInfoPanel({
                 <PeerAbout profile={peerProfile.data} peer={peer} loading={peerProfile.isLoading} />
               ) : null}
 
+              {isGroup ? <GroupAccessBlock chat={chat} /> : null}
+
               {isGroup ? (
                 <section className="mb-6">
                   <h3 className="m-0 px-4 pb-2 text-[13px] font-semibold uppercase tracking-[.06em] text-[var(--faint)]">
-                    Участники
+                    Members
                   </h3>
                   {(info.data?.members ?? []).map((entry) => (
                     <div key={entry.user.id} className="flex items-center gap-3 px-4 py-2">
@@ -371,7 +415,7 @@ export function ChatInfoPanel({
                       </Link>
                       {entry.is_owner ? (
                         <span className="flex-none rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] text-[var(--muted)]">
-                          владелец
+                          owner
                         </span>
                       ) : null}
                       {/* Only the owner can remove someone, and never themselves — leaving
@@ -379,7 +423,7 @@ export function ChatInfoPanel({
                       {iAmOwner && entry.user.id !== me?.id ? (
                         <button
                           type="button"
-                          aria-label={`Удалить ${entry.user.display_name} из группы`}
+                          aria-label={`Remove ${entry.user.display_name} from the group`}
                           onClick={() => setPendingKick(entry.user.username)}
                           disabled={kick.isPending}
                           className="grid size-9 flex-none place-items-center rounded-full text-[var(--muted)] transition hover:bg-white/[0.06] hover:text-[var(--danger)]"
@@ -394,16 +438,16 @@ export function ChatInfoPanel({
 
               <div
                 role="tablist"
-                aria-label="Общие материалы"
+                aria-label="Shared content"
                 className="mx-4 mb-4 flex gap-1 rounded-[16px] bg-white/[0.04] p-1"
               >
                 {(
                   [
                     // Gifts are collectibles, not attachments, so they get their own shelf.
-                    ["gifts", `Подарки${gifts.length ? ` · ${gifts.length}` : ""}`],
-                    ["media", "Медиа"],
-                    ["links", `Ссылки${links.length ? ` · ${links.length}` : ""}`],
-                    ["files", "Файлы"]
+                    ["gifts", `Gifts${gifts.length ? ` · ${gifts.length}` : ""}`],
+                    ["media", `Media${media.length ? ` · ${media.length}` : ""}`],
+                    ["links", `Links${links.length ? ` · ${links.length}` : ""}`],
+                    ["files", `Files${files.length ? ` · ${files.length}` : ""}`]
                   ] as const
                 ).map(([key, label]) => (
                   <button
@@ -411,7 +455,9 @@ export function ChatInfoPanel({
                     role="tab"
                     aria-selected={tab === key}
                     onClick={() => setView({ tab: key })}
-                    className="flex-1 rounded-[13px] py-2 text-[13px] font-semibold transition"
+                    /* 44px tall: these were 33px, which is under the smallest target a thumb hits
+                       reliably — and they are the only way into the media shelf. */
+                    className="min-h-11 flex-1 rounded-[13px] px-1 text-[13px] font-semibold transition"
                     style={
                       tab === key
                         ? { background: "rgba(109,95,196,.22)", color: "var(--identity)" }
@@ -442,15 +488,69 @@ export function ChatInfoPanel({
                     ))}
                   </div>
                 ) : (
-                  <Empty icon={<Gift size={22} />} text="Подарков в этом чате пока нет" />
+                  <Empty icon={<Gift size={22} />} text="No gifts in this chat yet" />
                 )
               ) : null}
 
               {tab === "media" ? (
-                <Empty
-                  icon={<ImageIcon size={22} />}
-                  text="Фото и видео появятся в следующем обновлении"
-                />
+                media.length ? (
+                  /* A square grid, newest first. Tapping a tile opens the full-screen viewer and
+                     swipes through the whole shelf; the long-press-style "where was this sent"
+                     answer moved to its own button, because opening the picture is what everybody
+                     actually wants from a gallery tile. */
+                  <div className="grid grid-cols-3 gap-1.5 px-4">
+                    {media.map((item, position) => (
+                      <span
+                        key={`${item.message_id}-${item.url}`}
+                        className="relative block aspect-square overflow-hidden rounded-[12px] bg-white/[0.04]"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setViewer(position)}
+                          title={`${item.sender_name} · ${SHARED_AT.format(new Date(item.created_at))}`}
+                          aria-label={`Open ${item.kind === "video" ? "video" : "photo"} from ${item.sender_name}`}
+                          className="block size-full transition active:scale-95"
+                        >
+                          {item.kind === "video" ? (
+                            /* A clip has no separate poster, so the element itself supplies the
+                               first frame; `metadata` fetches just enough for that, and a user's
+                               upload carries no caption track. */
+                            <video
+                              src={`${item.url}#t=0.1`}
+                              preload="metadata"
+                              muted
+                              playsInline
+                              tabIndex={-1}
+                              className="size-full object-cover"
+                            />
+                          ) : (
+                            /* eslint-disable-next-line @next/next/no-img-element -- served from the API's own /media, not the Next image pipeline */
+                            <img
+                              src={item.url}
+                              alt=""
+                              loading="lazy"
+                              className="size-full object-cover"
+                            />
+                          )}
+                          {item.kind === "video" ? <VideoBadge /> : null}
+                        </button>
+                        {/* Straight to the message it came from — a 28px target in the corner,
+                            which is reachable on a phone where a long-press is not discoverable. */}
+                        <button
+                          type="button"
+                          onClick={() => jumpTo(item.message_id)}
+                          aria-label="Show in conversation"
+                          title="Show in conversation"
+                          className="absolute right-1 top-1 grid size-7 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm transition active:scale-90"
+                        >
+                          <MessageSquare size={13} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty icon={<ImageIcon size={22} />} text="No photos or videos shared yet" />
+                )
               ) : null}
 
               {tab === "links" ? (
@@ -480,15 +580,41 @@ export function ChatInfoPanel({
                     ))}
                   </ul>
                 ) : (
-                  <Empty icon={<Link2 size={22} />} text="Ссылок пока нет" />
+                  <Empty icon={<Link2 size={22} />} text="No links yet" />
                 )
               ) : null}
 
               {tab === "files" ? (
-                <Empty
-                  icon={<Paperclip size={22} />}
-                  text="Вложения появятся в следующем обновлении"
-                />
+                files.length ? (
+                  <ul className="m-0 list-none space-y-1 px-4">
+                    {files.map((item) => (
+                      <li key={`${item.message_id}-${item.url}`}>
+                        <a
+                          href={item.url.startsWith("http") ? item.url : `${API_URL}${item.url}`}
+                          download={item.name ?? "File"}
+                          className="flex items-center gap-3 rounded-[14px] px-2 py-2.5 transition hover:bg-white/[0.04]"
+                        >
+                          <span className="grid size-10 flex-none place-items-center rounded-[12px] bg-white/[0.06] text-[var(--primary-strong)]">
+                            <Paperclip size={18} />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[14px] font-semibold">
+                              {item.name ?? "File"}
+                            </span>
+                            <span className="block truncate text-[12px] text-[var(--muted)]">
+                              {item.sender_name}
+                              {typeof item.size === "number" ? ` · ${readableSize(item.size)}` : ""}
+                              {` · ${SHARED_AT.format(new Date(item.created_at))}`}
+                            </span>
+                          </span>
+                          <Download size={16} className="flex-none text-[var(--muted)]" />
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <Empty icon={<Paperclip size={22} />} text="No files yet" />
+                )
               ) : null}
             </div>
           </motion.div>
@@ -498,10 +624,10 @@ export function ChatInfoPanel({
       <PeoplePicker
         open={adding}
         onClose={() => setAdding(false)}
-        title="Добавить участников"
+        title="Add members"
         mode="multi"
-        placeholder="Кого добавить"
-        actionLabel="Добавить"
+        placeholder="Who to add"
+        actionLabel="Add"
         pending={addMembers.isPending}
         excludeIds={(info.data?.members ?? []).map((entry) => entry.user.id)}
         onSubmit={(users) => addMembers.mutate(users)}
@@ -509,9 +635,9 @@ export function ChatInfoPanel({
       <ConfirmDialog
         open={Boolean(pendingKick)}
         onOpenChange={(next) => (next ? undefined : setPendingKick(null))}
-        title="Удалить участника?"
-        description={`@${pendingKick ?? ""} потеряет доступ к «${chat.title ?? "группе"}». Вернуть его можно только новым приглашением.`}
-        confirmLabel={kick.isPending ? "Удаляем…" : "Удалить"}
+        title="Remove member?"
+        description={`@${pendingKick ?? ""} will lose access to “${chat.title ?? "the group"}”. You can only bring them back with a new invitation.`}
+        confirmLabel={kick.isPending ? "Removing…" : "Remove"}
         error={kick.error?.message}
         pending={kick.isPending}
         onConfirm={() => {
@@ -521,12 +647,20 @@ export function ChatInfoPanel({
       <ConfirmDialog
         open={confirmLeave}
         onOpenChange={setConfirmLeave}
-        title="Выйти из группы?"
-        description={`Вы перестанете получать сообщения из «${chat.title ?? "группы"}». Вернуться сможете только по приглашению.`}
-        confirmLabel={leave.isPending ? "Выходим…" : "Выйти"}
+        title="Leave group?"
+        description={`You'll stop receiving messages from “${chat.title ?? "the group"}”. You can only return by invitation.`}
+        confirmLabel={leave.isPending ? "Leaving…" : "Leave"}
         error={leave.error?.message}
         pending={leave.isPending}
         onConfirm={() => leave.mutate()}
+      />
+      {/* Outside the panel's own `AnimatePresence`: the viewer must survive the panel closing
+          behind it, and it draws over everything anyway. */}
+      <MediaViewer
+        items={viewerItems}
+        index={viewer}
+        onClose={() => setViewer(null)}
+        onIndex={setViewer}
       />
     </>
   );
@@ -560,13 +694,13 @@ function PeerAbout({
   const person = profile ?? peer;
   const rows: { key: string; icon: React.ReactNode; label: string; value: React.ReactNode }[] = [];
   if (person.location) {
-    rows.push({ key: "city", icon: <MapPin size={17} />, label: "Город", value: person.location });
+    rows.push({ key: "city", icon: <MapPin size={17} />, label: "City", value: person.location });
   }
   if (person.website_url) {
     rows.push({
       key: "site",
       icon: <Link2 size={17} />,
-      label: "Ссылка",
+      label: "Link",
       value: (
         <a
           href={person.website_url.startsWith("http") ? person.website_url : `https://${person.website_url}`}
@@ -583,8 +717,8 @@ function PeerAbout({
     rows.push({
       key: "joined",
       icon: <CalendarDays size={17} />,
-      label: "В GRAM с",
-      value: new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(
+      label: "On GRAM since",
+      value: new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(
         new Date(person.joined_at)
       )
     });
@@ -593,8 +727,8 @@ function PeerAbout({
     rows.push({
       key: "followers",
       icon: <Users size={17} />,
-      label: "Подписчики",
-      value: `${person.followers_count} · ${person.following_count ?? 0} подписок`
+      label: "Followers",
+      value: `${person.followers_count} · ${person.following_count ?? 0} following`
     });
   }
 
@@ -605,7 +739,7 @@ function PeerAbout({
   return (
     <section className="mb-6 px-4">
       <h3 className="m-0 pb-2 text-[13px] font-semibold uppercase tracking-[.06em] text-[var(--faint)]">
-        О пользователе
+        About
       </h3>
       <div className="rounded-[16px] bg-white/[0.04] px-3.5 py-3">
         {bio ? (

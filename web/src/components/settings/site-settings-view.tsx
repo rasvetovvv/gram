@@ -1,6 +1,7 @@
 "use client";
 
-import { Check, MessageCircle, Moon, Palette, Sparkles, Sun } from "lucide-react";
+import { BookOpen, Check, FileWarning, MessageCircle, Moon, Palette, Sparkles, Sun } from "lucide-react";
+import Link from "next/link";
 import { useSyncExternalStore } from "react";
 import {
   CHAT_ACCENTS,
@@ -14,7 +15,7 @@ import {
 } from "@/lib/site-prefs";
 
 /**
- * «Настройки сайта»: how the interface looks, as opposed to who you are.
+ * Site settings: how the interface looks, as opposed to who you are.
  *
  * Only choices that actually change something are offered. A light theme would mean auditing
  * every colour token, so the control says so instead of shipping a half-inverted screen.
@@ -30,14 +31,14 @@ export function SiteSettingsView() {
   return (
     <>
       <div className="mobile-topbar">
-        <span className="wordmark">ОФОРМЛЕНИЕ</span>
+        <span className="wordmark">APPEARANCE</span>
         <Palette size={20} />
       </div>
 
       <header className="channel-header">
         <div>
-          <h1 className="channel-title">Настройки сайта</h1>
-          <p className="channel-subtitle">Тема, цвет чатов и фон переписки</p>
+          <h1 className="channel-title">Site settings</h1>
+          <p className="channel-subtitle">Theme, chat color and conversation wallpaper</p>
         </div>
       </header>
 
@@ -45,11 +46,11 @@ export function SiteSettingsView() {
         <section className="surface p-4">
           <h2 className="m-0 flex items-center gap-2 text-base font-bold">
             <Moon size={17} className="text-[var(--primary-strong)]" />
-            Тема
+            Theme
           </h2>
           <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
-            GRAM пока только тёмный. Светлая тема требует пересборки всей палитры — пока её нет,
-            переключатель об этом говорит честно.
+            GRAM is dark-only for now. A light theme would mean rebuilding the entire palette — until
+            it exists, the toggle says so honestly.
           </p>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <button
@@ -59,17 +60,17 @@ export function SiteSettingsView() {
               style={{ background: "rgba(109,95,196,.22)", color: "var(--identity)" }}
             >
               <Moon size={16} />
-              Тёмная
+              Dark
               <Check size={15} />
             </button>
             <button
               type="button"
               disabled
-              title="Появится в следующем обновлении"
+              title="Coming in the next update"
               className="flex min-h-12 items-center justify-center gap-2 rounded-[14px] bg-[var(--surface-raised)] text-sm font-semibold text-[var(--dim)]"
             >
               <Sun size={16} />
-              Светлая — скоро
+              Light — soon
             </button>
           </div>
         </section>
@@ -77,10 +78,10 @@ export function SiteSettingsView() {
         <section className="surface p-4">
           <h2 className="m-0 flex items-center gap-2 text-base font-bold">
             <MessageCircle size={17} className="text-[var(--primary-strong)]" />
-            Цвет чатов
+            Chat color
           </h2>
           <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
-            Красит ваши сообщения, кнопку отправки и «Новый чат».
+            Colors your messages, the send button and &quot;New chat&quot;.
           </p>
           <div className="mt-3 flex flex-wrap gap-2.5">
             {CHAT_ACCENTS.map((accent) => {
@@ -110,7 +111,7 @@ export function SiteSettingsView() {
               className="max-w-[80%] rounded-[15px] rounded-br-[5px] px-2 pb-[5px] pt-1 text-[15px] text-white"
               style={{ background: "var(--chat-accent, var(--primary))" }}
             >
-              Так выглядят ваши сообщения
+              This is how your messages look
             </span>
           </div>
         </section>
@@ -118,10 +119,10 @@ export function SiteSettingsView() {
         <section className="surface p-4">
           <h2 className="m-0 flex items-center gap-2 text-base font-bold">
             <Sparkles size={17} className="text-[var(--primary-strong)]" />
-            Фон чата
+            Chat wallpaper
           </h2>
           <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
-            Обои под перепиской и узор поверх них.
+            The wallpaper behind your conversation, and the pattern over it.
           </p>
           <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-5">
             {CHAT_WALLPAPERS.map((paper) => {
@@ -145,7 +146,7 @@ export function SiteSettingsView() {
             })}
           </div>
           <label className="mt-4 flex min-h-12 items-center justify-between gap-3 rounded-[14px] bg-[var(--surface-raised)] px-3">
-            <span className="text-sm font-semibold">Узор поверх фона</span>
+            <span className="text-sm font-semibold">Pattern over the wallpaper</span>
             <input
               type="checkbox"
               checked={prefs.chatPattern}
@@ -155,12 +156,31 @@ export function SiteSettingsView() {
           </label>
         </section>
 
+        <section className="surface p-4">
+          <h2 className="m-0 flex items-center gap-2 text-base font-bold">
+            <BookOpen size={17} className="text-[var(--primary-strong)]" />
+            Help and documents
+          </h2>
+          <p className="mb-3 mt-1 text-sm text-[var(--muted)]">
+            Guides, terms, privacy and a secure support form.
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Link href="/help" className="quiet-button justify-start">Help center</Link>
+            <Link href="/faq" className="quiet-button justify-start">FAQ</Link>
+            <Link href="/terms" className="quiet-button justify-start">Terms and policies</Link>
+            <Link href="/report" className="quiet-button justify-start text-[var(--danger)]">
+              <FileWarning size={15} />
+              Report or contact
+            </Link>
+          </div>
+        </section>
+
         <button
           type="button"
           className="quiet-button w-full"
           onClick={() => update(DEFAULT_PREFS)}
         >
-          Сбросить оформление
+          Reset appearance
         </button>
       </div>
     </>

@@ -36,30 +36,30 @@ export function FollowRequests() {
     onSuccess: async (_result, id) => {
       const name = requests.data?.find((item) => item.id === id)?.user.display_name;
       await refresh();
-      notify(name ? `${name} теперь подписан(а) на вас` : "Заявка принята", { variant: "success" });
+      notify(name ? `${name} is now following you` : "Request accepted", { variant: "success" });
     },
-    onError: (error: Error) => notify("Не удалось принять", { variant: "error", detail: error.message })
+    onError: (error: Error) => notify("Couldn't accept", { variant: "error", detail: error.message })
   });
   const decline = useMutation({
     mutationFn: (id: string) => api.declineFollowRequest(id),
     onSuccess: async () => {
       await refresh();
-      notify("Заявка отклонена", { variant: "success", detail: "Автор об этом не узнает." });
+      notify("Request declined", { variant: "success", detail: "The author won't be notified." });
     },
     onError: (error: Error) =>
-      notify("Не удалось отклонить", { variant: "error", detail: error.message })
+      notify("Couldn't decline", { variant: "error", detail: error.message })
   });
 
   const items = requests.data ?? [];
   if (!items.length) return null;
 
   return (
-    <section className="surface mx-2 mb-2 px-3 py-3 sm:mx-3" aria-label="Заявки на подписку">
+    <section className="surface mx-2 mb-2 px-3 py-3 sm:mx-3" aria-label="Follow requests">
       <h2 className="m-0 flex items-center gap-2 text-[15px] font-bold">
         <UserRoundPlus size={16} className="text-[var(--primary-strong)]" />
-        Заявки на подписку
+        Follow requests
         <span className="text-[13px] font-semibold text-[var(--muted)]">
-          {items.length} {plural(items.length, "человек", "человека", "человек")}
+          {items.length} {plural(items.length, "person", "people", "people")}
         </span>
       </h2>
       <div className="mt-2 grid gap-1">
@@ -98,12 +98,12 @@ export function FollowRequests() {
                 onClick={() => accept.mutate(item.id)}
               >
                 <Check size={15} />
-                Принять
+                Accept
               </button>
               <button
                 type="button"
                 className="icon-button !size-9"
-                aria-label={`Отклонить заявку ${item.user.display_name}`}
+                aria-label={`Decline request from ${item.user.display_name}`}
                 disabled={accept.isPending || decline.isPending}
                 onClick={() => decline.mutate(item.id)}
               >

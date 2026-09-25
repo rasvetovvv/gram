@@ -32,7 +32,7 @@ function Mark({ label, size }: { label: string; size: number }) {
 }
 
 export function AdminMark({ size = 16 }: { size?: number }) {
-  return <Mark label="Администратор GRAM" size={size} />;
+  return <Mark label="GRAM Administrator" size={size} />;
 }
 
 /** Where the mark is not already inside a link, it explains itself on tap. */
@@ -43,9 +43,9 @@ export function AdminMarkExplained({ name, size = 18 }: { name: string; size?: n
         <button
           type="button"
           className="inline-flex shrink-0 border-0 bg-transparent p-0 align-middle transition-transform duration-150 hover:scale-110 active:scale-95"
-          aria-label="Администратор GRAM — подробнее"
+          aria-label="GRAM Administrator — details"
         >
-          <Mark label="Администратор GRAM" size={size} />
+          <Mark label="GRAM Administrator" size={size} />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
@@ -62,11 +62,11 @@ export function AdminMarkExplained({ name, size = 18 }: { name: string; size?: n
             </span>
             <div className="min-w-0">
               <strong className="block text-[15px] font-bold leading-tight">
-                Администратор GRAM
+                GRAM Administrator
               </strong>
               <p className="mb-0 mt-1.5 text-[13px] leading-5 text-[var(--muted)]">
-                {name} — сотрудник платформы. Такой бейдж нельзя купить или получить по заявке:
-                его выдаёт только GRAM.
+                {name} is a member of the platform&apos;s staff. This badge can&apos;t be bought or requested:
+                only GRAM grants it.
               </p>
             </div>
           </div>

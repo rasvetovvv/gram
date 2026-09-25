@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import os
 from pathlib import Path
+
+# The broad legacy suite exercises product behaviour rather than SMTP. Focused email-auth tests
+# explicitly disable this bypass and stub delivery; production Compose pins it to false.
+os.environ.setdefault("EMAIL_AUTH_ENABLED", "true")
+os.environ.setdefault("EMAIL_OTP_BYPASS", "true")
+os.environ.setdefault("EMAIL_OTP_SECRET", "test-only-email-otp-secret-0123456789abcdef")
 
 import pytest
 import pytest_asyncio
@@ -52,6 +59,7 @@ async def client(
             yield session
 
     monkeypatch.setattr(main_module, "MEDIA_ROOT", tmp_path / "media")
+    main_module._LEGAL_REPORT_WINDOWS.clear()
     app.dependency_overrides[get_session] = override_session
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as test_client:

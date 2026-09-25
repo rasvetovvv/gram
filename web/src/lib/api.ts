@@ -1,9 +1,21 @@
 import type {
   AccountSettings,
   AccountSlot,
+  AdminAction,
+  AdminCommunity,
+  AdminDesign,
+  AdminInventory,
+  AdminLedgerEntry,
+  AdminOverview,
+  AdminPayout,
+  AdminRefund,
+  AdminStarOrder,
+  AdminUser,
   ApiErrorShape,
   AuthSession,
+  AuthStart,
   AuthSessionInfo,
+  EmailAuthChallenge,
   Chat,
   ChatFolder,
   ChatInfo,
@@ -22,9 +34,14 @@ import type {
   GiftModel,
   GiftPurchaseResult,
   GiftOffer,
+  GroupInvitePreview,
   GiftProvenanceEvent,
+  LegalReport,
+  LegalReportInput,
+  LegalReportReceipt,
   LoginInput,
   Message,
+  MyBadges,
   Notification,
   Post,
   PostDraft,
@@ -35,10 +52,16 @@ import type {
   ProfileStoryCreate,
   ProfileUpdateInput,
   RegisterInput,
+  Report,
   SearchResults,
   StarTransaction,
+  StarOrder,
+  StarPackage,
+  StarPayout,
   StarTransferReceipt,
   StarWallet,
+  StoryFeedEntry,
+  StoryViewer,
   Subscription,
   PremiumEntitlement,
   PremiumPlan,
@@ -46,10 +69,12 @@ import type {
   Trend,
   User,
   UsernameAsset,
-  UsernameHistoryEvent
+  UsernameHistoryEvent,
+  UsernameOffer,
+  VerificationTier
 } from "./types";
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://vexory.xyz";
 
 /** The reference's own three orders over one thread. */
 export type CommentSort = "new" | "old" | "top";
@@ -61,7 +86,46 @@ export type ShowcaseSlot = "featured" | "cover2" | "cover3" | "cover4" | "name";
 export type PostReportReason = "spam" | "abuse" | "adult" | "fraud" | "violence" | "other";
 
 export type GiftCatalogScope = "all" | "market" | "limited" | "available" | "resale";
-export type GiftCatalogSort = "position" | "price-asc" | "price-desc" | "rarity" | "supply";
+export type AdminUserScope = "all" | "banned" | "admins" | "verified" | "reported";
+export type ReportAction = "dismiss" | "note" | "hide" | "ban";
+export type AdminUserPatch = {
+  display_name?: string;
+  bio?: string;
+  location?: string | null;
+  role_title?: string | null;
+  profile_color?: string;
+  is_verified?: boolean;
+  verification_tier?: VerificationTier | null;
+  is_admin?: boolean;
+  reason?: string;
+};
+export type AdminCommunityPatch = {
+  title?: string;
+  description?: string;
+  category?: string;
+  location?: string;
+  reason?: string;
+};
+export type AdminGiftPatch = {
+  model?: string;
+  backdrop?: string;
+  symbol?: string;
+  upgraded?: boolean;
+  reason?: string;
+};
+export type AdminDesignPatch = {
+  edition_size?: number;
+  price_stars?: number;
+  available?: boolean;
+  on_market?: boolean;
+  limited?: boolean;
+  reason?: string;
+};
+export type AdminAccountDeleteInput = {
+  confirm_username: string;
+  reason: string;
+  communities?: "transfer" | "delete";
+};export type GiftCatalogSort = "position" | "price-asc" | "price-desc" | "rarity" | "supply";
 export type GiftMarketSort = "recent" | "price-asc" | "price-desc";
 
 /**
@@ -149,7 +213,7 @@ function errorMessage(body: ApiErrorShape): string {
       .filter(Boolean);
     if (messages.length) return messages.join(". ");
   }
-  return body.message ?? "Не удалось связаться с GRAM. Проверьте соединение и попробуйте ещё раз.";
+  return body.message ?? "Couldn't reach GRAM. Check your connection and try again.";
 }
 
 /**
@@ -183,9 +247,22 @@ function withAbsoluteMedia(value: unknown): unknown {
 
 const AUTH_PATHS = ["/api/auth/login", "/api/auth/register", "/api/auth/refresh", "/api/auth/logout"];
 let refreshInFlight: Promise<boolean> | null = null;
+/** When the last refresh settled, so a straggler does not start a second one immediately. */
+let refreshedAt = 0;
+/** Long enough to absorb requests that were already in flight when the rotation happened. */
+const REFRESH_COOLDOWN_MS = 3_000;
 
-/** One shared refresh so a burst of expired requests does not rotate the token repeatedly. */
+/**
+ * One shared refresh, and no second one for a moment afterwards.
+ *
+ * Every screen holds several queries, and when the access cookie expires they all get a 401 within
+ * the same few hundred milliseconds. Sharing the in-flight promise covers the ones that arrive
+ * together; the cooldown covers the ones whose 401 was already on the wire when the rotation
+ * completed — those used to fire a second refresh carrying the token just spent, which the server
+ * reads as a reused credential. It answers `true` because the cookie is, in fact, fresh.
+ */
 async function refreshAccess(): Promise<boolean> {
+  if (!refreshInFlight && Date.now() - refreshedAt < REFRESH_COOLDOWN_MS) return true;
   refreshInFlight ??= fetch(`${API_URL}/api/auth/refresh`, {
     method: "POST",
     credentials: "include"
@@ -193,6 +270,7 @@ async function refreshAccess(): Promise<boolean> {
     .then((response) => response.ok)
     .catch(() => false)
     .finally(() => {
+      refreshedAt = Date.now();
       refreshInFlight = null;
     });
   return refreshInFlight;
@@ -238,16 +316,37 @@ async function restoreSession(): Promise<User> {
     return await request<User>("/api/auth/me");
   } catch (error) {
     if (!(error instanceof ApiError) || error.status !== 401) throw error;
-    const session = await request<AuthSession>("/api/auth/refresh", { method: "POST" });
-    return session.user;
+    /* `request` has already tried a refresh and retried once by the time a 401 gets here, so a
+       second explicit refresh would send the token that attempt just spent — the reuse the server
+       is right to be suspicious of. The session really is over. */
+    throw error;
   }
 }
 
+export function isEmailAuthChallenge(value: AuthStart): value is EmailAuthChallenge {
+  return "requires_email_code" in value && value.requires_email_code === true;
+}
+
 export const api = {
+  submitLegalReport: (payload: LegalReportInput) =>
+    request<LegalReportReceipt>("/api/legal/reports", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   register: (payload: RegisterInput) =>
-    request<AuthSession>("/api/auth/register", { method: "POST", body: JSON.stringify(payload) }),
+    request<AuthStart>("/api/auth/register", { method: "POST", body: JSON.stringify(payload) }),
   login: (payload: LoginInput) =>
-    request<AuthSession>("/api/auth/login", { method: "POST", body: JSON.stringify(payload) }),
+    request<AuthStart>("/api/auth/login", { method: "POST", body: JSON.stringify(payload) }),
+  verifyEmailCode: (challengeId: string, code: string) =>
+    request<AuthSession>("/api/auth/email/verify", {
+      method: "POST",
+      body: JSON.stringify({ challenge_id: challengeId, code })
+    }),
+  resendEmailCode: (challengeId: string) =>
+    request<EmailAuthChallenge>("/api/auth/email/resend", {
+      method: "POST",
+      body: JSON.stringify({ challenge_id: challengeId })
+    }),
   refreshSession: () => request<AuthSession>("/api/auth/refresh", { method: "POST" }),
   authMe: () => request<User>("/api/auth/me"),
   restoreSession,
@@ -292,6 +391,10 @@ export const api = {
   badges: () => request<ProfileBadge[]>("/api/badges"),
   badge: (slug: string) => request<ProfileBadge>(`/api/badges/${encodeURIComponent(slug)}`),
   userBadges: (username: string) => request<ProfileBadge[]>(`/api/users/${userPath(username)}/badges`),
+  /** The whole shelf: every badge, whether it is earned, and how many fit at once. */
+  myBadges: () => request<MyBadges>("/api/users/me/badges"),
+  chooseBadges: (slugs: string[]) =>
+    request<User>("/api/users/me/badges", { method: "PUT", body: JSON.stringify({ slugs }) }),
 
   recommendedUsers: () => request<User[]>("/api/users/recommended"),
   trends: (limit = 8) => request<Trend[]>(`/api/trends?limit=${limit}`),
@@ -331,6 +434,26 @@ export const api = {
     request<{ detail: string }>(`/api/users/me/stories/${encodeURIComponent(storyId)}`, {
       method: "DELETE"
     }),
+  /** One picture or clip for a story being composed; the server decides which from the bytes. */
+  uploadStoryMedia: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<{ url: string }>("/api/users/me/stories/media", { method: "POST", body });
+  },
+  /** Live stories from the people the reader follows, grouped by author. */
+  storiesFeed: () => request<StoryFeedEntry[]>("/api/stories/feed"),
+  markStorySeen: (storyId: string) =>
+    request<{ detail: string }>(`/api/stories/${encodeURIComponent(storyId)}/view`, {
+      method: "POST"
+    }),
+  storyViewers: (storyId: string) =>
+    request<StoryViewer[]>(`/api/stories/${encodeURIComponent(storyId)}/viewers`),
+  /** Send a story — anyone's — into conversations, with an optional line of one's own. */
+  shareStory: (storyId: string, chatIds: string[], text = "") =>
+    request<{ detail: string }>(`/api/stories/${encodeURIComponent(storyId)}/share`, {
+      method: "POST",
+      body: JSON.stringify({ chat_ids: chatIds, text })
+    }),
   profileReplies: (username: string) =>
     request<ProfileReply[]>(`/api/users/${userPath(username)}/replies`),
   subscribe: (username: string, priceStars = 50) =>
@@ -367,12 +490,16 @@ export const api = {
     videoUrl?: string | null,
     pollOptions?: string[] | null,
     sensitive?: boolean,
-    file?: { url: string; name: string; size: number } | null
+    file?: { url: string; name: string; size: number } | null,
+    /* Anything that is not part of what a post *is*. `publishAt` queues it: an ISO moment in the
+       future keeps the post to its author until then, and Premium is what may set one. */
+    options?: { publishAt?: string | null }
   ) =>
     request<Post>("/api/feed", {
       method: "POST",
       body: JSON.stringify({
         content,
+        publish_at: options?.publishAt || undefined,
         image_url: imageUrls?.[0],
         image_urls: imageUrls?.length ? imageUrls : undefined,
         video_url: videoUrl || undefined,
@@ -407,7 +534,7 @@ export const api = {
     });
   },
   deletePost: (id: string) => request<{ detail: string }>(`/api/feed/${id}`, { method: "DELETE" }),
-  /** Rewrites one's own post; the server re-reads the text for a music link and marks «ред.». */
+  /** Rewrites one's own post; the server re-reads the text for a music link and marks «edited». */
   editPost: (
     id: string,
     content: string,
@@ -425,6 +552,14 @@ export const api = {
     }),
   /** One's own unfinished posts, most recently touched first. */
   postDrafts: () => request<PostDraft[]>("/api/feed/drafts"),
+  /** My own queue: written, waiting for its moment, invisible to everybody else. */
+  scheduledPosts: () => request<Post[]>("/api/feed/scheduled"),
+  /** Move a queued post to another moment, or send it out now by passing null. */
+  reschedulePost: (id: string, publishAt: string | null) =>
+    request<Post>(`/api/feed/${id}/schedule`, {
+      method: "PATCH",
+      body: JSON.stringify({ publish_at: publishAt })
+    }),
   savePostDraft: (payload: PostDraftInput) =>
     request<PostDraft>("/api/feed/drafts", { method: "POST", body: JSON.stringify(payload) }),
   updatePostDraft: (id: string, payload: PostDraftInput) =>
@@ -521,11 +656,24 @@ export const api = {
   secretChat: (username: string) =>
     request<Chat>(`/api/chats/secret/${userPath(username)}`, { method: "POST" }),
   savedChat: () => request<Chat>("/api/chats/saved", { method: "POST" }),
-  createGroupChat: (title: string, members: string[]) =>
+  createGroupChat: (title: string, members: string[], isPublic = false) =>
     request<Chat>("/api/chats/groups", {
       method: "POST",
-      body: JSON.stringify({ title, members })
+      body: JSON.stringify({ title, members, is_public: isPublic })
     }),
+  /** Open a group to its link, or close it — the link dies with the group's privacy. */
+  updateGroupAccess: (chatId: string, isPublic: boolean) =>
+    request<Chat>(`/api/chats/${chatId}/access`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_public: isPublic })
+    }),
+  /** A fresh link; the previous one stops working. */
+  rotateGroupInvite: (chatId: string) =>
+    request<Chat>(`/api/chats/${chatId}/invite`, { method: "POST" }),
+  groupInvite: (code: string) =>
+    request<GroupInvitePreview>(`/api/chats/join/${encodeURIComponent(code)}`),
+  joinGroupByInvite: (code: string) =>
+    request<Chat>(`/api/chats/join/${encodeURIComponent(code)}`, { method: "POST" }),
   updateGroupChat: (chatId: string, patch: { title?: string; avatar_url?: string | null }) =>
     request<Chat>(`/api/chats/${chatId}`, { method: "PATCH", body: JSON.stringify(patch) }),
   addGroupMembers: (chatId: string, members: string[]) =>
@@ -550,6 +698,15 @@ export const api = {
   deleteChat: (chatId: string) =>
     request<{ detail: string }>(`/api/chats/${chatId}`, { method: "DELETE" }),
   readAllChats: () => request<{ detail: string }>("/api/chats/read-all", { method: "POST" }),
+  /**
+   * Say this conversation has been read up to now.
+   *
+   * Opening the thread already does it; this is for a message that arrives *while* it is open,
+   * which reaches the browser over the socket and never touches the endpoint that fetches it.
+   * The socket carries the same signal — this is the fallback for a dropped connection.
+   */
+  markChatRead: (chatId: string) =>
+    request<{ detail: string }>(`/api/chats/${chatId}/read`, { method: "POST" }),
   messages: (chatId: string) => request<Message[]>(`/api/chats/${chatId}/messages`),
   sendMessage: (chatId: string, content: string, replyToId?: string | null) =>
     request<Message>(`/api/chats/${chatId}/messages`, {
@@ -610,6 +767,37 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ amount })
     }),
+  /** What a top-up costs in Telegram Stars: our prices, Telegram's charge. */
+  starPackages: () => request<StarPackage[]>("/api/stars/packages"),
+  /** Open an order and get the deep link that pays for it inside the bot. */
+  createStarOrder: (packageSlug: string) =>
+    request<StarOrder>("/api/stars/orders", {
+      method: "POST",
+      body: JSON.stringify({ package: packageSlug })
+    }),
+  starOrder: (id: string) => request<StarOrder>(`/api/stars/orders/${id}`),
+  starOrders: (limit = 10) => request<StarOrder[]>(`/api/stars/orders?limit=${limit}`),
+  cancelStarOrder: (id: string) =>
+    request<{ detail: string }>(`/api/stars/orders/${id}`, { method: "DELETE" }),
+  /** Ask for a payment back. Nothing moves until an admin answers in Telegram. */
+  requestStarRefund: (id: string, reason: string) =>
+    request<StarOrder>(`/api/stars/orders/${id}/refund`, {
+      method: "POST",
+      body: JSON.stringify({ reason })
+    }),
+  /* Taking stars out, at the same rate they came in. The stars are held the moment the request
+     is made and an admin confirms the Telegram half — see `payout-sheet.tsx`. */
+  starPayouts: () => request<StarPayout[]>("/api/stars/payouts"),
+  requestStarPayout: (stars: number, telegramUsername?: string) =>
+    request<StarPayout>("/api/stars/payouts", {
+      method: "POST",
+      body: JSON.stringify({
+        stars,
+        telegram_username: telegramUsername?.trim() ? telegramUsername.trim() : null
+      })
+    }),
+  cancelStarPayout: (id: string) =>
+    request<StarPayout>(`/api/stars/payouts/${id}`, { method: "DELETE" }),
   sendStars: (toUsername: string, amount: number, message?: string, postId?: string) =>
     request<StarTransferReceipt>("/api/stars/send", {
       method: "POST",
@@ -670,6 +858,53 @@ export const api = {
     request<UsernameHistoryEvent[]>(`/api/usernames/${id}/history`),
   purchaseUsername: (id: string) =>
     request<UsernameAsset>(`/api/usernames/${id}/purchase`, { method: "POST" }),
+  /** Say once that a handle is not for sale — and refuse the bids already standing on it. */
+  updateUsernameOffersPolicy: (id: string, offersDisabled: boolean) =>
+    request<UsernameAsset>(`/api/usernames/${id}/offers`, {
+      method: "PATCH",
+      body: JSON.stringify({ offers_disabled: offersDisabled })
+    }),
+  /** Bid on somebody's handle. The stars are held until they answer. */
+  offerForUsername: (id: string, amount: number) =>
+    request<UsernameOffer>(`/api/usernames/${id}/offers`, {
+      method: "POST",
+      body: JSON.stringify({ amount })
+    }),
+  usernameOffers: (id: string) => request<UsernameOffer[]>(`/api/usernames/${id}/offers`),
+  myUsernameOffers: () => request<UsernameOffer[]>("/api/usernames/me/offers"),
+  acceptUsernameOffer: (offerId: string) =>
+    request<UsernameAsset>(`/api/usernames/offers/${offerId}/accept`, { method: "POST" }),
+  declineUsernameOffer: (offerId: string) =>
+    request<UsernameOffer>(`/api/usernames/offers/${offerId}/decline`, { method: "POST" }),
+  withdrawUsernameOffer: (offerId: string) =>
+    request<{ detail: string }>(`/api/usernames/offers/${offerId}`, { method: "DELETE" }),
+  /** Hand a handle over without a price. */
+  transferUsername: (id: string, toUsername: string) =>
+    request<UsernameAsset>(`/api/usernames/${id}/transfer`, {
+      method: "POST",
+      body: JSON.stringify({ to_username: toUsername })
+    }),
+  /**
+   * Give a handle up. It goes back on the shelf for anyone to register, and the collection gets its
+   * place back — the only way out that does not need a buyer or a willing recipient.
+   */
+  releaseUsername: (id: string) =>
+    request<UsernameAsset>(`/api/usernames/${id}`, { method: "DELETE" }),
+  /** Point one of my handles at one of my channels, and back again. */
+  attachCommunityUsername: (slug: string, username: string) =>
+    request<Community>(`/api/communities/${encodeURIComponent(slug)}/usernames`, {
+      method: "POST",
+      body: JSON.stringify({ username })
+    }),
+  detachCommunityUsername: (slug: string, assetId: string) =>
+    request<Community>(`/api/communities/${encodeURIComponent(slug)}/usernames/${assetId}`, {
+      method: "DELETE"
+    }),
+  setCommunityPrimaryUsername: (slug: string, assetId: string) =>
+    request<Community>(
+      `/api/communities/${encodeURIComponent(slug)}/usernames/${assetId}/primary`,
+      { method: "POST" }
+    ),
 
   gifts: (owner?: string) => request<Gift[]>(`/api/gifts${owner ? `?owner=${userPath(owner)}` : ""}`),
   giftCatalog: (query: GiftCatalogQuery = {}) => {
@@ -766,5 +1001,223 @@ export const api = {
   readAllNotifications: () =>
     request<{ detail: string }>("/api/notifications/read-all", { method: "POST" }),
   readNotification: (id: string) =>
-    request<Notification>(`/api/notifications/${id}/read`, { method: "POST" })
+    request<Notification>(`/api/notifications/${id}/read`, { method: "POST" }),
+  /** Removes one notice for good; reading it only greys it out. */
+  deleteNotification: (id: string) =>
+    request<{ detail: string }>(`/api/notifications/${id}`, { method: "DELETE" }),
+  /** `read` clears the settled noise and keeps anything still waiting for attention. */
+  clearNotifications: (scope: "all" | "read" = "read") =>
+    request<{ detail: string }>(`/api/notifications?scope=${scope}`, { method: "DELETE" }),
+
+  // Staff tools. Every one of these is refused with 403 unless the caller holds `is_admin`,
+  // and every write is recorded in the audit log the panel reads back.
+  adminOverview: () => request<AdminOverview>("/api/admin/overview"),
+  adminUsers: (params: { q?: string; scope?: AdminUserScope } = {}) => {
+    const query = new URLSearchParams();
+    if (params.q) query.set("q", params.q);
+    if (params.scope && params.scope !== "all") query.set("scope", params.scope);
+    const suffix = query.size ? `?${query}` : "";
+    return request<AdminUser[]>(`/api/admin/users${suffix}`);
+  },
+  adminUser: (username: string) => request<AdminUser>(`/api/admin/users/${userPath(username)}`),
+  adminUpdateUser: (username: string, patch: AdminUserPatch) =>
+    request<AdminUser>(`/api/admin/users/${userPath(username)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    }),
+  adminBanUser: (username: string, reason: string) =>
+    request<AdminUser>(`/api/admin/users/${userPath(username)}/ban`, {
+      method: "POST",
+      body: JSON.stringify({ reason })
+    }),
+  adminUnbanUser: (username: string) =>
+    request<AdminUser>(`/api/admin/users/${userPath(username)}/ban`, { method: "DELETE" }),
+  adminGrantStars: (username: string, amount: number, reason?: string) =>
+    request<AdminUser>(`/api/admin/users/${userPath(username)}/stars`, {
+      method: "POST",
+      body: JSON.stringify({ amount, reason })
+    }),
+  adminGrantGift: (
+    username: string,
+    slug: string,
+    upgraded = false,
+    reason?: string,
+    model?: string
+  ) =>
+    request<Gift>(`/api/admin/users/${userPath(username)}/gifts`, {
+      method: "POST",
+      body: JSON.stringify({ slug, upgraded, reason, model })
+    }),
+  adminRevokeGift: (giftId: string, reason?: string) =>
+    request<{ detail: string }>(
+      `/api/admin/gifts/${giftId}${reason ? `?reason=${encodeURIComponent(reason)}` : ""}`,
+      { method: "DELETE" }
+    ),
+  adminGrantUsername: (username: string, handle: string, reason?: string) =>
+    request<AdminUser>(`/api/admin/users/${userPath(username)}/usernames`, {
+      method: "POST",
+      body: JSON.stringify({ username: handle, reason })
+    }),
+  adminRevokeUsername: (username: string, handle: string) =>
+    request<AdminUser>(
+      `/api/admin/users/${userPath(username)}/usernames/${encodeURIComponent(handle)}`,
+      { method: "DELETE" }
+    ),
+  adminReports: (params: { status?: "open" | "resolved" | "all"; kind?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.status) query.set("status", params.status);
+    if (params.kind) query.set("kind", params.kind);
+    const suffix = query.size ? `?${query}` : "";
+    return request<Report[]>(`/api/admin/reports${suffix}`);
+  },
+  adminResolveReport: (id: string, action: ReportAction, resolution?: string) =>
+    request<Report>(`/api/admin/reports/${id}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ action, resolution })
+    }),
+  adminLegalReports: (status: "open" | "resolved" | "all" = "open") =>
+    request<LegalReport[]>(`/api/admin/legal-reports?status=${status}`),
+  adminResolveLegalReport: (
+    id: string,
+    action: "resolve" | "dismiss",
+    resolution: string
+  ) =>
+    request<LegalReport>(`/api/admin/legal-reports/${id}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ action, resolution })
+    }),
+  adminHidePost: (postId: string, reason: string) =>
+    request<{ detail: string }>(`/api/admin/posts/${postId}/hide`, {
+      method: "POST",
+      body: JSON.stringify({ reason })
+    }),
+  adminRestorePost: (postId: string) =>
+    request<{ detail: string }>(`/api/admin/posts/${postId}/hide`, { method: "DELETE" }),
+  adminHideComment: (commentId: string, reason: string) =>
+    request<{ detail: string }>(
+      `/api/admin/comments/${commentId}?reason=${encodeURIComponent(reason)}`,
+      { method: "DELETE" }
+    ),
+  adminCommunities: (q?: string) =>
+    request<AdminCommunity[]>(`/api/admin/communities${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  adminUpdateCommunity: (slug: string, patch: AdminCommunityPatch) =>
+    request<AdminCommunity>(`/api/admin/communities/${encodeURIComponent(slug)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    }),
+  adminDeleteCommunity: (slug: string, reason: string) =>
+    request<{ detail: string }>(
+      `/api/admin/communities/${encodeURIComponent(slug)}?reason=${encodeURIComponent(reason)}`,
+      { method: "DELETE" }
+    ),
+  adminActions: (
+    params: {
+      action?: string;
+      actor?: string;
+      target_type?: string;
+      q?: string;
+      hours?: number;
+      limit?: number;
+    } = {}
+  ) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== "") search.set(key, String(value));
+    }
+    const query = search.toString();
+    return request<AdminAction[]>(`/api/admin/actions${query ? `?${query}` : ""}`);
+  },
+
+  // The money half of the panel: two queues that wait for a person, and the logs behind them.
+  adminPayouts: (status: "pending" | "open" | "paid" | "declined" | "failed" | "all" = "pending") =>
+    request<AdminPayout[]>(`/api/admin/payouts?status=${status}`),
+  adminDecidePayout: (id: string, approved: boolean, note?: string) =>
+    request<AdminPayout>(`/api/admin/payouts/${id}/decision`, {
+      method: "POST",
+      body: JSON.stringify({ approved, note: note ?? "" })
+    }),
+  adminPayoutPaid: (id: string, note?: string) =>
+    request<AdminPayout>(`/api/admin/payouts/${id}/paid`, {
+      method: "POST",
+      body: JSON.stringify({ note: note ?? "" })
+    }),
+  adminPayoutFailed: (id: string, note?: string) =>
+    request<AdminPayout>(`/api/admin/payouts/${id}/failed`, {
+      method: "POST",
+      body: JSON.stringify({ note: note ?? "" })
+    }),
+  adminRefunds: (status: "pending" | "approved" | "declined" | "failed" | "all" = "pending") =>
+    request<AdminRefund[]>(`/api/admin/refunds?status=${status}`),
+  adminDecideRefund: (id: string, approved: boolean, note?: string) =>
+    request<{ detail: string }>(`/api/admin/refunds/${id}/decision`, {
+      method: "POST",
+      body: JSON.stringify({ approved, note: note ?? "" })
+    }),
+  adminStarOrders: (params: { status?: string; q?: string } = {}) => {
+    const search = new URLSearchParams();
+    if (params.status) search.set("status", params.status);
+    if (params.q?.trim()) search.set("q", params.q.trim());
+    return request<AdminStarOrder[]>(`/api/admin/star-orders?${search.toString()}`);
+  },
+  adminLedger: (params: { username?: string; kind?: string; limit?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.username?.trim()) search.set("username", params.username.trim());
+    if (params.kind?.trim()) search.set("kind", params.kind.trim());
+    if (params.limit) search.set("limit", String(params.limit));
+    const query = search.toString();
+    return request<AdminLedgerEntry[]>(`/api/admin/ledger${query ? `?${query}` : ""}`);
+  },
+  adminBroadcast: (text: string, scope: "all" | "premium" | "admins" | "active" = "all") =>
+    request<{ detail: string }>("/api/admin/broadcast", {
+      method: "POST",
+      body: JSON.stringify({ text, scope })
+    }),
+
+  // The inventory half of the panel: what an account holds, and what staff may do to it.
+  adminInventory: (username: string) =>
+    request<AdminInventory>(`/api/admin/users/${userPath(username)}/inventory`),
+  adminDeleteAccount: (username: string, body: AdminAccountDeleteInput) =>
+    request<{ detail: string }>(`/api/admin/users/${userPath(username)}`, {
+      method: "DELETE",
+      body: JSON.stringify(body)
+    }),
+  adminUpdateGift: (giftId: string, patch: AdminGiftPatch) =>
+    request<Gift>(`/api/admin/gifts/${giftId}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  adminTransferGift: (giftId: string, username: string, reason?: string) =>
+    request<Gift>(`/api/admin/gifts/${giftId}/transfer`, {
+      method: "POST",
+      body: JSON.stringify({ username, reason })
+    }),
+  adminClearGiftHistory: (giftId: string, reason: string) =>
+    request<{ detail: string }>(
+      `/api/admin/gifts/${giftId}/history?reason=${encodeURIComponent(reason)}`,
+      { method: "DELETE" }
+    ),
+  adminDesigns: (q?: string) =>
+    request<AdminDesign[]>(`/api/admin/gift-designs${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  adminUpdateDesign: (slug: string, patch: AdminDesignPatch) =>
+    request<AdminDesign>(`/api/admin/gift-designs/${encodeURIComponent(slug)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    }),
+  adminTransferUsername: (handle: string, username: string, reason?: string) =>
+    request<AdminUser>(`/api/admin/usernames/${encodeURIComponent(handle)}/transfer`, {
+      method: "POST",
+      body: JSON.stringify({ username, reason })
+    }),
+  adminClearUsernameHistory: (handle: string, reason: string) =>
+    request<{ detail: string }>(
+      `/api/admin/usernames/${encodeURIComponent(handle)}/history?reason=${encodeURIComponent(reason)}`,
+      { method: "DELETE" }
+    ),
+  adminDeletePost: (postId: string, reason: string) =>
+    request<{ detail: string }>(
+      `/api/admin/posts/${postId}?reason=${encodeURIComponent(reason)}`,
+      { method: "DELETE" }
+    ),
+  adminTransferCommunity: (slug: string, username: string, reason?: string) =>
+    request<AdminCommunity>(`/api/admin/communities/${encodeURIComponent(slug)}/owner`, {
+      method: "POST",
+      body: JSON.stringify({ username, reason })
+    })
 };

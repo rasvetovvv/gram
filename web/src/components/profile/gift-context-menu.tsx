@@ -41,7 +41,7 @@ function useGiftAction(
     },
     onError: (error: Error) => {
       const premium = error.message.includes("Premium");
-      notify(premium ? "Это возможность Premium" : "Не получилось", {
+      notify(premium ? "This is a Premium feature" : "Didn't work", {
         variant: premium ? "info" : "error",
         detail: error.message
       });
@@ -79,30 +79,30 @@ export function GiftContextMenu({
 
   const pin = useGiftAction(
     () => api.pinGift(gift.id, !gift.is_pinned),
-    gift.is_pinned ? "Откреплён из коллекции" : "Закреплён в коллекции",
+    gift.is_pinned ? "Unpinned from your collection" : "Pinned to your collection",
     refresh
   );
   const hide = useGiftAction(
     () => api.setGiftVisibility(gift.id, !gift.hidden_in_profile),
-    gift.hidden_in_profile ? "Снова виден в профиле" : "Скрыт из профиля",
+    gift.hidden_in_profile ? "Visible in your profile again" : "Hidden from your profile",
     refresh
   );
   const offers = useGiftAction(
     () => api.setGiftOffersDisabled(gift.id, !gift.offers_disabled),
-    gift.offers_disabled ? "Предложения снова открыты" : "Цену больше не предложат",
+    gift.offers_disabled ? "Offers are open again" : "No more price offers",
     refresh
   );
   const cover = useGiftAction(
     () => api.setGiftShowcase(gift.id, "featured"),
-    "Подарок стоит в шапке",
+    "Gift is featured in the header",
     refresh
   );
   const beside = useGiftAction(
     () => api.setGiftShowcase(gift.id, "name"),
-    "Подарок стоит рядом с именем",
+    "Gift sits next to your name",
     refresh
   );
-  const unlist = useGiftAction(() => api.setGiftListing(gift.id, null), "Снят с продажи", refresh);
+  const unlist = useGiftAction(() => api.setGiftListing(gift.id, null), "Removed from sale", refresh);
 
   if (!owned) return <>{children}</>;
 
@@ -116,7 +116,7 @@ export function GiftContextMenu({
           </ContextMenu.Label>
           <ContextMenu.Item className={ITEM} onSelect={() => pin.mutate()}>
             {gift.is_pinned ? <PinOff size={16} /> : <Pin size={16} />}
-            {gift.is_pinned ? "Открепить из коллекции" : "Закрепить в коллекции"}
+            {gift.is_pinned ? "Unpin from collection" : "Pin to collection"}
           </ContextMenu.Item>
           <ContextMenu.Item
             className={ITEM}
@@ -124,7 +124,7 @@ export function GiftContextMenu({
             onSelect={() => cover.mutate()}
           >
             <Sparkles size={16} />
-            Поставить в шапку
+            Feature in header
           </ContextMenu.Item>
           <ContextMenu.Item
             className={ITEM}
@@ -132,22 +132,22 @@ export function GiftContextMenu({
             onSelect={() => beside.mutate()}
           >
             <Gem size={16} />
-            Поставить рядом с именем
+            Show next to name
             <Crown size={13} className="ml-auto text-[var(--stars)]" />
           </ContextMenu.Item>
           <ContextMenu.Separator className="mx-2 my-1.5 h-px bg-[var(--line)]" />
           <ContextMenu.Item className={ITEM} onSelect={() => hide.mutate()}>
             {gift.hidden_in_profile ? <Eye size={16} /> : <EyeOff size={16} />}
-            {gift.hidden_in_profile ? "Показать в профиле" : "Скрыть подарок"}
+            {gift.hidden_in_profile ? "Show in profile" : "Hide gift"}
           </ContextMenu.Item>
           <ContextMenu.Item className={ITEM} onSelect={() => offers.mutate()}>
             {gift.offers_disabled ? <HandCoins size={16} /> : <Ban size={16} />}
-            {gift.offers_disabled ? "Разрешить предложения" : "Не предлагать мне цену"}
+            {gift.offers_disabled ? "Allow offers" : "Don't offer me a price"}
           </ContextMenu.Item>
           {gift.is_listed ? (
             <ContextMenu.Item className={ITEM} onSelect={() => unlist.mutate()}>
               <Tag size={16} />
-              Снять с продажи
+              Remove from sale
             </ContextMenu.Item>
           ) : null}
         </ContextMenu.Content>

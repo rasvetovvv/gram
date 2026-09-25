@@ -64,14 +64,14 @@ export function ChatGiftSheet({
         queryClient.invalidateQueries({ queryKey: ["me"] }),
         queryClient.invalidateQueries({ queryKey: ["stars-wallet"] })
       ]);
-      notify(message.gift_claimable ? "Подарок ждёт в чате" : `«${message.gift?.name ?? ""}» отправлен`, {
+      notify(message.gift_claimable ? "Gift is waiting in the chat" : `"${message.gift?.name ?? ""}" sent`, {
         variant: "success",
-        detail: message.gift_claimable ? "Первый, кто нажмёт, забирает" : "Получатель откроет его сам"
+        detail: message.gift_claimable ? "First to tap gets it" : "The recipient will open it themselves"
       });
       onOpenChange(false);
     },
     onError: (error: Error) =>
-      notify("Подарок не отправлен", { variant: "error", detail: error.message })
+      notify("Gift wasn't sent", { variant: "error", detail: error.message })
   });
 
   const balance = me.data?.stars_balance ?? 0;
@@ -94,7 +94,7 @@ export function ChatGiftSheet({
   }
 
   const recipientName = claimable
-    ? "открытый подарок"
+    ? "open gift"
     : isGroup
       ? (chosen?.user.display_name ?? null)
       : (chat.participant?.display_name ?? null);
@@ -103,11 +103,11 @@ export function ChatGiftSheet({
     <BottomSheet
       open={open}
       onOpenChange={(next) => (next ? onOpenChange(true) : close())}
-      title="Отправить подарок"
+      title="Send a gift"
       description={
         isGroup
-          ? `Подарок в «${chat.title ?? "группу"}»`
-          : `Подарок для ${chat.participant?.display_name ?? ""}`
+          ? `Gift to "${chat.title ?? "the group"}"`
+          : `Gift for ${chat.participant?.display_name ?? ""}`
       }
     >
       {slug ? (
@@ -118,7 +118,7 @@ export function ChatGiftSheet({
           recipientAvatar={chosen?.user.avatar_url ?? chat.participant?.avatar_url}
           balance={balance}
           allowMessage
-          actionLabel={claimable ? "Оставить в чате" : "Отправить"}
+          actionLabel={claimable ? "Leave in the chat" : "Send"}
           submitting={send.isPending}
           errorMessage={send.error?.message}
           onBack={() => setSlug(null)}
@@ -131,7 +131,7 @@ export function ChatGiftSheet({
               type="button"
               onClick={close}
               className="icon-button !size-9 bg-[#1a1a1f] text-white"
-              aria-label="Закрыть"
+              aria-label="Close"
             >
               <X size={18} />
             </button>
@@ -152,17 +152,17 @@ export function ChatGiftSheet({
             ) : (
               <UserAvatar
                 src={chat.participant?.avatar_url}
-                name={chat.participant?.display_name ?? "Чат"}
+                name={chat.participant?.display_name ?? "Chat"}
                 size={64}
                 ringColor="transparent"
               />
             )}
             <div className="min-w-0">
               <p className="mb-0 text-xl font-extrabold leading-tight tracking-[-0.02em]">
-                Отправить подарок
+                Send a gift
               </p>
               <p className="mb-0 mt-0.5 truncate text-[15px] text-[var(--muted)]">
-                {isGroup ? (chat.title ?? "группа") : `для ${chat.participant?.display_name ?? ""}`}
+                {isGroup ? (chat.title ?? "group") : `for ${chat.participant?.display_name ?? ""}`}
               </p>
             </div>
           </div>
@@ -170,7 +170,7 @@ export function ChatGiftSheet({
           {isGroup ? (
             <fieldset className="mt-4 border-0 p-0">
               <legend className="mb-2 text-[13px] font-semibold uppercase tracking-[.06em] text-[var(--faint)]">
-                Кому
+                To whom
               </legend>
               <button
                 type="button"
@@ -190,9 +190,9 @@ export function ChatGiftSheet({
                   <GiftIcon size={20} />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <strong className="block text-[15px]">Открытый подарок</strong>
+                  <strong className="block text-[15px]">Open gift</strong>
                   <span className="block text-[13px] text-[var(--muted)]">
-                    Забирает первый, кто нажмёт кнопку
+                    First to tap the button takes it
                   </span>
                 </span>
                 {claimable ? <Check size={18} className="flex-none text-[var(--primary-strong)]" /> : null}
@@ -230,7 +230,7 @@ export function ChatGiftSheet({
 
           {!ready ? (
             <p className="mt-4 rounded-[16px] bg-[#1a1a1f] p-3 text-sm text-[var(--muted)]">
-              Выберите участника или откройте подарок для всех
+              Choose a member or open the gift for everyone
             </p>
           ) : null}
 

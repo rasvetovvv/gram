@@ -36,8 +36,8 @@ type Action = {
 };
 
 /**
- * Per-message actions, matching the reference's own set: ответить, копировать, изменить,
- * закрепить, удалить у себя или у всех. Recall and edit are the author's only; hiding and
+ * Per-message actions, matching the reference's own set: reply, copy, edit,
+ * pin, delete for yourself or for everyone. Recall and edit are the author's only; hiding and
  * pinning are available to either side.
  *
  * The same list is offered two ways — a right-click context menu on the bubble, and a "…"
@@ -64,7 +64,7 @@ export function useMessageActions({
   const queryClient = useQueryClient();
   const { notify } = useToast();
   const soon = (label: string) => () =>
-    notify(label, { variant: "info", detail: "Появится в следующем обновлении" });
+    notify(label, { variant: "info", detail: "Coming in the next update" });
 
   const refresh = () =>
     Promise.all([
@@ -76,19 +76,19 @@ export function useMessageActions({
     mutationFn: () => api.pinMessage(chatId, message.id),
     onSuccess: async (updated) => {
       await refresh();
-      notify(updated.pinned ? "Сообщение закреплено" : "Сообщение откреплено", { variant: "success" });
+      notify(updated.pinned ? "Message pinned" : "Message unpinned", { variant: "success" });
     },
     onError: (error: Error) =>
-      notify("Не удалось закрепить", { variant: "error", detail: error.message })
+      notify("Couldn't pin", { variant: "error", detail: error.message })
   });
 
   const remove = useMutation<unknown, Error, "me" | "all">({
     mutationFn: (scope) => api.deleteMessage(chatId, message.id, scope),
     onSuccess: async (_result, scope) => {
       await refresh();
-      notify(scope === "all" ? "Удалено у всех" : "Удалено у вас", { variant: "success" });
+      notify(scope === "all" ? "Deleted for everyone" : "Deleted for you", { variant: "success" });
     },
-    onError: (error) => notify("Не удалось удалить", { variant: "error", detail: error.message })
+    onError: (error) => notify("Couldn't delete", { variant: "error", detail: error.message })
   });
 
   // Service notices are the system talking, not a message anyone can act on.
@@ -103,46 +103,46 @@ export function useMessageActions({
   const isGift = Boolean(message.gift);
 
   return [
-    { key: "reply", label: "Ответить", icon: Reply, run: () => onReply(message) },
+    { key: "reply", label: "Reply", icon: Reply, run: () => onReply(message) },
     {
       key: "copy",
-      label: "Копировать",
+      label: "Copy",
       icon: Copy,
       run: () =>
         navigator.clipboard
           .writeText(message.content)
-          .then(() => notify("Текст скопирован", { variant: "success" }))
-          .catch(() => notify("Не удалось скопировать", { variant: "error" }))
+          .then(() => notify("Text copied", { variant: "success" }))
+          .catch(() => notify("Couldn't copy", { variant: "error" }))
     },
-    { key: "translate", label: "Перевести", icon: Languages, run: soon("Перевод сообщений") },
+    { key: "translate", label: "Translate", icon: Languages, run: soon("Message translation") },
     {
       key: "pin",
-      label: message.pinned ? "Открепить" : "Закрепить",
+      label: message.pinned ? "Unpin" : "Pin",
       icon: message.pinned ? PinOff : Pin,
       run: () => pin.mutate()
     },
     ...(isGift
       ? []
-      : [{ key: "forward", label: "Переслать", icon: Forward, run: () => onForward(message) }]),
-    { key: "select", label: "Выбрать", icon: CheckCircle2, run: () => onSelect(message) },
+      : [{ key: "forward", label: "Forward", icon: Forward, run: () => onForward(message) }]),
+    { key: "select", label: "Select", icon: CheckCircle2, run: () => onSelect(message) },
     ...(message.is_mine
       ? isGift
         ? []
-        : [{ key: "edit", label: "Изменить", icon: Pencil, run: () => onEdit(message) }]
+        : [{ key: "edit", label: "Edit", icon: Pencil, run: () => onEdit(message) }]
       : [
           {
             key: "report",
-            label: "Пожаловаться",
+            label: "Report",
             icon: Flag,
             run: () => onReport(message)
           }
         ]),
-    { key: "hide", label: "Удалить у себя", icon: Trash2, danger: true, run: () => remove.mutate("me") },
+    { key: "hide", label: "Delete for me", icon: Trash2, danger: true, run: () => remove.mutate("me") },
     ...(message.is_mine
       ? [
           {
             key: "recall",
-            label: "Удалить у всех",
+            label: "Delete for everyone",
             icon: Users,
             danger: true,
             run: () => remove.mutate("all")
@@ -208,7 +208,7 @@ export function MessageActionsButton({
         <button
           type="button"
           className="icon-button !size-7 shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-          aria-label="Действия с сообщением"
+          aria-label="Message actions"
         >
           <MoreHorizontal size={16} />
         </button>

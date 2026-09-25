@@ -32,14 +32,14 @@ export function ChatReportSheet({
         ? api.reportMessage(chatId, messageId, reason, comment)
         : api.reportChat(chatId, reason, comment),
     onSuccess: () => {
-      notify("Жалоба отправлена", {
+      notify("Report sent", {
         variant: "success",
-        detail: messageId ? "Мы посмотрим на это сообщение." : "Мы посмотрим на эту переписку."
+        detail: messageId ? "We'll take a look at this message." : "We'll take a look at this conversation."
       });
       onOpenChange(false);
     },
     onError: (error: Error) =>
-      notify("Не удалось отправить", { variant: "error", detail: error.message })
+      notify("Couldn't send", { variant: "error", detail: error.message })
   });
 
   return (
@@ -49,8 +49,8 @@ export function ChatReportSheet({
       subject={subject}
       note={
         messageId
-          ? "Автор не узнает, кто пожаловался. Сообщение останется в чате до решения."
-          : "Участники не узнают, кто пожаловался. Чтобы перестать получать сообщения, заблокируйте собеседника."
+          ? "The author won't know who reported it. The message stays in the chat until a decision is made."
+          : "Participants won't know who reported it. To stop receiving messages, block the other person."
       }
       pending={send.isPending}
       onSend={(reason, comment) => send.mutate({ reason, comment })}
@@ -75,19 +75,19 @@ export function CommunityReportSheet({
     mutationFn: ({ reason, comment }: { reason: PostReportReason; comment: string }) =>
       api.reportCommunity(slug, reason, comment),
     onSuccess: () => {
-      notify("Жалоба отправлена", { variant: "success", detail: `Мы посмотрим на «${title}»` });
+      notify("Report sent", { variant: "success", detail: `We'll take a look at "${title}"` });
       onOpenChange(false);
     },
     onError: (error: Error) =>
-      notify("Не удалось отправить", { variant: "error", detail: error.message })
+      notify("Couldn't send", { variant: "error", detail: error.message })
   });
 
   return (
     <ReportSheet
       open={open}
       onOpenChange={onOpenChange}
-      subject={`Сообщество @${slug}`}
-      note="Владелец не узнает, кто пожаловался. Подписка на сообщество — отдельное действие."
+      subject={`Community @${slug}`}
+      note="The owner won't know who reported it. Following the community is a separate action."
       pending={send.isPending}
       onSend={(reason, comment) => send.mutate({ reason, comment })}
     />

@@ -1,5 +1,6 @@
 import * as Avatar from "@radix-ui/react-avatar";
 import type { CSSProperties } from "react";
+import { isVideoUrl } from "@/lib/utils";
 
 export function UserAvatar({
   src,
@@ -35,6 +36,30 @@ export function UserAvatar({
     ...(radius ? { borderRadius: radius } : {})
   } as CSSProperties;
 
+  // A living avatar: whoever uploaded a clip gets it back as one, looping and silent, wherever
+  // their face appears. Radix's Avatar.Image can only be a picture, so the clip replaces it and
+  // the fallback initials are simply not needed for a file we know is there.
+  if (isVideoUrl(src)) {
+    return (
+      <span className="avatar-shell" style={style} aria-label={name}>
+        <span className="avatar-clip">
+          <video
+            src={src ?? undefined}
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="metadata"
+            aria-hidden
+            className="h-full w-full object-cover"
+            style={{ objectPosition }}
+          />
+        </span>
+        {online ? <span className="avatar-presence" aria-label="Online" /> : null}
+      </span>
+    );
+  }
+
   return (
     <Avatar.Root className="avatar-shell" style={style} aria-label={name}>
       <span className="avatar-clip">
@@ -47,7 +72,7 @@ export function UserAvatar({
           {initials.toUpperCase()}
         </Avatar.Fallback>
       </span>
-      {online ? <span className="avatar-presence" aria-label="В сети" /> : null}
+      {online ? <span className="avatar-presence" aria-label="Online" /> : null}
     </Avatar.Root>
   );
 }

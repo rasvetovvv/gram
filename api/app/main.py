@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
+import secrets
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, cast
 
 import jwt
 from fastapi import (
@@ -21,6 +23,7 @@ from fastapi import (
     FastAPI,
     File,
     Form,
+    Header,
     HTTPException,
     Path,
     Query,
@@ -35,39 +38,68 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import and_, delete, func, or_, select, true, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from starlette.concurrency import run_in_threadpool
 
-from app import giftart, music
+from app import giftart, music, nowpayments
 from app.config import (
     ACCESS_COOKIE,
     ACCESS_TOKEN_MINUTES,
     AUTO_SEED,
+    BOT_API_SECRET,
     COOKIE_DOMAIN,
     COOKIE_SECURE,
     CORS_ORIGINS,
+    CRYPTO_COINS,
+    CRYPTO_INVOICE_TTL_MINUTES,
+    CRYPTO_PRICE_CURRENCY,
+    EMAIL_AUTH_ENABLED,
+    EMAIL_OTP_BYPASS,
+    EMAIL_OTP_MAX_ATTEMPTS,
+    EMAIL_OTP_MAX_SENDS,
+    EMAIL_OTP_RESEND_SECONDS,
+    EMAIL_OTP_TTL_MINUTES,
     ENABLE_INTERNAL_LEDGER_TOPUPS,
     MAX_FILE_BYTES,
     MAX_PARKED_ACCOUNTS,
     MAX_UPLOAD_BYTES,
     MAX_VIDEO_BYTES,
     MEDIA_ROOT,
+    NOWPAYMENTS_IPN_SECRET,
     PARKED_COOKIE_PREFIX,
     PREFETCH_GIFT_ART,
     REFRESH_COOKIE,
+    REFRESH_GRACE_SECONDS,
     REFRESH_TOKEN_DAYS,
+    REFUND_WINDOW_DAYS,
+    SITE_PUBLIC_URL,
+    STAR_ORDER_TTL_MINUTES,
+    STAR_PAYOUTS_ENABLED,
+    TELEGRAM_BOT_USERNAME,
+    WIRE_INTERNAL_SECRET,
+    WIRE_OUTBOX_ENABLED,
+    WIRE_REDIS_URL,
 )
 from app.db import SessionFactory, create_schema, get_session
+from app.email_auth import (
+    email_code_hash,
+    email_code_matches,
+    ensure_email_auth_ready,
+    mask_email,
+    new_email_code,
+    send_auth_code,
+)
 from app.gifts import (
     CATEGORIES,
     CATEGORY_LABELS,
     DESIGN_BY_SLUG,
 )
 from app.models import (
+    AdminAction,
     AuthIdentity,
     Chat,
     ChatFolder,
@@ -78,6 +110,9 @@ from app.models import (
     ContentReport,
     CreatorSettings,
     CreatorSubscription,
+    CryptoInvoice,
+    CryptoPayoutDetails,
+    EmailLoginChallenge,
     Follow,
     FollowRequest,
     Gift,
@@ -86,11 +121,13 @@ from app.models import (
     GiftOffer,
     GiftShowcase,
     GiftTransfer,
+    LegalReport,
     Message,
     MessageHide,
     MessageReaction,
     Notification,
     NotificationKind,
+    PendingRegistration,
     Post,
     PostBookmark,
     PostComment,
@@ -103,12 +140,18 @@ from app.models import (
     PostView,
     PremiumEntitlement,
     ProfileStory,
+    RealtimeOutbox,
     RefreshSession,
     StarLedger,
+    StarPayout,
+    StarPurchase,
+    StarRefund,
     StarWallet,
+    StoryView,
     User,
     UserBlock,
     UsernameAsset,
+    UsernameOffer,
     UsernameOwnershipEvent,
     UsernameStatus,
     UserPreferences,
@@ -116,13 +159,64 @@ from app.models import (
     UserSettings,
     utcnow,
 )
+from app.moderation import (
+    REASON_LABELS,
+    VERIFICATION_LABELS,
+    AdminAccountDelete,
+    AdminActionOut,
+    AdminBanRequest,
+    AdminBroadcast,
+    AdminCommunityOut,
+    AdminCommunityUpdate,
+    AdminCryptoInvoiceOut,
+    AdminDecision,
+    AdminDesignOut,
+    AdminDesignUpdate,
+    AdminGiftGrant,
+    AdminGiftItem,
+    AdminGiftTransfer,
+    AdminGiftUpdate,
+    AdminHideRequest,
+    AdminInventoryOut,
+    AdminLedgerOut,
+    AdminNote,
+    AdminOverviewOut,
+    AdminOwnerTransfer,
+    AdminPayoutOut,
+    AdminPostItem,
+    AdminRefundOut,
+    AdminStarOrderOut,
+    AdminStarsGrant,
+    AdminUsernameGrant,
+    AdminUsernameItem,
+    AdminUserOut,
+    AdminUserUpdate,
+    LegalReportCreate,
+    LegalReportOut,
+    LegalReportReceipt,
+    LegalReportResolve,
+    ReportOut,
+    ReportResolve,
+)
 from app.schemas import (
+    MAX_OWNED_USERNAMES,
     MAX_POST_IMAGES,
     MIN_POLL_OPTIONS,
     AccountDeleteRequest,
     AccountSlot,
+    AdminCryptoPaidIn,
     AuthResponse,
     AuthSessionOut,
+    BadgeOffer,
+    BadgeSelection,
+    BotOrderOut,
+    BotPaymentReport,
+    BotPayoutOut,
+    BotPayoutSettle,
+    BotRefundApplied,
+    BotRefundDecision,
+    BotRefundOut,
+    ChatAttachment,
     ChatAutodeleteUpdate,
     ChatFolderCreate,
     ChatFolderOut,
@@ -137,12 +231,21 @@ from app.schemas import (
     CommunityCreate,
     CommunityOut,
     CommunityUpdate,
+    CommunityUsernameAttach,
     CommunityVerification,
     CreatorAnalyticsOut,
     CreatorSeriesPoint,
     CreatorSettingsOut,
     CreatorSettingsUpdate,
+    CryptoCoinOut,
+    CryptoInvoiceCreate,
+    CryptoInvoiceOut,
+    CryptoPayoutDetailsOut,
+    CryptoStatusOut,
     DetailResponse,
+    EmailChallengeOut,
+    EmailChallengeResendRequest,
+    EmailCodeVerifyRequest,
     FeedPost,
     FollowRequestOut,
     FollowState,
@@ -162,7 +265,9 @@ from app.schemas import (
     GiftTransferCreate,
     GiftVariantOut,
     GiftVisibilityUpdate,
+    GroupAccessUpdate,
     GroupCreate,
+    GroupInvitePreview,
     GroupMembersAdd,
     GroupUpdate,
     HealthResponse,
@@ -172,6 +277,7 @@ from app.schemas import (
     MessageForward,
     MessageQuote,
     MessageReactionOut,
+    MyBadgesOut,
     NoteUpsert,
     NotificationOut,
     OffersToggle,
@@ -187,6 +293,7 @@ from app.schemas import (
     PostMusic,
     PostPollOut,
     PostReportCreate,
+    PostSchedule,
     PostViewReceipt,
     PremiumBenefit,
     PremiumEntitlementOut,
@@ -207,9 +314,20 @@ from app.schemas import (
     RegisterRequest,
     SearchResults,
     StarLedgerOut,
+    StarPackageOut,
+    StarPayoutCreate,
+    StarPayoutOut,
+    StarPurchaseCreate,
+    StarPurchaseOut,
+    StarRefundOut,
+    StarRefundRequest,
     StarSendRequest,
     StarTopUpRequest,
     StarTransferReceipt,
+    StoryCompact,
+    StoryFeedEntry,
+    StoryShare,
+    StoryViewerOut,
     SubscriptionCreate,
     SubscriptionOut,
     ToggleState,
@@ -220,7 +338,10 @@ from app.schemas import (
     UsernameAssetOut,
     UsernameHistoryOut,
     UsernameListingUpdate,
+    UsernameOfferCreate,
+    UsernameOfferOut,
     UsernameReserve,
+    UsernameTransfer,
     UserProfile,
     UserReportCreate,
     UserSettingsOut,
@@ -229,6 +350,7 @@ from app.schemas import (
 )
 from app.security import (
     create_access_token,
+    create_wire_ticket,
     decode_access_token,
     hash_password,
     new_refresh_token,
@@ -237,10 +359,14 @@ from app.security import (
     verify_password,
 )
 from app.seed import seed_database
+from app.wire_outbox import create_wire_redis, run_wire_outbox, run_wire_outbox_pruner
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 LEGENDARY_USERNAME_LENGTH = 4
 RARE_USERNAME_LENGTH = 6
+# What an address has to look like to be a handle anybody could hold. Channel slugs are looser —
+# dashes, up to 48 characters — and one of those can never be a collectible username.
+HANDLE_SHAPE = re.compile(r"[a-z][a-z0-9_]{2,31}")
 MIN_USERNAME_LENGTH = 3
 MAX_IMAGE_PIXELS = 40_000_000
 DIRECT_CHAT_MEMBER_COUNT = 2
@@ -252,6 +378,10 @@ OFFICIAL_ROLE_TITLE = "Служебные уведомления"
 # How long a heartbeat vouches for someone being online; past it the profile says last seen.
 PRESENCE_WINDOW = timedelta(minutes=5)
 PRESENCE_SWEEP_SECONDS = 60
+# Open complaints against one account before visitors are warned about it. Three is a run
+# rather than one person's grudge, and it is deliberately visible before staff get to it —
+# a queue nobody has reached yet is exactly when a reader most needs the hint.
+HEAVILY_REPORTED = 3
 
 
 async def _expire_presence() -> None:
@@ -299,6 +429,9 @@ async def _expire_presence() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Create additive tables and repair local seed data on startup."""
+    ensure_email_auth_ready()
+    if WIRE_OUTBOX_ENABLED and len(WIRE_INTERNAL_SECRET) < 32:
+        raise RuntimeError("GRAM Wire internal authentication is not configured")
     MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
     await create_schema()
     if AUTO_SEED:
@@ -310,8 +443,24 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # container with no outbound network still starts and serves everything else.
         warm = asyncio.create_task(giftart.prefetch_originals())
     presence = asyncio.create_task(_expire_presence())
+    wire_client = None
+    wire_task: asyncio.Task[None] | None = None
+    wire_pruner: asyncio.Task[None] | None = None
+    if WIRE_OUTBOX_ENABLED:
+        wire_client = create_wire_redis(WIRE_REDIS_URL)
+        wire_task = asyncio.create_task(run_wire_outbox(SessionFactory, wire_client))
+        # One social event writes one row per active account, so delivered receipts have to be
+        # trimmed or the table grows with traffic forever. Redis holds the replay window.
+        wire_pruner = asyncio.create_task(run_wire_outbox_pruner(SessionFactory))
     yield
     presence.cancel()
+    for task in (wire_task, wire_pruner):
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+    if wire_client is not None:
+        await wire_client.aclose()
     if warm and not warm.done():
         warm.cancel()
 
@@ -329,6 +478,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def protect_auth_responses(request: Request, call_next: Any) -> Response:
+    """Pre-auth responses, including dependency/validation failures, must never be cached."""
+    response = await call_next(request)
+    if request.url.path.startswith(
+        ("/api/auth/register", "/api/auth/login", "/api/auth/email/", "/api/internal/wire/")
+    ):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Robots-Tag"] = "noindex"
+    return response
+
+
 app.mount("/media", StaticFiles(directory=MEDIA_ROOT, check_dir=False), name="media")
 
 
@@ -363,6 +527,64 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
         refresh_token,
         max_age=REFRESH_TOKEN_DAYS * 24 * 60 * 60,
         **common,
+    )
+
+
+def _set_access_cookie(response: Response, access_token: str) -> None:
+    """
+    Re-issue only the access cookie, leaving the refresh credential untouched.
+
+    Used when a refresh request loses a race with a concurrent one: the winner has already written
+    the new refresh token, so overwriting it here would replace a good credential with a stale one.
+    """
+    common: dict[str, Any] = {
+        "httponly": True,
+        "secure": COOKIE_SECURE,
+        "samesite": "lax",
+        "path": "/",
+    }
+    if COOKIE_DOMAIN:
+        common["domain"] = COOKIE_DOMAIN
+    response.set_cookie(
+        ACCESS_COOKIE, access_token, max_age=ACCESS_TOKEN_MINUTES * 60, **common
+    )
+
+
+async def _revoke_session_chain(session: AsyncSession, row: RefreshSession) -> None:
+    """
+    Revoke one credential's own rotation chain — the row, its ancestors and its descendants.
+
+    A reuse means *that* chain is compromised, not the account. Revoking every session (which this
+    used to do) signed the person out of every other device as well, so one stale tab took the
+    phone down with it.
+    """
+    doomed: set[uuid.UUID] = {row.id}
+
+    # Forward: whatever this token was replaced by, and so on.
+    cursor: RefreshSession | None = row
+    while cursor is not None and cursor.replaced_by_id is not None:
+        if cursor.replaced_by_id in doomed:
+            break
+        doomed.add(cursor.replaced_by_id)
+        cursor = await session.get(RefreshSession, cursor.replaced_by_id)
+
+    # Backward: whatever was replaced *by* this token, up the chain to the original sign-in.
+    frontier = {row.id}
+    while frontier:
+        parents = set(
+            (
+                await session.scalars(
+                    select(RefreshSession.id).where(RefreshSession.replaced_by_id.in_(frontier))
+                )
+            ).all()
+        )
+        frontier = parents - doomed
+        doomed |= frontier
+
+    await session.execute(
+        update(RefreshSession)
+        .where(RefreshSession.id.in_(doomed), RefreshSession.revoked_at.is_(None))
+        .values(revoked_at=utcnow())
     )
 
 
@@ -638,9 +860,45 @@ async def get_current_user(request: Request, session: SessionDep) -> User:
     user = await session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Аккаунт не найден")
+    _refuse_banned_write(request, user)
     if await _touch_presence(session, user, online=True):
         await session.commit()
     return user
+
+
+# Anything that changes state. A banned account keeps reading — it has to be able to open its own
+# profile and see the reason — but every write is refused, because that is what a block has to
+# mean. Revoking the session instead would only sign them out, and signing back in worked.
+WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Signing out and rotating one's own credential stay open: locking somebody into a session they
+# cannot end would be a different kind of punishment from the one a moderator chose.
+BANNED_WRITE_ALLOWED = frozenset({"/api/auth/logout", "/api/auth/refresh"})
+
+
+def _refuse_banned_write(request: Request, user: User) -> None:
+    if user.banned_at is None:
+        return
+    if request.method not in WRITE_METHODS or request.url.path in BANNED_WRITE_ALLOWED:
+        return
+    reason = f" Причина: {user.ban_reason}" if user.ban_reason else ""
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"Аккаунт заблокирован администрацией.{reason}",
+    )
+
+
+def _refuse_banned_recipient(user: User) -> None:
+    """
+    A present cannot be delivered to a blocked account.
+
+    Not merely cosmetic: the collectible would be minted, the stars spent, and the recipient
+    unable to open, upgrade or transfer any of it — so the purchase is refused before the charge.
+    """
+    if user.banned_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{user.username} заблокирован администрацией — подарок не дойдёт",
+        )
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
@@ -726,12 +984,15 @@ def compact_user(
         avatar_url=user.avatar_url,
         is_verified=user.is_verified,
         verified=user.is_verified,
-        verification_tier="official" if user.is_verified else None,
+        # The stored tier wins; a verified account from before tiers existed still reads as
+        # official rather than losing its explanation.
+        verification_tier=user.verification_tier or ("official" if user.is_verified else None),
         # Someone who hides their presence is never advertised as online, wherever they appear.
         is_online=user.is_online and not hide_presence,
         profile_color=user.profile_color or "default",
         is_premium=is_premium,
         is_admin=user.is_admin,
+        is_banned=user.banned_at is not None,
         is_official=user.username.lower() == OFFICIAL_USERNAME,
         role_title=OFFICIAL_ROLE_TITLE if user.username.lower() == OFFICIAL_USERNAME else None,
         name_gift=name_gift,
@@ -757,7 +1018,14 @@ def compact_gift(gift: Gift) -> GiftCompact:
     )
 
 
-def profile_story_out(story: ProfileStory, author: User) -> ProfileStoryOut:
+def profile_story_out(
+    story: ProfileStory,
+    author: User,
+    *,
+    views_count: int = 0,
+    seen: bool = False,
+    is_mine: bool = False,
+) -> ProfileStoryOut:
     return ProfileStoryOut(
         id=story.id,
         author=compact_user(author),
@@ -766,6 +1034,23 @@ def profile_story_out(story: ProfileStory, author: User) -> ProfileStoryOut:
         created_at=story.created_at,
         expires_at=story.expires_at,
         highlight=story.highlight,
+        views_count=views_count,
+        seen=seen,
+        is_mine=is_mine,
+    )
+
+
+def compact_story(story: ProfileStory, author: User) -> StoryCompact:
+    """The card a chat bubble draws for a shared story."""
+    return StoryCompact(
+        id=story.id,
+        author=compact_user(author),
+        title=story.title,
+        media_url=story.media_url,
+        created_at=story.created_at,
+        expires_at=story.expires_at,
+        # A highlight has no window at all; anything else is live until its own moment passes.
+        active=story.expires_at is None or _as_utc(story.expires_at) > utcnow(),
     )
 
 
@@ -860,39 +1145,61 @@ async def render_profile(
     owned_handles = (
         await session.scalars(
             select(UsernameAsset.username)
-            .where(UsernameAsset.owner_id == user.id)
+            .where(UsernameAsset.owner_id == user.id, UsernameAsset.community_id.is_(None))
             .order_by(UsernameAsset.username)
         )
     ).all()
-    # Handles claimed by another account must not be advertised here, even if typed manually.
-    foreign_handles = set(
-        (
+    # Every handle this account holds, channel addresses included. `owned_handles` above is the
+    # personal collection — what the automatic list offers and what the cap counts — while this is
+    # the wider set that says whether a handle is *allowed* on the profile at all.
+    owned_any = {
+        handle.lower()
+        for handle in (
             await session.scalars(
-                select(func.lower(UsernameAsset.username)).where(
-                    UsernameAsset.owner_id.is_not(None), UsernameAsset.owner_id != user.id
-                )
+                select(UsernameAsset.username).where(UsernameAsset.owner_id == user.id)
             )
         ).all()
-    ) | set(
-        (
-            await session.scalars(
-                select(func.lower(User.username)).where(User.id != user.id)
-            )
-        ).all()
+    }
+    # What the "also known as" strip lists, and it is a decision the owner makes rather than a
+    # derived set.
+    #
+    # `usernames_auto` is on until the profile form is saved once. While it is on the list is every
+    # handle the account owns, which is the right default before anybody has expressed a preference.
+    # Once it is off, `related_usernames` *is* the list — including when it is empty. That is the
+    # whole fix for a removed handle coming straight back: the old code merged the owned handles in
+    # unconditionally, so deleting one and saving simply put it back on the next read.
+    #
+    # Either way a handle has to be one this account still holds. The old test only rejected handles
+    # *somebody else* owns, so a name that had been released, or was never registered at all, sat in
+    # the list forever: it showed under the name and the edit sheet — which offers owned handles —
+    # had no row to switch off, making it unremovable by any means the owner had.
+    chosen = (
+        [*(user.related_usernames or []), *owned_handles]
+        if user.usernames_auto
+        else list(user.related_usernames or [])
     )
-    owned_lookup = {handle.lower() for handle in owned_handles}
-    # "а также" must reflect handles the account actually owns, not free-typed text.
     related: list[str] = []
-    for handle in [*(user.related_usernames or []), *owned_handles]:
+    for handle in chosen:
         normalized = handle.strip().removeprefix("@").lower()
         if not normalized or normalized == user.username.lower() or normalized in related:
             continue
-        if normalized in foreign_handles and normalized not in owned_lookup:
+        if normalized not in owned_any:
             continue
         related.append(normalized)
     # The owner's own switches: presence and content visibility are theirs to set, and the
     # profile is where every other screen reads the result from.
     settings = await session.get(UserSettings, user.id)
+    # Open complaints against this account, which is what raises the public warning. Resolved
+    # ones are deliberately excluded: a report a moderator has already dismissed must not keep
+    # marking somebody for good.
+    reports_open = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(ContentReport)
+            .where(ContentReport.subject_id == user.id, ContentReport.status == "open")
+        )
+        or 0
+    )
     presence_hidden = bool(settings is not None and not settings.show_online)
     is_private = bool(settings is not None and settings.private_account)
     mine = user.id == me.id
@@ -911,7 +1218,20 @@ async def render_profile(
         bio=user.bio,
         location=user.location,
         related_usernames=related,
-        badges=profile_badges(user.badges),
+        # The whole collection, and the ceiling on it. The edit sheet needs both: it offers these as
+        # the handles that may be shown, and it can say how much room is left instead of letting a
+        # save come back as a 409.
+        owned_usernames=[handle.lower() for handle in owned_handles],
+        max_usernames=MAX_OWNED_USERNAMES,
+        # What the account chose to wear, not everything it has: badges are a decision now, and
+        # a free profile shows three of them where Premium shows seven.
+        badges=profile_badges(shown_badge_slugs(user, is_premium=is_premium)),
+        banned_at=user.banned_at,
+        # The reason is public: a ban a visitor cannot see the grounds for looks arbitrary, and
+        # the account itself has to be told the same thing everyone else reads.
+        ban_reason=user.ban_reason,
+        reports_count=reports_open,
+        heavily_reported=reports_open >= HEAVILY_REPORTED,
         followers_count=user.followers_count,
         following_count=user.following_count,
         joined_at=user.joined_at,
@@ -1037,7 +1357,161 @@ BADGE_CATALOG: dict[str, dict[str, Any]] = {
         "rarity": "rare",
         "points": 25,
     },
+    # Everything below is earned rather than granted: the rule beside each one is checked against
+    # the account's own record, so a badge is a fact about somebody and not a favour.
+    "premium": {
+        "title": "Premium",
+        "description": "Подписка GRAM Premium.",
+        "qualification": "Активная подписка GRAM Premium.",
+        "rarity": "epic",
+        "points": 40,
+    },
+    "verified": {
+        "title": "Подтверждён",
+        "description": "Профиль подтверждён GRAM.",
+        "qualification": "Профиль прошёл подтверждение.",
+        "rarity": "epic",
+        "points": 40,
+    },
+    "curator": {
+        "title": "Куратор коллекции",
+        "description": "Большая коллекция подарков.",
+        "qualification": "20 коллекционных подарков в собственности.",
+        "rarity": "epic",
+        "points": 55,
+    },
+    "upgrader": {
+        "title": "Улучшитель",
+        "description": "Улучшал подарки за звёзды.",
+        "qualification": "Хотя бы один улучшенный подарок.",
+        "rarity": "rare",
+        "points": 25,
+    },
+    "gifter": {
+        "title": "Даритель",
+        "description": "Дарит подарки другим.",
+        "qualification": "5 подарков отправлено другим людям.",
+        "rarity": "rare",
+        "points": 30,
+    },
+    "handler": {
+        "title": "Владелец имён",
+        "description": "Держит несколько юзернеймов.",
+        "qualification": "3 юзернейма в собственности.",
+        "rarity": "rare",
+        "points": 30,
+    },
+    "author": {
+        "title": "Автор",
+        "description": "Пишет в GRAM регулярно.",
+        "qualification": "10 публикаций.",
+        "rarity": "common",
+        "points": 15,
+    },
+    "writer": {
+        "title": "Публицист",
+        "description": "Много публикаций.",
+        "qualification": "50 публикаций.",
+        "rarity": "rare",
+        "points": 35,
+    },
+    "storyteller": {
+        "title": "Рассказчик",
+        "description": "Ведёт истории.",
+        "qualification": "5 опубликованных историй.",
+        "rarity": "common",
+        "points": 15,
+    },
+    "commenter": {
+        "title": "Собеседник",
+        "description": "Отвечает и обсуждает.",
+        "qualification": "25 комментариев.",
+        "rarity": "common",
+        "points": 15,
+    },
+    "popular": {
+        "title": "Популярный",
+        "description": "Много подписчиков.",
+        "qualification": "100 подписчиков.",
+        "rarity": "rare",
+        "points": 35,
+    },
+    "voice": {
+        "title": "Голос GRAM",
+        "description": "Очень много подписчиков.",
+        "qualification": "1000 подписчиков.",
+        "rarity": "legendary",
+        "points": 70,
+    },
+    "channel": {
+        "title": "Владелец канала",
+        "description": "Ведёт свой канал.",
+        "qualification": "Собственный канал в GRAM.",
+        "rarity": "rare",
+        "points": 30,
+    },
+    "starman": {
+        "title": "Звёздный",
+        "description": "Поддерживает других звёздами.",
+        "qualification": "5 отправок звёзд другим людям.",
+        "rarity": "rare",
+        "points": 25,
+    },
+    "veteran": {
+        "title": "Ветеран",
+        "description": "В GRAM больше года.",
+        "qualification": "Аккаунту больше 365 дней.",
+        "rarity": "epic",
+        "points": 45,
+    },
+    "streak": {
+        "title": "Серия",
+        "description": "Заходит каждый день.",
+        "qualification": "Серия визитов 7 дней и больше.",
+        "rarity": "common",
+        "points": 20,
+    },
+    "chatter": {
+        "title": "Разговорчивый",
+        "description": "Много сообщений в чатах.",
+        "qualification": "100 отправленных сообщений.",
+        "rarity": "common",
+        "points": 15,
+    },
 }
+
+# What each earned badge actually needs: a metric from `badge_metrics` and the number to reach.
+# Badges outside this map are staff-granted — they arrive in `users.badges` and cannot be earned.
+BADGE_RULES: dict[str, tuple[str, int]] = {
+    "premium": ("premium", 1),
+    "verified": ("verified", 1),
+    "collector": ("gifts", 5),
+    "curator": ("gifts", 20),
+    "upgrader": ("upgraded_gifts", 1),
+    "gifter": ("gifts_sent", 5),
+    "sniper": ("usernames_bought", 1),
+    "handler": ("usernames", 3),
+    "author": ("posts", 10),
+    "writer": ("posts", 50),
+    "storyteller": ("stories", 5),
+    "commenter": ("comments", 25),
+    "popular": ("followers", 100),
+    "voice": ("followers", 1000),
+    "channel": ("communities", 1),
+    "starman": ("stars_sent", 5),
+    "night_player": ("night_posts", 1),
+    "og": ("account_days", 180),
+    "early": ("account_days", 90),
+    "veteran": ("account_days", 365),
+    "streak": ("streak_days", 7),
+    "chatter": ("messages", 100),
+}
+
+# How many badges an account may wear at once.
+FREE_BADGE_SLOTS = 3
+PREMIUM_BADGE_SLOTS = 7
+# Anything published before this hour counts as a night post — the «Ночной игрок» rule.
+NIGHT_HOUR_END = 5
 
 
 def badge_out(slug: str) -> ProfileBadge:
@@ -1066,8 +1540,127 @@ def profile_badges(values: list[str] | None) -> list[ProfileBadge]:
     return [badge_out(slug) for slug in values or []]
 
 
+def badge_slot_limit(*, is_premium: bool) -> int:
+    """Premium wears more. Everything else about badges is the same for everybody."""
+    return PREMIUM_BADGE_SLOTS if is_premium else FREE_BADGE_SLOTS
+
+
+def shown_badge_slugs(user: User, *, is_premium: bool) -> list[str]:
+    """
+    What a profile displays.
+
+    The account's own choice, trimmed to what its plan allows — a Premium subscription that
+    lapses should quietly show fewer badges, not keep seven forever. An account that never chose
+    shows what staff granted it, so nobody's tick disappeared the day picking arrived.
+    """
+    limit = badge_slot_limit(is_premium=is_premium)
+    chosen = [slug for slug in (user.badge_slots or []) if slug]
+    if chosen:
+        return chosen[:limit]
+    granted = list(user.badges or [])
+    granted.sort(key=lambda slug: -int(BADGE_CATALOG.get(slug, {}).get("points", 0)))
+    return granted[:limit]
+
+
+async def badge_metrics(session: AsyncSession, user: User, *, is_premium: bool) -> dict[str, int]:
+    """
+    The numbers every earned badge is measured against.
+
+    One count per table rather than one per badge: a dozen badges share these totals, and a
+    profile's badge picker should not cost twenty round trips.
+    """
+
+    async def count(statement: Any) -> int:
+        return int(await session.scalar(statement) or 0)
+
+    details = await session.get(UserProfileDetails, user.id)
+    night = await session.scalar(
+        select(func.count())
+        .select_from(Post)
+        .where(Post.author_id == user.id, func.extract("hour", Post.created_at) < NIGHT_HOUR_END)
+    )
+    return {
+        "premium": int(is_premium),
+        "verified": int(user.is_verified),
+        "gifts": await count(
+            select(func.count()).select_from(Gift).where(Gift.owner_id == user.id)
+        ),
+        "upgraded_gifts": await count(
+            select(func.count())
+            .select_from(Gift)
+            .where(Gift.owner_id == user.id, Gift.upgraded_at.is_not(None))
+        ),
+        "gifts_sent": await count(
+            select(func.count())
+            .select_from(Gift)
+            .where(Gift.sender_id == user.id, Gift.owner_id != user.id)
+        ),
+        "usernames": await count(
+            select(func.count()).select_from(UsernameAsset).where(UsernameAsset.owner_id == user.id)
+        ),
+        "usernames_bought": await count(
+            select(func.count())
+            .select_from(UsernameOwnershipEvent)
+            .where(
+                UsernameOwnershipEvent.to_user_id == user.id,
+                UsernameOwnershipEvent.action.in_(["acquired", "offer_accepted"]),
+            )
+        ),
+        "posts": await count(
+            select(func.count()).select_from(Post).where(Post.author_id == user.id)
+        ),
+        "stories": await count(
+            select(func.count()).select_from(ProfileStory).where(ProfileStory.author_id == user.id)
+        ),
+        "comments": await count(
+            select(func.count()).select_from(PostComment).where(PostComment.author_id == user.id)
+        ),
+        "followers": await count(
+            select(func.count()).select_from(Follow).where(Follow.following_id == user.id)
+        ),
+        "communities": await count(
+            select(func.count()).select_from(Community).where(Community.owner_id == user.id)
+        ),
+        "stars_sent": await count(
+            select(func.count())
+            .select_from(StarLedger)
+            .where(StarLedger.user_id == user.id, StarLedger.kind == "star_send")
+        ),
+        "messages": await count(
+            select(func.count()).select_from(Message).where(Message.sender_id == user.id)
+        ),
+        "night_posts": int(night or 0),
+        "account_days": max(0, (utcnow() - _as_utc(user.joined_at)).days),
+        "streak_days": details.streak_days if details else 0,
+    }
+
+
+async def available_badges(
+    session: AsyncSession, user: User, *, is_premium: bool
+) -> tuple[list[str], dict[str, int]]:
+    """Which badges this account may wear, and the numbers that decided it."""
+    metrics = await badge_metrics(session, user, is_premium=is_premium)
+    granted = {slug for slug in (user.badges or []) if slug}
+    earned = {
+        slug
+        for slug, (metric, target) in BADGE_RULES.items()
+        if metrics.get(metric, 0) >= target
+    }
+    order = list(BADGE_CATALOG)
+    unlocked = sorted(
+        granted | earned, key=lambda slug: order.index(slug) if slug in order else len(order)
+    )
+    return unlocked, metrics
+
+
 async def resolve_user(session: AsyncSession, username: str) -> User | None:
-    """Resolve a profile by its current handle or by any collectible username it owns."""
+    """
+    Resolve a profile by its current handle or by any collectible username it owns.
+
+    A handle its owner gave to one of their channels is deliberately not one of them: it is the
+    channel's address now, and having it open the owner's profile as well is how `@x` ends up
+    meaning two different pages.
+    """
     normalized = username.strip().lower().removeprefix("@")
     if not normalized:
         return None
@@ -1077,7 +1670,10 @@ async def resolve_user(session: AsyncSession, username: str) -> User | None:
     return await session.scalar(
         select(User)
         .join(UsernameAsset, UsernameAsset.owner_id == User.id)
-        .where(func.lower(UsernameAsset.username) == normalized)
+        .where(
+            func.lower(UsernameAsset.username) == normalized,
+            UsernameAsset.community_id.is_(None),
+        )
     )
 
 
@@ -1089,19 +1685,32 @@ def message_out(
     quote: MessageQuote | None = None,
     reactions: list[MessageReactionOut] | None = None,
     sender_premium: bool = False,
+    sender_name_gift: GiftCompact | None = None,
     gift: GiftCompact | None = None,
     peers_read_at: datetime | None = None,
     claimed_by: UserCompact | None = None,
     forwarded_from: UserCompact | None = None,
+    story: StoryCompact | None = None,
 ) -> ChatMessage:
     mine = message.sender_id == current_user_id
     return ChatMessage(
         id=message.id,
         chat_id=message.chat_id,
         sender_id=message.sender_id,
-        sender=compact_user(sender, is_premium=sender_premium),
+        # The marks travel with the author, because a group thread is where they are read: who is
+        # speaking is the question a group asks on every line, and a bare name does not answer it.
+        sender=compact_user(sender, is_premium=sender_premium, name_gift=sender_name_gift),
         content=message.content,
         media_url=message.media_url,
+        # Rows written before clips were accepted have no kind, and every one of them is a
+        # picture, so the absent value is read as exactly that rather than backfilled.
+        media_kind=cast(
+            "Literal['image', 'video'] | None",
+            message.media_kind or ("image" if message.media_url else None),
+        ),
+        file_url=message.file_url,
+        file_name=message.file_name,
+        file_size=message.file_size,
         created_at=message.created_at,
         is_mine=mine,
         # Two ticks mean everyone else has read past this message, so the flag is only ever
@@ -1113,6 +1722,7 @@ def message_out(
         reply_to=quote,
         reactions=reactions or [],
         gift=gift,
+        story=story,
         gift_claimable=message.gift_claimable,
         gift_claimed_by=claimed_by,
         forwarded_from=forwarded_from,
@@ -1138,6 +1748,22 @@ async def _peers_read_at(
     if not stamps or any(stamp is None for stamp in stamps):
         return None
     return min(stamps)
+
+
+async def _sender_marks(
+    session: AsyncSession, user_id: uuid.UUID
+) -> tuple[bool, GiftCompact | None]:
+    """
+    The premium star and the name gift for one author.
+
+    The batched versions serve a whole thread; this is for the single-message replies and socket
+    frames, where the alternative is a `sender` with the marks missing. That matters because the
+    client folds a frame over the row it already has: an edit or a reaction carrying a bare author
+    would take a premium star off a bubble that had one.
+    """
+    premium = await premium_user_ids(session, [user_id])
+    emblems = await name_gift_map(session, [user_id])
+    return user_id in premium, emblems.get(user_id)
 
 
 def broadcast_payload(message: ChatMessage) -> dict[str, Any]:
@@ -1337,6 +1963,8 @@ async def render_post(  # noqa: PLR0913
         music=PostMusic.model_validate(post.music) if post.music else None,
         edited_at=post.edited_at,
         is_pinned=post.pinned_at is not None,
+        hidden_at=post.hidden_at,
+        hidden_reason=post.hidden_reason,
         is_muted=muted,
         stars_count=stars,
         starred_by_me=starred,
@@ -1348,20 +1976,72 @@ async def render_post(  # noqa: PLR0913
         community_title=community.title if community else None,
         community_avatar_url=community.avatar_url if community else None,
         community_verified=bool(community and community.is_verified),
+        # Only ever true on a card its own author is looking at: the queue is private, and the
+        # card says when it goes out rather than showing a date that has not happened.
+        publish_at=post.publish_at,
+        scheduled=_is_scheduled(post),
     )
+
+
+async def _handle_conflict(
+    session: AsyncSession,
+    handle: str,
+    *,
+    user_id: uuid.UUID | None = None,
+    community_id: uuid.UUID | None = None,
+) -> str | None:
+    """
+    Why a handle cannot be taken, or None when it can.
+
+    Handles are one namespace. `@gram` used to be able to be a person's account *and* somebody
+    else's channel at the same time, because accounts, channels and collectible handles lived in
+    three tables and none of them asked the other two. Every place that claims a handle asks
+    here instead.
+
+    `user_id` and `community_id` are the claimant: their own rows are not a conflict with
+    themselves.
+    """
+    wanted = handle.strip().removeprefix("@").lower()
+    account = select(User.username).where(func.lower(User.username) == wanted)
+    if user_id is not None:
+        account = account.where(User.id != user_id)
+    if await session.scalar(account):
+        return f"@{wanted} — это аккаунт пользователя"
+    channel = select(Community.slug).where(func.lower(Community.slug) == wanted)
+    if community_id is not None:
+        channel = channel.where(Community.id != community_id)
+    if await session.scalar(channel):
+        return f"@{wanted} — адрес сообщества"
+    asset = await session.scalar(
+        select(UsernameAsset).where(func.lower(UsernameAsset.username) == wanted)
+    )
+    if asset is None:
+        return None
+    if asset.community_id is not None and asset.community_id != community_id:
+        return f"@{wanted} уже указывает на другое сообщество"
+    if asset.owner_id is not None and asset.owner_id != user_id:
+        return f"@{wanted} уже принадлежит другому владельцу"
+    return None
+
+
+async def _refuse_taken_handle(
+    session: AsyncSession,
+    handle: str,
+    *,
+    user_id: uuid.UUID | None = None,
+    community_id: uuid.UUID | None = None,
+) -> None:
+    """The same check, as the 409 every caller wants to raise."""
+    reason = await _handle_conflict(
+        session, handle, user_id=user_id, community_id=community_id
+    )
+    if reason is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
 
 
 async def render_username(
     session: AsyncSession, asset: UsernameAsset, owner: User | None, me: User
 ) -> UsernameAssetOut:
-    events = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(UsernameOwnershipEvent)
-            .where(UsernameOwnershipEvent.asset_id == asset.id)
-        )
-        or 0
-    )
     rarity = (
         "legendary"
         if len(asset.username) <= LEGENDARY_USERNAME_LENGTH
@@ -1375,6 +2055,18 @@ async def render_username(
         .order_by(UsernameOwnershipEvent.created_at.desc())
         .limit(1)
     )
+    # The market's own numbers, and they are counts of real bids rather than of history rows.
+    pending = (
+        await session.execute(
+            select(UsernameOffer.amount_stars, UsernameOffer.bidder_id).where(
+                UsernameOffer.asset_id == asset.id, UsernameOffer.status == "pending"
+            )
+        )
+    ).all()
+    mine_bid = [amount for amount, bidder in pending if bidder == me.id]
+    community = (
+        await session.get(Community, asset.community_id) if asset.community_id else None
+    )
     return UsernameAssetOut(
         id=asset.id,
         username=asset.username,
@@ -1387,11 +2079,19 @@ async def render_username(
         is_owned_by_me=asset.owner_id == me.id,
         created_at=asset.created_at,
         acquired_at=asset.reserved_at or asset.created_at,
-        offers_count=max(0, events - 1),
+        offers_count=len(pending),
         last_action=last_event.action if last_event else None,
         last_action_at=last_event.created_at if last_event else None,
         is_primary_handle=bool(owner and owner.username.lower() == asset.username.lower()),
         offers_disabled=asset.offers_disabled,
+        community_slug=community.slug if community else None,
+        community_title=community.title if community else None,
+        is_community_primary=bool(
+            community and community.slug.lower() == asset.username.lower()
+        ),
+        listed_at=asset.listed_at,
+        top_offer_stars=max((amount for amount, _ in pending), default=None),
+        my_offer_stars=max(mine_bid, default=None),
     )
 
 
@@ -1505,15 +2205,360 @@ async def health(session: SessionDep) -> HealthResponse:
     return HealthResponse(status="ok", service="gram-api", database="ok")
 
 
+_LEGAL_REPORT_WINDOWS: dict[str, list[datetime]] = defaultdict(list)
+
+
+def _legal_reference(report_id: uuid.UUID) -> str:
+    return f"GRAM-{report_id.hex[:10].upper()}"
+
+
+def _legal_report_rate_limit(request: Request, email: str) -> None:
+    """Limit public submissions without retaining raw email or network identifiers in memory."""
+
+    now = utcnow()
+    subjects: list[tuple[str, str, int]] = [("email", email, 5)]
+    if client_ip := _client_ip(request):
+        subjects.append(("network", client_ip, 10))
+    pending: list[tuple[str, list[datetime]]] = []
+    for scope, subject, limit in subjects:
+        key = hashlib.sha256(f"legal:{scope}:{subject}".encode()).hexdigest()
+        recent = [
+            moment
+            for moment in _LEGAL_REPORT_WINDOWS.get(key, [])
+            if (now - moment).total_seconds() < 3600
+        ]
+        if len(recent) >= limit:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Слишком много обращений. Подождите и повторите позже.",
+            )
+        pending.append((key, recent))
+    for key, recent in pending:
+        _LEGAL_REPORT_WINDOWS[key] = [*recent, now]
+    if len(_LEGAL_REPORT_WINDOWS) > 4096:
+        for stale_key in list(_LEGAL_REPORT_WINDOWS)[:1024]:
+            _LEGAL_REPORT_WINDOWS.pop(stale_key, None)
+
+
+@app.post(
+    "/api/legal/reports",
+    response_model=LegalReportReceipt,
+    status_code=status.HTTP_201_CREATED,
+    tags=["legal"],
+)
+async def submit_legal_report(
+    payload: LegalReportCreate,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+) -> LegalReportReceipt:
+    """Receive a public rights, safety, account-access, or technical-support request."""
+
+    response.headers["Cache-Control"] = "no-store"
+    if payload.website:
+        # A bot that filled the hidden field gets a normal-looking receipt but creates no case.
+        return LegalReportReceipt(reference_code=_legal_reference(uuid.uuid4()))
+    _legal_report_rate_limit(request, payload.reporter_email)
+    report = LegalReport(
+        kind=payload.kind,
+        reporter_role=payload.reporter_role,
+        reporter_name=payload.reporter_name,
+        reporter_email=payload.reporter_email,
+        country=payload.country,
+        account_username=payload.account_username,
+        content_urls=payload.content_urls,
+        original_work=payload.original_work,
+        details=payload.details.strip(),
+        requested_action=payload.requested_action,
+        electronic_signature=payload.electronic_signature,
+    )
+    session.add(report)
+    await session.commit()
+    await session.refresh(report)
+    return LegalReportReceipt(reference_code=_legal_reference(report.id))
+
+
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+_AUTH_SEND_WINDOWS: dict[str, list[datetime]] = defaultdict(list)
+
+
+def _auth_rate_limit(request: Request, action: str, *, limit: int, seconds: int = 900) -> None:
+    """Bound email-producing auth attempts without retaining raw network identifiers."""
+    now = utcnow()
+    key = hashlib.sha256(f"{action}:{_client_ip(request) or 'unknown'}".encode()).hexdigest()
+    recent = [moment for moment in _AUTH_SEND_WINDOWS[key] if (now - moment).total_seconds() < seconds]
+    if len(recent) >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много попыток. Подождите немного и повторите.",
+        )
+    recent.append(now)
+    _AUTH_SEND_WINDOWS[key] = recent
+
+
+def _challenge_out(
+    challenge: PendingRegistration | EmailLoginChallenge,
+    *,
+    email: str,
+    purpose: Literal["register", "login"],
+    delivery: Literal["sent", "failed"],
+) -> EmailChallengeOut:
+    return EmailChallengeOut(
+        challenge_id=challenge.id,
+        purpose=purpose,
+        masked_email=mask_email(email),
+        expires_in=max(0, int((_as_utc(challenge.expires_at) - utcnow()).total_seconds())),
+        resend_after=EMAIL_OTP_RESEND_SECONDS,
+        delivery=delivery,
+    )
+
+
+async def _deliver_email_code(email: str, code: str, purpose: Literal["register", "login"]) -> Literal["sent", "failed"]:
+    try:
+        await run_in_threadpool(send_auth_code, email, code, purpose=purpose)
+    except Exception as error:  # SMTP details and the recipient never belong in logs.
+        logging.getLogger("gram.auth").warning(
+            "email delivery failed purpose=%s error_class=%s", purpose, type(error).__name__
+        )
+        return "failed"
+    return "sent"
+
+
+async def _registration_username(
+    session: AsyncSession, email: str, requested: str | None
+) -> str:
+    if requested:
+        live = await session.scalar(select(User.id).where(func.lower(User.username) == requested))
+        pending = await session.scalar(
+            select(PendingRegistration.id).where(
+                func.lower(PendingRegistration.username) == requested,
+                PendingRegistration.expires_at > utcnow(),
+            )
+        )
+        if live or pending:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Юзернейм уже занят")
+        return requested
+    base = re.sub(r"[^a-zA-Z0-9_]", "", email.split("@", 1)[0])[:24].lower()
+    if len(base) < MIN_USERNAME_LENGTH or not base[:1].isalpha():
+        base = f"user_{base}"[:24]
+    username = base
+    suffix = 1
+    while True:
+        live = await session.scalar(select(User.id).where(func.lower(User.username) == username))
+        pending = await session.scalar(
+            select(PendingRegistration.id).where(
+                func.lower(PendingRegistration.username) == username,
+                PendingRegistration.expires_at > utcnow(),
+            )
+        )
+        if not live and not pending:
+            return username
+        suffix += 1
+        username = f"{base[: 31 - len(str(suffix))]}{suffix}"
+
+
+async def _create_registered_user(session: AsyncSession, pending: PendingRegistration) -> User:
+    """Atomically turn a verified pending row into the same durable account registration used before."""
+    if await session.scalar(
+        select(AuthIdentity.user_id).where(func.lower(AuthIdentity.email) == pending.email)
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email уже используется")
+    if await session.scalar(select(User.id).where(func.lower(User.username) == pending.username)):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Юзернейм уже занят")
+    user = User(
+        username=pending.username,
+        display_name=pending.display_name,
+        bio="",
+        related_usernames=[],
+        badges=[],
+        is_online=True,
+    )
+    session.add(user)
+    await session.flush()
+    session.add(
+        AuthIdentity(
+            user_id=user.id,
+            email=pending.email,
+            password_hash=pending.password_hash,
+            email_verified=True,
+        )
+    )
+    session.add(
+        UserPreferences(
+            user_id=user.id,
+            interests=[],
+            onboarding_complete=pending.onboarding_complete,
+        )
+    )
+    session.add(UserProfileDetails(user_id=user.id, last_seen_at=utcnow()))
+    session.add(StarWallet(user_id=user.id, balance=100))
+    session.add(
+        StarLedger(
+            user_id=user.id,
+            amount=100,
+            balance_after=100,
+            kind="welcome",
+            description="Стартовый баланс аккаунта",
+            correlation_id=uuid.uuid4(),
+        )
+    )
+    session.add(
+        CreatorSettings(user_id=user.id, paid_subscription_enabled=False, monthly_price=50)
+    )
+    asset = await session.scalar(
+        select(UsernameAsset).where(func.lower(UsernameAsset.username) == pending.username)
+    )
+    if asset is None:
+        asset = UsernameAsset(
+            username=pending.username,
+            owner_id=user.id,
+            status=UsernameStatus.RESERVED,
+            currency="STARS",
+            reserved_at=utcnow(),
+        )
+        session.add(asset)
+    elif asset.owner_id is None:
+        asset.owner_id = user.id
+        asset.status = UsernameStatus.RESERVED
+        asset.reserved_at = utcnow()
+        asset.listed_at = None
+        asset.price = None
+    else:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Юзернейм уже занят")
+    await session.flush()
+    session.add(UsernameOwnershipEvent(asset_id=asset.id, to_user_id=user.id, action="registered"))
+    await _official_dm(
+        session,
+        user,
+        f"Добро пожаловать в GRAM, {pending.display_name}!\n\n"
+        f"Ваш юзернейм — @{pending.username}, он закреплён за аккаунтом. На балансе 100 ★ "
+        "на первые подарки и подписки.\n\n"
+        "Что стоит сделать сейчас:\n"
+        "• заполнить профиль — аватар, описание, оформление;\n"
+        "• найти интересных авторов в разделе «Поиск»;\n"
+        "• опубликовать первую запись.\n\n"
+        "Мы пишем сюда только по делу: безопасность аккаунта и важные изменения.",
+    )
+    return user
+
+
+async def _create_full_session(
+    session: AsyncSession,
+    user: User,
+    request: Request,
+    response: Response,
+    *,
+    notify_login: bool,
+) -> tuple[str, str, datetime]:
+    await _park_active_session(session, request, response, keep_user_id=user.id)
+    await _drop_parked_slot(session, request, response, user_id=user.id)
+    await _touch_presence(session, user, online=True, force=True)
+    if notify_login:
+        await _notify_new_device(session, user, request)
+    _, raw_refresh, access, access_expires = await _new_session(session, user, request)
+    return raw_refresh, access, access_expires
+
+
+async def _start_registration_challenge(
+    payload: RegisterRequest, request: Request, session: AsyncSession
+) -> EmailChallengeOut:
+    _auth_rate_limit(request, "register", limit=10)
+    if await session.scalar(
+        select(AuthIdentity.user_id).where(func.lower(AuthIdentity.email) == payload.email)
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email уже используется")
+    now = utcnow()
+    await session.execute(
+        delete(PendingRegistration).where(
+            PendingRegistration.expires_at < now - timedelta(days=1)
+        )
+    )
+    existing = await session.scalar(
+        select(PendingRegistration).where(func.lower(PendingRegistration.email) == payload.email)
+    )
+    if existing is not None and _as_utc(existing.expires_at) > now:
+        return _challenge_out(
+            existing, email=existing.email, purpose="register", delivery="sent"
+        )
+    if existing is not None:
+        await session.delete(existing)
+        await session.flush()
+    username = await _registration_username(session, payload.email, payload.username)
+    display_name = payload.display_name or payload.email.split("@", 1)[0].replace(".", " ").title()
+    challenge_id = uuid.uuid4()
+    code = new_email_code()
+    challenge = PendingRegistration(
+        id=challenge_id,
+        email=payload.email,
+        username=username,
+        display_name=display_name,
+        onboarding_complete=payload.username is not None and payload.display_name is not None,
+        password_hash=await run_in_threadpool(hash_password, payload.password),
+        code_hash=email_code_hash(challenge_id, code),
+        expires_at=now + timedelta(minutes=EMAIL_OTP_TTL_MINUTES),
+        attempts=0,
+        sent_count=1,
+        last_sent_at=now,
+    )
+    session.add(challenge)
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email или юзернейм уже ожидает подтверждения",
+        ) from exc
+    delivery = await _deliver_email_code(payload.email, code, "register")
+    return _challenge_out(challenge, email=payload.email, purpose="register", delivery=delivery)
+
+
+async def _start_login_challenge(
+    identity: AuthIdentity, user: User, request: Request, session: AsyncSession
+) -> EmailChallengeOut:
+    _auth_rate_limit(request, "login", limit=20)
+    now = utcnow()
+    await session.execute(
+        delete(EmailLoginChallenge).where(
+            EmailLoginChallenge.created_at < now - timedelta(days=1)
+        )
+    )
+    await session.execute(
+        update(EmailLoginChallenge)
+        .where(
+            EmailLoginChallenge.user_id == user.id,
+            EmailLoginChallenge.consumed_at.is_(None),
+        )
+        .values(consumed_at=now)
+    )
+    challenge_id = uuid.uuid4()
+    code = new_email_code()
+    challenge = EmailLoginChallenge(
+        id=challenge_id,
+        user_id=user.id,
+        code_hash=email_code_hash(challenge_id, code),
+        expires_at=now + timedelta(minutes=EMAIL_OTP_TTL_MINUTES),
+        attempts=0,
+        sent_count=1,
+        last_sent_at=now,
+    )
+    session.add(challenge)
+    await session.commit()
+    delivery = await _deliver_email_code(identity.email, code, "login")
+    return _challenge_out(challenge, email=identity.email, purpose="login", delivery=delivery)
+
+
 @app.post(
     "/api/auth/register",
-    response_model=AuthResponse,
+    response_model=AuthResponse | EmailChallengeOut,
     status_code=status.HTTP_201_CREATED,
     tags=["auth"],
 )
 async def register(
     payload: RegisterRequest, request: Request, response: Response, session: SessionDep
-) -> AuthResponse:
+) -> AuthResponse | EmailChallengeOut:
+    if EMAIL_AUTH_ENABLED and not EMAIL_OTP_BYPASS:
+        return await _start_registration_challenge(payload, request, session)
     if await session.scalar(
         select(AuthIdentity).where(func.lower(AuthIdentity.email) == payload.email)
     ):
@@ -1617,10 +2662,10 @@ async def register(
     )
 
 
-@app.post("/api/auth/login", response_model=AuthResponse, tags=["auth"])
+@app.post("/api/auth/login", response_model=AuthResponse | EmailChallengeOut, tags=["auth"])
 async def login(
     payload: LoginRequest, request: Request, response: Response, session: SessionDep
-) -> AuthResponse:
+) -> AuthResponse | EmailChallengeOut:
     identifier = payload.identifier.strip().lower().removeprefix("@")
     row = (
         await session.execute(
@@ -1634,16 +2679,16 @@ async def login(
             )
         )
     ).first()
-    password_matches = (
-        await run_in_threadpool(verify_password, payload.password, row.AuthIdentity.password_hash)
-        if row is not None
-        else False
-    )
+    password_hash = row.AuthIdentity.password_hash if row is not None else _DUMMY_PASSWORD_HASH
+    password_matches = await run_in_threadpool(verify_password, payload.password, password_hash)
     if row is None or not password_matches:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный логин или пароль"
         )
     identity, user = row
+    if EMAIL_AUTH_ENABLED and not EMAIL_OTP_BYPASS:
+        response.status_code = status.HTTP_202_ACCEPTED
+        return await _start_login_challenge(identity, user, request, session)
     del identity
     # Whoever is signed in right now keeps their session in a parked slot, so this login adds
     # an account to the browser instead of replacing the one already there.
@@ -1660,6 +2705,146 @@ async def login(
     )
 
 
+@app.post("/api/auth/email/verify", response_model=AuthResponse, tags=["auth"])
+async def verify_email_code(
+    payload: EmailCodeVerifyRequest,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+) -> AuthResponse:
+    if not EMAIL_AUTH_ENABLED or EMAIL_OTP_BYPASS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Проверка почты выключена")
+    _auth_rate_limit(request, "verify", limit=30)
+    now = utcnow()
+    pending = await session.scalar(
+        select(PendingRegistration)
+        .where(PendingRegistration.id == payload.challenge_id)
+        .with_for_update()
+    )
+    if pending is not None:
+        if pending.attempts >= EMAIL_OTP_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Лимит попыток исчерпан — запросите новый код",
+            )
+        if _as_utc(pending.expires_at) <= now:
+            raise HTTPException(status_code=status.HTTP_410_GONE, detail="Код истёк — запросите новый")
+        if not email_code_matches(pending.id, payload.code, pending.code_hash):
+            pending.attempts += 1
+            await session.commit()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный код")
+        user = await _create_registered_user(session, pending)
+        await session.delete(pending)
+        raw_refresh, access, access_expires = await _create_full_session(
+            session, user, request, response, notify_login=False
+        )
+        try:
+            await session.commit()
+        except IntegrityError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email или юзернейм уже используется",
+            ) from exc
+        _set_auth_cookies(response, access, raw_refresh)
+        return AuthResponse(
+            user=await render_profile(session, user, user), access_expires_at=access_expires
+        )
+
+    challenge = await session.scalar(
+        select(EmailLoginChallenge)
+        .where(EmailLoginChallenge.id == payload.challenge_id)
+        .with_for_update()
+    )
+    if challenge is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Проверка не найдена")
+    if challenge.consumed_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Код уже использован")
+    if challenge.attempts >= EMAIL_OTP_MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Лимит попыток исчерпан — начните вход заново",
+        )
+    if _as_utc(challenge.expires_at) <= now:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Код истёк — начните вход заново")
+    if not email_code_matches(challenge.id, payload.code, challenge.code_hash):
+        challenge.attempts += 1
+        await session.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный код")
+    identity = await session.get(AuthIdentity, challenge.user_id)
+    user = await session.get(User, challenge.user_id)
+    if identity is None or user is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Вход недоступен")
+    challenge.consumed_at = now
+    identity.email_verified = True
+    raw_refresh, access, access_expires = await _create_full_session(
+        session, user, request, response, notify_login=True
+    )
+    await session.commit()
+    _set_auth_cookies(response, access, raw_refresh)
+    return AuthResponse(
+        user=await render_profile(session, user, user), access_expires_at=access_expires
+    )
+
+
+@app.post("/api/auth/email/resend", response_model=EmailChallengeOut, tags=["auth"])
+async def resend_email_code(
+    payload: EmailChallengeResendRequest,
+    request: Request,
+    session: SessionDep,
+) -> EmailChallengeOut:
+    if not EMAIL_AUTH_ENABLED or EMAIL_OTP_BYPASS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Проверка почты выключена")
+    _auth_rate_limit(request, "resend", limit=10)
+    now = utcnow()
+    pending = await session.scalar(
+        select(PendingRegistration)
+        .where(PendingRegistration.id == payload.challenge_id)
+        .with_for_update()
+    )
+    purpose: Literal["register", "login"]
+    challenge: PendingRegistration | EmailLoginChallenge
+    email: str
+    if pending is not None:
+        challenge = pending
+        email = pending.email
+        purpose = "register"
+    else:
+        login_challenge = await session.scalar(
+            select(EmailLoginChallenge)
+            .where(EmailLoginChallenge.id == payload.challenge_id)
+            .with_for_update()
+        )
+        if login_challenge is None or login_challenge.consumed_at is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Проверка не найдена")
+        identity = await session.get(AuthIdentity, login_challenge.user_id)
+        if identity is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Проверка не найдена")
+        challenge = login_challenge
+        email = identity.email
+        purpose = "login"
+    if challenge.sent_count >= EMAIL_OTP_MAX_SENDS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Лимит отправок исчерпан — начните заново позже",
+        )
+    elapsed = (now - _as_utc(challenge.last_sent_at)).total_seconds()
+    if elapsed < EMAIL_OTP_RESEND_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Новый код можно запросить через {max(1, int(EMAIL_OTP_RESEND_SECONDS - elapsed))} сек.",
+        )
+    code = new_email_code()
+    challenge.code_hash = email_code_hash(challenge.id, code)
+    challenge.expires_at = now + timedelta(minutes=EMAIL_OTP_TTL_MINUTES)
+    challenge.attempts = 0
+    challenge.sent_count += 1
+    challenge.last_sent_at = now
+    await session.commit()
+    delivery = await _deliver_email_code(email, code, purpose)
+    return _challenge_out(challenge, email=email, purpose=purpose, delivery=delivery)
+
+
 @app.post("/api/auth/refresh", response_model=AuthResponse, tags=["auth"])
 async def refresh_auth(
     request: Request,
@@ -1667,6 +2852,21 @@ async def refresh_auth(
     session: SessionDep,
     refresh_cookie: Annotated[str | None, Cookie(alias=REFRESH_COOKIE)] = None,
 ) -> AuthResponse:
+    """
+    Trade a refresh cookie for a fresh pair, rotating the credential.
+
+    Two things here are about *not* signing people out by accident, which is what the previous
+    version did several times a day:
+
+    1. A rotated token presented again within `REFRESH_GRACE_SECONDS` is a race, not a theft. Two
+       requests whose access cookie expired in the same second both refresh; the browser has one
+       cookie jar, so the second one arrives holding the token the first has already spent. That is
+       ordinary and unavoidable — the answer is to hand back the replacement's own credentials
+       rather than to treat it as an attack.
+    2. When a reuse *is* outside the grace window, only the chain that token belongs to is revoked.
+       Revoking every session of the account meant one stale tab on a laptop signed the same person
+       out of their phone as well, which is exactly the reported symptom.
+    """
     if not refresh_cookie:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh-сессия отсутствует"
@@ -1682,11 +2882,38 @@ async def refresh_auth(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh-сессия недействительна"
         )
     if current.revoked_at is not None:
-        await session.execute(
-            update(RefreshSession)
-            .where(RefreshSession.user_id == current.user_id, RefreshSession.revoked_at.is_(None))
-            .values(revoked_at=utcnow())
+        replacement = (
+            await session.get(RefreshSession, current.replaced_by_id)
+            if current.replaced_by_id
+            else None
         )
+        within_grace = (
+            utcnow() - _as_utc(current.revoked_at)
+        ).total_seconds() <= REFRESH_GRACE_SECONDS
+        # A live replacement, moments old: the caller simply lost a race with itself.
+        if (
+            replacement is not None
+            and replacement.revoked_at is None
+            and _as_utc(replacement.expires_at) > utcnow()
+            and within_grace
+        ):
+            user = await session.get(User, replacement.user_id)
+            if user is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Аккаунт не найден"
+                )
+            # Nothing is rotated and the refresh cookie is left alone: the winner of the race has
+            # already put its own token in the jar, and the raw value of a stored credential cannot
+            # be reconstructed from its hash anyway. Only the short-lived access cookie is re-issued,
+            # bound to the replacement's session, which makes the losing retry idempotent.
+            access, access_expires = create_access_token(user.id, replacement.id)
+            _set_access_cookie(response, access)
+            return AuthResponse(
+                user=await render_profile(session, user, user), access_expires_at=access_expires
+            )
+        # A genuine reuse. Revoke this credential's own chain and nothing else, so other devices
+        # stay signed in.
+        await _revoke_session_chain(session, current)
         await session.commit()
         _clear_auth_cookies(response)
         raise HTTPException(
@@ -1987,9 +3214,10 @@ async def change_password(
 async def touch_daily_streak(session: AsyncSession, me: User) -> None:
     """
     The streak counts calendar days with at least one visit: same day is a no-op, the very
-    next day extends it, and any longer gap restarts it at one. A row that predates the
-    streak timestamp falls back to `last_seen_at`, and an unknown last visit keeps the
-    existing count rather than punishing the user for missing history.
+    next day extends it, and any longer gap restarts it at one. Premium protects one missed
+    calendar day: returning after a two-day gap extends the series once instead of erasing it.
+    A row that predates the streak timestamp falls back to `last_seen_at`, and an unknown last
+    visit keeps the existing count rather than punishing the user for missing history.
     """
     details = await session.get(UserProfileDetails, me.id)
     if details is None:
@@ -2005,11 +3233,86 @@ async def touch_daily_streak(session: AsyncSession, me: User) -> None:
         details.streak_days = max(1, details.streak_days or 0)
     elif (today - last).days == 1:
         details.streak_days = (details.streak_days or 0) + 1
+    elif (today - last).days == 2 and await has_premium(session, me.id):
+        details.streak_days = (details.streak_days or 0) + 1
     else:
         details.streak_days = 1
     details.streak_updated_at = now
     details.last_seen_at = now
     await session.commit()
+
+
+class WireSessionCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: uuid.UUID
+    session_id: uuid.UUID
+
+
+@app.post("/api/internal/wire/session-check", include_in_schema=False)
+async def check_wire_session(
+    payload: WireSessionCheckRequest,
+    session: SessionDep,
+    internal_secret: Annotated[
+        str | None, Header(alias="X-Gram-Wire-Internal")
+    ] = None,
+) -> dict[str, bool]:
+    """Confirm that a ticket-bound backing session is still active."""
+    if (
+        len(WIRE_INTERNAL_SECRET) < 32
+        or internal_secret is None
+        or not secrets.compare_digest(internal_secret, WIRE_INTERNAL_SECRET)
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Не найдено")
+    refresh = await session.get(RefreshSession, payload.session_id)
+    user = await session.get(User, payload.user_id)
+    active = bool(
+        refresh is not None
+        and refresh.user_id == payload.user_id
+        and refresh.revoked_at is None
+        and _as_utc(refresh.expires_at) > utcnow()
+        and user is not None
+        and user.banned_at is None
+    )
+    return {"active": active}
+
+
+@app.post("/api/auth/wire-ticket", tags=["auth"])
+async def issue_wire_ticket(request: Request, me: CurrentUser) -> dict[str, Any]:
+    """Mint a one-minute, audience-bound ticket for the first encrypted GRAM Wire frame."""
+    if not WIRE_OUTBOX_ENABLED or len(WIRE_INTERNAL_SECRET) < 32:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="GRAM Wire временно недоступен",
+        )
+    authorization = request.headers.get("authorization", "")
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else None
+    token = token or request.cookies.get(ACCESS_COOKIE)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Требуется авторизация"
+        )
+    # The browser binds the ticket to its live encrypted session by sending the base64url
+    # SHA-256 of the handshake channel binding. It is optional so a client that has not been
+    # rebuilt yet still authenticates, and malformed values are rejected as a bad request
+    # rather than silently minting an unbound ticket.
+    channel_binding = request.headers.get("X-Gram-Wire-Channel-Binding")
+    try:
+        session_id = uuid.UUID(str(decode_access_token(token)["sid"]))
+        ticket, expires_at = create_wire_ticket(
+            me.id, session_id, channel_binding=channel_binding or None
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Некорректная привязка канала GRAM Wire",
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="GRAM Wire временно недоступен",
+        ) from exc
+    return {"ticket": ticket, "expires_at": expires_at}
 
 
 @app.get("/api/auth/me", response_model=UserProfile, tags=["auth"])
@@ -2088,13 +3391,25 @@ async def update_current_profile(  # noqa: C901, PLR0912, PLR0915
         "streak_days",
     }
     detail_fields = {field: fields.pop(field) for field in detail_field_names if field in fields}
+    # Two of the remaining fields are Premium's, and both refusals name the price rather than the
+    # rule: a long description, and a name colour. Keeping a colour already chosen is free — the
+    # subscription pays for choosing, and a lapsed one does not strip a profile bare.
+    if (bio := fields.get("bio")) and len(bio) > FREE_BIO_LENGTH:
+        await _require_premium(
+            session,
+            me,
+            f"Описание длиннее {FREE_BIO_LENGTH} символов — возможность Premium "
+            f"(с ним до {PREMIUM_BIO_LENGTH})",
+        )
+    colour = fields.get("profile_color")
+    if colour and colour not in {"default", me.profile_color or "default"}:
+        await _require_premium(
+            session, me, "Цвет имени в профиле, ленте и чатах — возможность GRAM Premium"
+        )
     username = fields.pop("username", None)
     if username and username.lower() != me.username.lower():
-        occupied = await session.scalar(
-            select(User.id).where(func.lower(User.username) == username.lower(), User.id != me.id)
-        )
-        if occupied:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Юзернейм уже занят")
+        # Accounts, channels and collectible handles share one namespace.
+        await _refuse_taken_handle(session, username, user_id=me.id)
         old_asset = await session.scalar(
             select(UsernameAsset).where(
                 UsernameAsset.owner_id == me.id, UsernameAsset.username == me.username
@@ -2103,8 +3418,6 @@ async def update_current_profile(  # noqa: C901, PLR0912, PLR0915
         existing_asset = await session.scalar(
             select(UsernameAsset).where(func.lower(UsernameAsset.username) == username.lower())
         )
-        if existing_asset and existing_asset.owner_id not in {None, me.id}:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Юзернейм уже занят")
         previous_handle = me.username
         me.username = username.lower()
         if existing_asset is None:
@@ -2160,6 +3473,9 @@ async def update_current_profile(  # noqa: C901, PLR0912, PLR0915
         setattr(me, field, value)
     if related_usernames is not None or "related_usernames" in payload.model_fields_set:
         me.related_usernames = related_usernames or []
+        # Sending the field at all is the owner taking charge of the list. From here on it is theirs
+        # verbatim, empty included — which is what makes a removed handle stay removed.
+        me.usernames_auto = False
     # A profile may advertise several communities; the single slug stays the first of them, so
     # whichever field the client sends, both end up saying the same thing.
     chosen_slugs = detail_fields.get("featured_community_slugs")
@@ -2312,19 +3628,21 @@ def _document_kind(payload: bytes, original_name: str) -> tuple[str, str] | None
 
 
 async def _store_document(
-    file: UploadFile, folder: str, owner_id: uuid.UUID
+    file: UploadFile, folder: str, owner_id: uuid.UUID, limit_bytes: int = MAX_FILE_BYTES
 ) -> tuple[str, str, int, str]:
     """
     Keep an uploaded document and return where it went, what to call it, its size and its kind.
 
     The stored name is ours — the author's is kept only as a label — so nothing about the upload
     can decide a path. The reader always gets it as a download: see `download_post_file`.
+
+    `limit_bytes` is what this uploader may send: the free ceiling, or four times it with Premium.
     """
-    payload = await file.read(MAX_FILE_BYTES + 1)
-    if len(payload) > MAX_FILE_BYTES:
+    payload = await file.read(limit_bytes + 1)
+    if len(payload) > limit_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=f"Файл больше {MAX_FILE_BYTES // (1024 * 1024)} МБ",
+            detail=f"Файл больше {limit_bytes // (1024 * 1024)} МБ",
         )
     if not payload:
         raise HTTPException(
@@ -2347,19 +3665,24 @@ async def _store_document(
     return f"/api/feed/files/{stored}", shown, len(payload), label
 
 
-async def _store_video(file: UploadFile, folder: str, owner_id: uuid.UUID) -> str:
+async def _store_video(
+    file: UploadFile, folder: str, owner_id: uuid.UUID, limit_bytes: int = MAX_VIDEO_BYTES
+) -> str:
     """
     Keep an uploaded clip under `MEDIA_ROOT/<folder>` and return its URL.
 
     Nothing is transcoded: the file is served back exactly as it arrived, which is why the
     container is identified from its own bytes and anything else is refused. A renamed
     executable does not become a video by being called one.
+
+    `limit_bytes` is this uploader's ceiling — Premium raises it, because nothing here has to be
+    re-encoded and the only cost is what a reader has to pull down.
     """
-    payload = await file.read(MAX_VIDEO_BYTES + 1)
-    if len(payload) > MAX_VIDEO_BYTES:
+    payload = await file.read(limit_bytes + 1)
+    if len(payload) > limit_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=f"Видео больше {MAX_VIDEO_BYTES // (1024 * 1024)} МБ",
+            detail=f"Видео больше {limit_bytes // (1024 * 1024)} МБ",
         )
     extension = next(
         (
@@ -2384,7 +3707,18 @@ async def _store_video(file: UploadFile, folder: str, owner_id: uuid.UUID) -> st
 async def _save_profile_image(
     file: UploadFile, folder: str, session: AsyncSession, me: User
 ) -> UserProfile:
-    url = await _store_image(file, folder, me.id)
+    """
+    Store an avatar or a cover — a picture, or a short clip for a living one.
+
+    A clip is kept exactly as it arrived and checked from its own bytes, like every other video
+    here; the client loops it muted, so a "live" avatar is a video that behaves like an image.
+    """
+    kind = (file.content_type or "").lower()
+    url = (
+        await _store_video(file, folder, me.id)
+        if kind.startswith("video/")
+        else await _store_image(file, folder, me.id)
+    )
     if folder == "avatars":
         me.avatar_url = url
     else:
@@ -2417,6 +3751,27 @@ async def settings_for(session: AsyncSession, user_id: uuid.UUID) -> UserSetting
         await session.commit()
         await session.refresh(settings)
     return settings
+
+
+async def _refuse_closed_inbox(session: AsyncSession, recipient: User, *, gift: bool) -> None:
+    """
+    Refuse a handover the recipient has switched off.
+
+    Checked before anything moves, like the ban check beside it: a collectible that has already
+    landed is the recipient's problem to undo, and undoing it costs them exactly as much work as
+    receiving it did. The refusal names the person's choice rather than pretending the transfer
+    failed, so the sender knows there is nothing to retry.
+    """
+    settings = await settings_for(session, recipient.id)
+    if gift:
+        if settings.accept_gifts:
+            return
+        detail = f"@{recipient.username} не принимает подарки"
+    else:
+        if settings.accept_usernames:
+            return
+        detail = f"@{recipient.username} не принимает юзернеймы"
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
 
 async def require_content_access(session: AsyncSession, owner: User, me: User) -> None:
@@ -2463,7 +3818,16 @@ async def update_my_settings(
 ) -> UserSettingsOut:
     """Only the fields sent are touched, so one switch never resets another."""
     settings = await settings_for(session, me.id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    # An emoji beside the name is a premium decoration, like the name's colour. Clearing it is
+    # always allowed, and one already set keeps showing if the subscription lapses — the
+    # subscription buys the choice, not the pixels.
+    emoji = changes.get("status_emoji")
+    if emoji and emoji != settings.status_emoji:
+        await _require_premium(
+            session, me, "Эмодзи-статус рядом с именем — возможность GRAM Premium"
+        )
+    for field, value in changes.items():
         setattr(settings, field, value)
     # The switch takes effect on the surfaces that read the flag straight away, rather than
     # from this account's next request onwards.
@@ -2504,12 +3868,85 @@ async def read_badge(slug: str) -> ProfileBadge:
     return badge_out(normalized)
 
 
+# Declared before `/api/users/{username}/badges`: routes match in order, and "me" would
+# otherwise be read as somebody's handle and never resolve.
+@app.get("/api/users/me/badges", response_model=MyBadgesOut, tags=["profiles"])
+async def read_my_badges(session: SessionDep, me: CurrentUser) -> MyBadgesOut:
+    """
+    The whole shelf: every badge in GRAM, which of them this account has, and what the rest need.
+
+    Locked ones are shown on purpose — a list of only what somebody already earned is a list
+    nobody can act on, and the requirement is the interesting part.
+    """
+    is_premium = me.id in await premium_user_ids(session, [me.id])
+    unlocked, metrics = await available_badges(session, me, is_premium=is_premium)
+    earned = set(unlocked)
+    chosen = shown_badge_slugs(me, is_premium=is_premium)
+    offers: list[BadgeOffer] = []
+    for slug in BADGE_CATALOG:
+        rule = BADGE_RULES.get(slug)
+        offers.append(
+            BadgeOffer(
+                badge=badge_out(slug),
+                earned=slug in earned,
+                chosen=slug in chosen,
+                progress=min(metrics.get(rule[0], 0), rule[1]) if rule else None,
+                target=rule[1] if rule else None,
+            )
+        )
+    # Earned first, then the closest to being earned: the shelf reads as a path.
+    offers.sort(
+        key=lambda offer: (
+            not offer.earned,
+            -((offer.progress or 0) / offer.target) if offer.target else 0,
+            -offer.badge.points,
+        )
+    )
+    return MyBadgesOut(
+        limit=badge_slot_limit(is_premium=is_premium), slots=chosen, badges=offers
+    )
+
+
+@app.put("/api/users/me/badges", response_model=UserProfile, tags=["profiles"])
+async def choose_my_badges(
+    payload: BadgeSelection, session: SessionDep, me: CurrentUser
+) -> UserProfile:
+    """
+    Wear a chosen set of badges.
+
+    Only what the account actually has, and only as many as its plan allows: three for everybody,
+    seven with Premium. Both refusals name the number rather than silently trimming the list.
+    """
+    is_premium = me.id in await premium_user_ids(session, [me.id])
+    limit = badge_slot_limit(is_premium=is_premium)
+    wanted = list(dict.fromkeys(slug.strip() for slug in payload.slugs if slug.strip()))
+    if len(wanted) > limit:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Можно носить {limit} бейджа"
+            + ("" if is_premium else " — с Premium доступно 7"),
+        )
+    unlocked, _ = await available_badges(session, me, is_premium=is_premium)
+    missing = [slug for slug in wanted if slug not in set(unlocked)]
+    if missing:
+        first = badge_out(missing[0])
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"«{first.title}» пока не получен: {first.qualification}",
+        )
+    me.badge_slots = wanted
+    await session.commit()
+    await session.refresh(me)
+    return await render_profile(session, me, me)
+
+
 @app.get("/api/users/{username}/badges", response_model=list[ProfileBadge], tags=["profiles"])
 async def read_user_badges(username: str, session: SessionDep) -> list[ProfileBadge]:
     user = await resolve_user(session, username)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
-    return profile_badges(user.badges)
+    is_premium = user.id in await premium_user_ids(session, [user.id])
+    return profile_badges(shown_badge_slugs(user, is_premium=is_premium))
 
 
 @app.get("/api/users/{username}", response_model=UserProfile, tags=["profiles"])
@@ -2546,8 +3983,17 @@ async def read_profile_stories(
         )
     ).all()
     # A story published into a channel lives on that channel, not on its author's profile.
+    own = [story for story in stories if story.community_id is None]
+    counts, seen = await _story_stats(session, [story.id for story in own], me.id)
     return [
-        profile_story_out(story, author) for story in stories if story.community_id is None
+        profile_story_out(
+            story,
+            author,
+            views_count=counts.get(story.id, 0),
+            seen=story.id in seen or author.id == me.id,
+            is_mine=author.id == me.id,
+        )
+        for story in own
     ]
 
 
@@ -2606,6 +4052,212 @@ async def delete_profile_story(
     await session.delete(story)
     await session.commit()
     return DetailResponse(detail="deleted")
+
+
+@app.post(
+    "/api/users/me/stories/media",
+    response_model=UploadedMedia,
+    status_code=status.HTTP_201_CREATED,
+    tags=["profiles"],
+)
+async def upload_story_media(
+    session: SessionDep, me: CurrentUser, file: Annotated[UploadFile, File()]
+) -> UploadedMedia:
+    """
+    Store one picture or clip for a story being composed.
+
+    One endpoint, because the composer has one file button: what arrived decides which checker
+    runs, and neither trusts the name it was given.
+    """
+    del session
+    kind = (file.content_type or "").lower()
+    if kind.startswith("video/"):
+        return UploadedMedia(url=await _store_video(file, "stories", me.id))
+    return UploadedMedia(url=await _store_image(file, "stories", me.id))
+
+
+async def _story_stats(
+    session: AsyncSession, story_ids: list[uuid.UUID], me_id: uuid.UUID
+) -> tuple[dict[uuid.UUID, int], set[uuid.UUID]]:
+    """View counts for a set of stories, and which of them this reader has already opened."""
+    if not story_ids:
+        return {}, set()
+    wanted = set(story_ids)
+    counts = (
+        await session.execute(
+            select(StoryView.story_id, func.count())
+            .where(StoryView.story_id.in_(wanted))
+            .group_by(StoryView.story_id)
+        )
+    ).all()
+    seen = set(
+        (
+            await session.scalars(
+                select(StoryView.story_id).where(
+                    StoryView.story_id.in_(wanted), StoryView.user_id == me_id
+                )
+            )
+        ).all()
+    )
+    return {story_id: int(total) for story_id, total in counts}, seen
+
+
+async def _readable_story(
+    session: AsyncSession, story_id: uuid.UUID, me: User
+) -> tuple[ProfileStory, User]:
+    """A story the caller is allowed to see, with its author — or the right refusal."""
+    story = await session.get(ProfileStory, story_id)
+    if story is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="История не найдена")
+    author = await session.get(User, story.author_id)
+    if author is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Автор не найден")
+    await require_content_access(session, author, me)
+    return story, author
+
+
+@app.get("/api/stories/feed", response_model=list[StoryFeedEntry], tags=["profiles"])
+async def read_stories_feed(session: SessionDep, me: CurrentUser) -> list[StoryFeedEntry]:
+    """
+    What the people this reader follows are showing right now, grouped by author.
+
+    Only stories with a live window: a highlight with no expiry is a permanent decoration of
+    somebody's profile, and putting it in the rail would mean it never went away. Channel
+    stories are left out too — they belong to the channel's own page.
+    """
+    followed = set(
+        (
+            await session.scalars(
+                select(Follow.following_id).where(Follow.follower_id == me.id)
+            )
+        ).all()
+    )
+    # Somebody who blocked me keeps their stories to themselves, even if I still follow them.
+    blockers = set(
+        (
+            await session.scalars(
+                select(UserBlock.blocker_id).where(UserBlock.blocked_id == me.id)
+            )
+        ).all()
+    )
+    authors = (followed | {me.id}) - (blockers - {me.id})
+    rows = (
+        await session.execute(
+            select(ProfileStory, User)
+            .join(User, ProfileStory.author_id == User.id)
+            .where(
+                ProfileStory.author_id.in_(authors),
+                ProfileStory.community_id.is_(None),
+                ProfileStory.expires_at.is_not(None),
+                ProfileStory.expires_at > utcnow(),
+            )
+            .order_by(ProfileStory.created_at)
+        )
+    ).all()
+    counts, seen = await _story_stats(session, [story.id for story, _ in rows], me.id)
+    grouped: dict[uuid.UUID, list[ProfileStoryOut]] = {}
+    authors_by_id: dict[uuid.UUID, User] = {}
+    for story, author in rows:
+        authors_by_id[author.id] = author
+        grouped.setdefault(author.id, []).append(
+            profile_story_out(
+                story,
+                author,
+                views_count=counts.get(story.id, 0),
+                seen=story.id in seen or author.id == me.id,
+                is_mine=author.id == me.id,
+            )
+        )
+    entries = [
+        StoryFeedEntry(
+            author=compact_user(authors_by_id[author_id]),
+            stories=stories,
+            has_unseen=any(not story.seen for story in stories),
+            is_me=author_id == me.id,
+        )
+        for author_id, stories in grouped.items()
+    ]
+    # Mine first, then whoever has something unwatched, newest activity first inside each group:
+    # the order the rail is read in.
+    entries.sort(
+        key=lambda entry: (
+            not entry.is_me,
+            not entry.has_unseen,
+            -_as_utc(entry.stories[-1].created_at).timestamp(),
+        )
+    )
+    return entries
+
+
+@app.post("/api/stories/{story_id}/view", response_model=DetailResponse, tags=["profiles"])
+async def mark_story_seen(
+    story_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """Record that this reader opened the story. Opening one's own changes nothing."""
+    story, _ = await _readable_story(session, story_id, me)
+    if story.author_id == me.id:
+        return DetailResponse(detail="own_story")
+    existing = await session.scalar(
+        select(StoryView.id).where(StoryView.story_id == story.id, StoryView.user_id == me.id)
+    )
+    if existing is None:
+        session.add(StoryView(story_id=story.id, user_id=me.id))
+        await session.commit()
+    return DetailResponse(detail="seen")
+
+
+@app.get(
+    "/api/stories/{story_id}/viewers", response_model=list[StoryViewerOut], tags=["profiles"]
+)
+async def read_story_viewers(
+    story_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> list[StoryViewerOut]:
+    """Who watched. The author's own list — a viewer is not told who else was there."""
+    story = await session.get(ProfileStory, story_id)
+    if story is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="История не найдена")
+    if story.author_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Просмотры видит только автор истории",
+        )
+    rows = (
+        await session.execute(
+            select(StoryView, User)
+            .join(User, StoryView.user_id == User.id)
+            .where(StoryView.story_id == story.id)
+            .order_by(StoryView.created_at.desc())
+        )
+    ).all()
+    return [StoryViewerOut(user=compact_user(user), at=view.created_at) for view, user in rows]
+
+
+@app.post(
+    "/api/stories/{story_id}/share",
+    response_model=DetailResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["profiles"],
+)
+async def share_story(
+    story_id: uuid.UUID, payload: StoryShare, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """
+    Send a story into conversations — anyone's story, not only one's own.
+
+    The message points at the story rather than copying its media: if the author takes it down,
+    the card says so instead of outliving the decision.
+    """
+    story, _ = await _readable_story(session, story_id, me)
+    sent = 0
+    for chat_id in dict.fromkeys(payload.chat_ids):
+        outgoing = await create_chat_message(
+            session, chat_id, me, payload.text.strip(), story_id=story.id
+        )
+        await chat_connections.broadcast(
+            chat_id, {"type": "message", "message": broadcast_payload(outgoing)}
+        )
+        sent += 1
+    return DetailResponse(detail=f"Отправлено: {sent}")
 
 
 @app.get("/api/users/{username}/replies", response_model=list[ProfileReplyOut], tags=["profiles"])
@@ -2699,6 +4351,14 @@ async def follow_user(username: str, session: SessionDep, me: CurrentUser) -> Fo
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"@{target.username} заблокировал(а) вас",
+        )
+    # A banned account cannot gain an audience while it is banned. Existing followers keep their
+    # subscription — the ban is on the account, not on the people who once read it — but the
+    # count must not keep growing after a moderator has stopped it.
+    if target.banned_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"@{target.username} заблокирован администрацией",
         )
     existing = await session.scalar(
         select(Follow).where(Follow.follower_id == me.id, Follow.following_id == target.id)
@@ -3088,9 +4748,7 @@ async def _draft_community(session: AsyncSession, me: User, slug: str | None) ->
     """A draft for a channel is only offered by the channel that its author owns."""
     if not slug:
         return None
-    community = await session.scalar(
-        select(Community).where(func.lower(Community.slug) == slug.lower())
-    )
+    community = await _resolve_community(session, slug)
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
     if community.owner_id != me.id:
@@ -3298,6 +4956,7 @@ async def search_everything(
                 title=community.title,
                 avatar_url=community.avatar_url,
                 members_count=community.members_count,
+                is_verified=community.is_verified,
                 owner_verified=owner.is_verified,
             )
             for community, owner in community_rows
@@ -3336,11 +4995,23 @@ async def read_feed(
     hidden_authors = await unreadable_author_ids(session, me)
     if hidden_authors:
         query = query.where(Post.author_id.notin_(hidden_authors))
+    # A post hidden by staff leaves the feed for everyone except its author and staff: the author
+    # has to be able to see what was hidden in order to understand the notice about it, and a
+    # moderator has to be able to review the decision afterwards.
+    if not me.is_admin:
+        query = query.where(or_(Post.hidden_at.is_(None), Post.author_id == me.id))
+    # A queued post is in no feed at all until its moment arrives, its author's own included: a
+    # publication that has not happened has no place in a list of things to read. Its author finds
+    # it in `/api/feed/scheduled`, opens it by its own link, and edits it there.
+    query = query.where(or_(Post.publish_at.is_(None), Post.publish_at <= utcnow()))
     # One author's page opens with whatever they pinned; a mixed feed has no owner to pin it.
+    # A post that was queued sorts by the moment it went out, which is the only date a reader
+    # has any use for.
+    fresh = func.coalesce(Post.publish_at, Post.created_at)
     order = (
-        (Post.pinned_at.is_(None), Post.created_at.desc())
+        (Post.pinned_at.is_(None), fresh.desc())
         if author
-        else (Post.created_at.desc(),)
+        else (fresh.desc(),)
     )
     rows = (await session.execute(query.order_by(*order).limit(limit))).all()
     entries = [(post, post_author, None, None) for post, post_author in rows]
@@ -3437,9 +5108,76 @@ async def _reposted_entries(  # noqa: PLR0913
     return found
 
 
+def _is_scheduled(post: Post) -> bool:
+    """Whether this post is still waiting for its moment, and so belongs to its author alone."""
+    return post.publish_at is not None and _as_utc(post.publish_at) > utcnow()
+
+
+async def _resolve_publish_at(
+    session: AsyncSession, me: User, moment: datetime | None
+) -> datetime | None:
+    """
+    What a requested publication time really means.
+
+    A moment in the past — or none at all — means now, and `None` in the column is what "published"
+    looks like everywhere else. A moment in the future is the premium feature, so it is refused with
+    the price rather than silently ignored, and it cannot be further out than a year: a queue nobody
+    will live to see is a way to lose a draft, not to plan one.
+    """
+    if moment is None:
+        return None
+    when = _as_utc(moment)
+    if when <= utcnow():
+        return None
+    if when > utcnow() + timedelta(days=SCHEDULE_HORIZON_DAYS):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Отложить публикацию можно не дальше чем на {SCHEDULE_HORIZON_DAYS} дней",
+        )
+    await _require_premium(
+        session,
+        me,
+        "Отложенная публикация — возможность GRAM Premium",
+        staff_pass=True,
+    )
+    return when
+
+
+async def _check_post_size(
+    session: AsyncSession, me: User, content: str, images: list[str] | None
+) -> None:
+    """
+    The two limits Premium raises on a publication, checked where the publication is made.
+
+    The schema accepts the premium maximum, because a Pydantic model cannot look up a
+    subscription; this is the free ceiling, refused by name so the author reads what to do rather
+    than "422".
+    """
+    if await has_premium(session, me.id):
+        return
+    if len(content) > FREE_POST_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Пост длиннее {FREE_POST_LENGTH} символов — возможность Premium "
+                f"(с ним до {PREMIUM_POST_LENGTH})"
+            ),
+        )
+    if len([url for url in (images or []) if url]) > FREE_POST_IMAGES:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Больше {FREE_POST_IMAGES} фото в одной публикации — возможность Premium "
+                f"(с ним до {PREMIUM_POST_IMAGES})"
+            ),
+        )
+
+
 @app.post("/api/feed", response_model=FeedPost, status_code=status.HTTP_201_CREATED, tags=["feed"])
 async def create_post(payload: PostCreate, session: SessionDep, me: CurrentUser) -> FeedPost:
-    gallery = [url for url in (payload.image_urls or []) if url][:MAX_POST_IMAGES]
+    await _check_post_size(session, me, payload.content, payload.image_urls)
+    publish_at = await _resolve_publish_at(session, me, payload.publish_at)
+    gallery = [url for url in (payload.image_urls or []) if url][:PREMIUM_POST_IMAGES]
     post = Post(
         author_id=me.id,
         content=payload.content,
@@ -3455,11 +5193,20 @@ async def create_post(payload: PostCreate, session: SessionDep, me: CurrentUser)
         link_url=payload.link_url,
         link_title=(payload.link_title or None),
         music=await resolve_post_music(payload.content),
+        publish_at=publish_at,
     )
     session.add(post)
+    await session.flush()
+    if not _is_scheduled(post):
+        await enqueue_wire_social_event(
+            session, "post_created", post.id, author_id=me.id, actor_id=me.id
+        )
     await session.commit()
     await session.refresh(post)
-    return await render_post(session, post, me, me)
+    rendered = await render_post(session, post, me, me)
+    if not _is_scheduled(post):
+        await broadcast_social("post_created", post.id, actor_id=me.id)
+    return rendered
 
 
 async def resolve_post_music(content: str) -> dict[str, Any] | None:
@@ -3504,8 +5251,11 @@ async def upload_post_video(
     session: SessionDep, me: CurrentUser, file: Annotated[UploadFile, File()]
 ) -> UploadedMedia:
     """One clip for a post being written, stored as it arrived and served back the same way."""
-    del session
-    return UploadedMedia(url=await _store_video(file, "posts", me.id))
+    return UploadedMedia(
+        url=await _store_video(
+            file, "posts", me.id, await upload_ceiling(session, me, MAX_VIDEO_BYTES)
+        )
+    )
 
 
 def _poll_options(payload: PostCreate) -> list[str] | None:
@@ -3577,8 +5327,9 @@ async def upload_post_file(
     session: SessionDep, me: CurrentUser, file: Annotated[UploadFile, File()]
 ) -> UploadedFile:
     """One document for a post being written."""
-    del session
-    url, name, size, kind = await _store_document(file, "files", me.id)
+    url, name, size, kind = await _store_document(
+        file, "files", me.id, await upload_ceiling(session, me, MAX_FILE_BYTES)
+    )
     return UploadedFile(url=url, name=name, size=size, kind=kind)
 
 
@@ -3649,8 +5400,12 @@ async def delete_post(post_id: uuid.UUID, session: SessionDep, me: CurrentUser) 
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Нельзя удалить чужую публикацию"
         )
+    await enqueue_wire_social_event(
+        session, "post_deleted", post_id, author_id=post.author_id, actor_id=me.id
+    )
     await session.delete(post)
     await session.commit()
+    await broadcast_social("post_deleted", post_id, actor_id=me.id)
     return DetailResponse(detail="deleted")
 
 
@@ -3675,15 +5430,49 @@ async def edit_post(
 
     The music card is resolved again from the new text: removing a link removes the card, and
     pasting another one replaces it. `edited_at` is what the card shows as «ред.».
+
+    Rewriting something still waiting for its moment is not an edit anybody has to be told about,
+    so «ред.» is only stamped on a post that has readers. Moving the moment itself is a different
+    request — `PATCH /api/feed/{id}/schedule`.
     """
     post = await _own_post(session, post_id, me)
+    await _check_post_size(session, me, payload.content, post.image_urls)
     post.content = payload.content
     if payload.sensitive is not None:
         post.sensitive = payload.sensitive
     post.link_url = payload.link_url
     post.link_title = payload.link_title or None
     post.music = await resolve_post_music(payload.content)
-    post.edited_at = utcnow()
+    if not _is_scheduled(post):
+        post.edited_at = utcnow()
+        await enqueue_wire_social_event(
+            session, "post_updated", post.id, author_id=me.id, actor_id=me.id
+        )
+    await session.commit()
+    await session.refresh(post)
+    rendered = await render_post(session, post, me, me)
+    if not _is_scheduled(post):
+        await broadcast_social("post_updated", post.id, actor_id=me.id)
+    return rendered
+
+
+@app.patch("/api/feed/{post_id}/schedule", response_model=FeedPost, tags=["feed"])
+async def reschedule_post(
+    post_id: uuid.UUID, payload: PostSchedule, session: SessionDep, me: CurrentUser
+) -> FeedPost:
+    """
+    Move one's own queued post, or publish it now by sending no moment at all.
+
+    A post that has already gone out cannot be pulled back: readers may have seen it, and a
+    disappearing publication is a different feature with different consequences.
+    """
+    post = await _own_post(session, post_id, me)
+    if post.publish_at is not None and not _is_scheduled(post):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Эта публикация уже вышла — время изменить нельзя",
+        )
+    post.publish_at = await _resolve_publish_at(session, me, payload.publish_at)
     await session.commit()
     await session.refresh(post)
     return await render_post(session, post, me, me)
@@ -3751,7 +5540,12 @@ async def file_report(
 
     Stored, not swallowed: a second complaint from the same person replaces their reason
     rather than adding a row, so a count means "how many people", not "how many clicks".
+
+    Whose content it was and what it said are captured here, at the only moment both are
+    reliably available: by the time a moderator opens the queue the post may be edited, the
+    comment deleted and the account renamed.
     """
+    subject_id, excerpt = await _report_subject(session, kind, target_id)
     existing = await session.scalar(
         select(ContentReport).where(
             ContentReport.target_kind == kind,
@@ -3767,13 +5561,51 @@ async def file_report(
                 reporter_id=me.id,
                 reason=payload.reason,
                 comment=payload.comment,
+                subject_id=subject_id,
+                excerpt=excerpt,
+                status="open",
             )
         )
     else:
         existing.reason = payload.reason
         existing.comment = payload.comment
+        existing.subject_id = existing.subject_id or subject_id
+        existing.excerpt = existing.excerpt or excerpt
+        # A fresh complaint reopens a case somebody had already closed.
+        existing.status = "open"
+        existing.resolution = None
+        existing.resolved_at = None
+        existing.resolved_by_id = None
     await session.commit()
     return DetailResponse(detail="Жалоба отправлена")
+
+
+async def _report_subject(  # noqa: PLR0911
+    session: AsyncSession, kind: str, target_id: str
+) -> tuple[uuid.UUID | None, str | None]:
+    """Who is answerable for the reported thing, and a snapshot of what it said."""
+    def as_uuid(value: str) -> uuid.UUID | None:
+        try:
+            return uuid.UUID(value)
+        except (ValueError, AttributeError):
+            return None
+
+    if kind == "user":
+        user = await resolve_user(session, target_id)
+        return (user.id if user else None), (f"@{user.username}" if user else None)
+    if kind == "post" and (post_id := as_uuid(target_id)):
+        post = await session.get(Post, post_id)
+        return (post.author_id if post else None), (post.content[:500] if post else None)
+    if kind == "comment" and (comment_id := as_uuid(target_id)):
+        comment = await session.get(PostComment, comment_id)
+        return (comment.author_id if comment else None), (comment.content[:500] if comment else None)
+    if kind == "message" and (message_id := as_uuid(target_id)):
+        message = await session.get(Message, message_id)
+        return (message.sender_id if message else None), (message.content[:500] if message else None)
+    if kind == "community":
+        community = await session.scalar(select(Community).where(Community.slug == target_id))
+        return (community.owner_id if community else None), (community.title if community else None)
+    return None, None
 
 
 @app.post(
@@ -3861,8 +5693,37 @@ async def toggle_post_like(post_id: uuid.UUID, session: SessionDep, me: CurrentU
                     entity_id=str(post.id),
                 )
             )
+    await enqueue_wire_social_event(
+        session, "post_reacted", post.id, author_id=author.id, actor_id=me.id
+    )
     await session.commit()
-    return await render_post(session, post, author, me)
+    rendered = await render_post(session, post, author, me)
+    # Counters on other readers' screens move on their own; the actor already holds this response.
+    await broadcast_social("post_reacted", post.id, actor_id=me.id)
+    return rendered
+
+
+@app.get("/api/feed/scheduled", response_model=list[FeedPost], tags=["feed"])
+async def read_scheduled_posts(session: SessionDep, me: CurrentUser) -> list[FeedPost]:
+    """
+    One's own queue: everything written and not yet published, soonest first.
+
+    Registered before `/api/feed/{post_id}`, or the word would be read as an id — the same reason
+    `/api/feed/bookmarks` sits where it does.
+    """
+    rows = (
+        await session.execute(
+            select(Post, User)
+            .join(User, Post.author_id == User.id)
+            .where(
+                Post.author_id == me.id,
+                Post.publish_at.is_not(None),
+                Post.publish_at > utcnow(),
+            )
+            .order_by(Post.publish_at)
+        )
+    ).all()
+    return [await render_post(session, post, author, me) for post, author in rows]
 
 
 @app.get("/api/feed/{post_id}", response_model=FeedPost, tags=["feed"])
@@ -3880,6 +5741,10 @@ async def read_post(post_id: uuid.UUID, session: SessionDep, me: CurrentUser) ->
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
     post, author = row
+    # A queued post has no readers yet, and a link to one is a link to nothing — the same answer
+    # as for a post that does not exist, because to everybody but its author it does not.
+    if _is_scheduled(post) and post.author_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
     await require_content_access(session, author, me)
     return await render_post(session, post, author, me)
 
@@ -3976,6 +5841,12 @@ async def read_comments(
         # A block hides the people, not the thread: their lines leave it for both of us.
         .where(PostComment.author_id.notin_(await blocked_pair_ids(session, me.id)))
     )
+    # A comment removed by staff leaves the thread for everyone but its author and staff, for the
+    # same reason a hidden post does: the author has to see what the notice is about.
+    if not me.is_admin:
+        query = query.where(
+            or_(PostComment.hidden_at.is_(None), PostComment.author_id == me.id)
+        )
     if sort == "top":
         weights = (
             select(PostCommentLike.comment_id, func.count().label("weight"))
@@ -4022,10 +5893,22 @@ async def edit_comment(
         )
     comment.content = payload.content
     comment.edited_at = utcnow()
+    await enqueue_wire_social_event(
+        session,
+        "comment_updated",
+        post.id,
+        author_id=post.author_id if post.community_id is None else None,
+        comment_id=comment.id,
+        actor_id=me.id,
+    )
     await session.commit()
     await session.refresh(comment)
     author = await session.get(User, comment.author_id)
-    return (await render_comments(session, post, [(comment, author or me)], me))[0]
+    rendered = (await render_comments(session, post, [(comment, author or me)], me))[0]
+    await broadcast_social(
+        "comment_updated", post.id, comment_id=comment.id, actor_id=me.id
+    )
+    return rendered
 
 
 @app.delete(
@@ -4043,9 +5926,18 @@ async def delete_comment(
         )
     # Replies are removed explicitly rather than left to the database: SQLite does not enforce
     # foreign keys unless asked to, and a thread whose root is gone must not linger anywhere.
+    await enqueue_wire_social_event(
+        session,
+        "comment_deleted",
+        post.id,
+        author_id=post.author_id if post.community_id is None else None,
+        comment_id=comment_id,
+        actor_id=me.id,
+    )
     await session.execute(delete(PostComment).where(PostComment.parent_id == comment.id))
     await session.delete(comment)
     await session.commit()
+    await broadcast_social("comment_deleted", post.id, comment_id=comment_id, actor_id=me.id)
     return DetailResponse(detail="Комментарий удалён")
 
 
@@ -4079,9 +5971,21 @@ async def toggle_comment_like(
             )
     else:
         await session.delete(existing)
+    await enqueue_wire_social_event(
+        session,
+        "comment_reacted",
+        post.id,
+        author_id=post.author_id if post.community_id is None else None,
+        comment_id=comment.id,
+        actor_id=me.id,
+    )
     await session.commit()
     author = await session.get(User, comment.author_id)
-    return (await render_comments(session, post, [(comment, author or me)], me))[0]
+    rendered = (await render_comments(session, post, [(comment, author or me)], me))[0]
+    await broadcast_social(
+        "comment_reacted", post.id, comment_id=comment.id, actor_id=me.id
+    )
+    return rendered
 
 
 @app.post(
@@ -4131,9 +6035,23 @@ async def create_comment(
                     entity_id=str(post.id),
                 )
             )
+    await session.flush()
+    await enqueue_wire_social_event(
+        session,
+        "comment_created",
+        post.id,
+        author_id=post.author_id if post.community_id is None else None,
+        comment_id=comment.id,
+        actor_id=me.id,
+    )
     await session.commit()
     await session.refresh(comment)
-    return (await render_comments(session, post, [(comment, me)], me))[0]
+    rendered = (await render_comments(session, post, [(comment, me)], me))[0]
+    # Everyone reading this thread hears about the new line without reloading the page.
+    await broadcast_social(
+        "comment_created", post.id, comment_id=comment.id, actor_id=me.id
+    )
+    return rendered
 
 
 async def _toggle_post_relation(
@@ -4282,7 +6200,18 @@ async def render_chat_summary(session: AsyncSession, chat: Chat, me: User) -> Ch
     last_row = (
         await session.execute(last_query.order_by(Message.created_at.desc()).limit(1))
     ).first()
-    last_detail = message_out(last_row.Message, last_row.User, me.id) if last_row else None
+    last_detail = (
+        message_out(
+            last_row.Message,
+            last_row.User,
+            me.id,
+            # Costs nothing unless the row really is a shared story: the helper returns at once
+            # when there is no id to look up.
+            story=await _shared_story(session, last_row.Message.story_id),
+        )
+        if last_row
+        else None
+    )
     # `is_group` wins over `kind`: rows that predate the column were all backfilled to
     # "direct", and a group must not be mislabelled because of that default.
     kind = "group" if chat.is_group else (chat.kind or "direct")
@@ -4317,6 +6246,15 @@ async def render_chat_summary(session: AsyncSession, chat: Chat, me: User) -> Ch
         autodelete_seconds=chat.autodelete_seconds or 0,
         peer_blocked=peer_blocked,
         blocked_by_peer=blocked_by_peer,
+        is_public=bool(chat.is_public),
+        # The code is the link, so only somebody already inside is handed it.
+        invite_code=chat.invite_code if (mine is not None and chat.is_group) else None,
+        # A private group is the owner's to invite into; a public one anybody in it can bring
+        # people to, which is what its link means anyway.
+        can_invite=bool(
+            chat.is_group and mine is not None and (chat.is_public or chat.owner_id == me.id)
+        ),
+        is_owner=chat.owner_id == me.id,
     )
 
 
@@ -4571,6 +6509,45 @@ async def delete_chat(
     return DetailResponse(detail="chat_cleared")
 
 
+@app.post("/api/chats/{chat_id}/read", response_model=DetailResponse, tags=["chats"])
+async def mark_chat_read(
+    chat_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """
+    Say that this conversation has been read up to now.
+
+    Opening the thread already does this, but a message that arrives *while* the thread is open
+    arrives over the socket and never touches that endpoint — so it stayed unread for as long as
+    the reader kept looking at it, and the badge in the list disagreed with what was on screen.
+
+    Broadcasting the receipt is the other half: the sender's single tick becomes two the moment
+    somebody reads, instead of on their next poll.
+    """
+    member = await require_chat_member(session, chat_id, me.id)
+    now = utcnow()
+    member.last_read_at = now
+    member.marked_unread = False
+    await enqueue_wire_chat_event(
+        session,
+        chat_id,
+        "chat.read",
+        {"user_id": str(me.id), "at": now.isoformat()},
+        actor_id=me.id,
+    )
+    await session.commit()
+    await chat_connections.broadcast(
+        chat_id,
+        {
+            "type": "chat_read",
+            "chat_id": str(chat_id),
+            "user_id": str(me.id),
+            "at": now.isoformat(),
+        },
+    )
+    await announce_chat_activity(session, chat_id, actor_id=me.id)
+    return DetailResponse(detail="chat_read")
+
+
 @app.post("/api/chats/read-all", response_model=DetailResponse, tags=["chats"])
 async def read_all_chats(session: SessionDep, me: CurrentUser) -> DetailResponse:
     members = (
@@ -4729,6 +6706,9 @@ async def create_group_chat(
         title=payload.title,
         avatar_url=payload.avatar_url,
         owner_id=me.id,
+        is_public=payload.is_public,
+        # A public group is only public because of its link, so it is minted with one.
+        invite_code=_new_invite_code() if payload.is_public else None,
     )
     session.add(chat)
     await session.flush()
@@ -4739,12 +6719,152 @@ async def create_group_chat(
         Message(
             chat_id=chat.id,
             sender_id=me.id,
-            content=f"Группа «{payload.title}» создана",
+            content=(
+                f"Группа «{payload.title}» создана"
+                if not payload.is_public
+                else f"Публичная группа «{payload.title}» создана — вход по ссылке"
+            ),
             is_service=True,
         )
     )
     await session.commit()
     await session.refresh(chat)
+    return await render_chat_summary(session, chat, me)
+
+
+def _new_invite_code() -> str:
+    """
+    A link token that cannot be guessed from the group's name or its id.
+
+    22 characters of url-safe randomness: short enough to paste into a chat, long enough that
+    walking the space is not a way in.
+    """
+    return secrets.token_urlsafe(16)[:22]
+
+
+async def _group_for_owner(session: AsyncSession, chat_id: uuid.UUID, me: User) -> Chat:
+    """A group the caller owns, or the right refusal."""
+    await require_chat_member(session, chat_id, me.id)
+    chat = await session.get(Chat, chat_id)
+    if chat is None or not chat.is_group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Группа не найдена")
+    if chat.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Настройки группы меняет её владелец",
+        )
+    return chat
+
+
+@app.patch("/api/chats/{chat_id}/access", response_model=ChatSummary, tags=["chats"])
+async def update_group_access(
+    chat_id: uuid.UUID, payload: GroupAccessUpdate, session: SessionDep, me: CurrentUser
+) -> ChatSummary:
+    """
+    Open a group to its link, or close it.
+
+    Closing clears the code rather than remembering it: a link that stops working and then starts
+    again is a door somebody was handed a key to months ago.
+    """
+    chat = await _group_for_owner(session, chat_id, me)
+    if chat.is_public == payload.is_public:
+        return await render_chat_summary(session, chat, me)
+    chat.is_public = payload.is_public
+    chat.invite_code = _new_invite_code() if payload.is_public else None
+    session.add(
+        Message(
+            chat_id=chat.id,
+            sender_id=me.id,
+            content=(
+                f"{me.display_name} открыл(а) группу — теперь войти можно по ссылке"
+                if payload.is_public
+                else f"{me.display_name} закрыл(а) группу — вход только по приглашению"
+            ),
+            is_service=True,
+        )
+    )
+    await session.commit()
+    await session.refresh(chat)
+    return await render_chat_summary(session, chat, me)
+
+
+@app.post("/api/chats/{chat_id}/invite", response_model=ChatSummary, tags=["chats"])
+async def rotate_group_invite(
+    chat_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> ChatSummary:
+    """Mint a new link and kill the old one — the answer to a link that leaked."""
+    chat = await _group_for_owner(session, chat_id, me)
+    if not chat.is_public:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ссылка есть только у публичной группы",
+        )
+    chat.invite_code = _new_invite_code()
+    await session.commit()
+    await session.refresh(chat)
+    return await render_chat_summary(session, chat, me)
+
+
+async def _chat_by_invite(session: AsyncSession, code: str) -> Chat:
+    """The group behind a link, or a refusal that does not leak whether it ever existed."""
+    chat = await session.scalar(
+        select(Chat).where(Chat.invite_code == code.strip(), Chat.is_public.is_(True))
+    )
+    if chat is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ссылка недействительна — группа закрыта или ссылка обновлена",
+        )
+    return chat
+
+
+@app.get("/api/chats/join/{code}", response_model=GroupInvitePreview, tags=["chats"])
+async def preview_group_invite(
+    code: str, session: SessionDep, me: CurrentUser
+) -> GroupInvitePreview:
+    """What the link shows before anybody walks in."""
+    chat = await _chat_by_invite(session, code)
+    members = int(
+        await session.scalar(
+            select(func.count()).select_from(ChatMember).where(ChatMember.chat_id == chat.id)
+        )
+        or 0
+    )
+    owner = await session.get(User, chat.owner_id) if chat.owner_id else None
+    mine = await session.scalar(
+        select(ChatMember.id).where(ChatMember.chat_id == chat.id, ChatMember.user_id == me.id)
+    )
+    return GroupInvitePreview(
+        chat_id=chat.id,
+        title=chat.title or "Группа",
+        avatar_url=chat.avatar_url,
+        members_count=members,
+        owner=compact_user(owner) if owner else None,
+        is_member=mine is not None,
+    )
+
+
+@app.post("/api/chats/join/{code}", response_model=ChatSummary, tags=["chats"])
+async def join_group_by_invite(
+    code: str, session: SessionDep, me: CurrentUser
+) -> ChatSummary:
+    """Walk into a public group through its link."""
+    chat = await _chat_by_invite(session, code)
+    existing = await session.scalar(
+        select(ChatMember).where(ChatMember.chat_id == chat.id, ChatMember.user_id == me.id)
+    )
+    if existing is None:
+        session.add(ChatMember(chat_id=chat.id, user_id=me.id))
+        session.add(
+            Message(
+                chat_id=chat.id,
+                sender_id=me.id,
+                content=f"{me.display_name} присоединился(ась) по ссылке",
+                is_service=True,
+            )
+        )
+        await session.commit()
+        await session.refresh(chat)
     return await render_chat_summary(session, chat, me)
 
 
@@ -4808,6 +6928,12 @@ async def add_group_members(
     if chat is None or not chat.is_group:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Участников можно добавить только в группу"
+        )
+    # A private group is entered by the owner's invitation only — that is what makes it private.
+    if not chat.is_public and chat.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="В закрытую группу приглашает только её владелец",
         )
     existing = set(
         (
@@ -4918,10 +7044,39 @@ async def read_chat_info(chat_id: uuid.UUID, session: SessionDep, me: CurrentUse
     ]
     gift_ids = [message.gift_id for message, _ in messages if message.gift_id]
     gifts = await _message_gifts(session, gift_ids)
+    # Both shelves come out of the scan already done above rather than from a table of their
+    # own: an attachment belongs to the message that carried it, and a second copy of that
+    # fact is a second thing that can fall out of step.
+    media = [
+        ChatAttachment(
+            kind=cast("Literal['image', 'video']", message.media_kind or "image"),
+            url=message.media_url,
+            message_id=message.id,
+            sender_name=sender.display_name,
+            created_at=message.created_at,
+        )
+        for message, sender in messages
+        if message.media_url
+    ]
+    files = [
+        ChatAttachment(
+            kind="file",
+            url=message.file_url,
+            name=message.file_name,
+            size=message.file_size,
+            message_id=message.id,
+            sender_name=sender.display_name,
+            created_at=message.created_at,
+        )
+        for message, sender in messages
+        if message.file_url
+    ]
     return ChatInfo(
         chat=await render_chat_summary(session, chat, me),
         members=members,
         links=links[:60],
+        media=media[:120],
+        files=files[:60],
         gifts=[gifts[gift_id] for gift_id in gift_ids if gift_id in gifts][:60],
         messages_count=len(messages),
     )
@@ -4945,6 +7100,7 @@ async def _chat_gift_recipient(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Получатель не участник чата"
             )
+        _refuse_banned_recipient(resolved)
         recipient = resolved
     elif not payload.claimable:
         # A direct chat has exactly one other person, so no choice needs making.
@@ -4955,6 +7111,8 @@ async def _chat_gift_recipient(
                 detail="Выберите получателя или откройте подарок для всех",
             )
         recipient = await session.get(User, peer_ids.pop())
+        if recipient is not None:
+            _refuse_banned_recipient(recipient)
     if payload.claimable and len(member_ids) < MIN_CLAIMABLE_MEMBERS:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -5041,12 +7199,29 @@ async def send_chat_gift(
                 entity_id=str(gift.id),
             )
         )
+    await enqueue_wire_chat_event(
+        session,
+        chat_id,
+        "chat.message_created",
+        {"message_id": str(message.id)},
+        actor_id=me.id,
+    )
     await session.commit()
     await session.refresh(message)
-    outgoing = message_out(message, me, me.id, gift=compact_gift(gift))
+    author_premium, author_emblem = await _sender_marks(session, me.id)
+    outgoing = message_out(
+        message,
+        me,
+        me.id,
+        gift=compact_gift(gift),
+        sender_premium=author_premium,
+        sender_name_gift=author_emblem,
+    )
     await chat_connections.broadcast(
         chat_id, {"type": "message", "message": broadcast_payload(outgoing)}
     )
+    # A gift is a message too, so the list has to move for everybody the same way it does for text.
+    await announce_chat_activity(session, chat_id, actor_id=me.id)
     return outgoing
 
 
@@ -5123,14 +7298,24 @@ async def claim_chat_gift(
             entity_id=str(gift.id),
         )
     )
+    await enqueue_wire_chat_event(
+        session,
+        chat_id,
+        "chat.message_edited",
+        {"message_id": str(message_id)},
+        actor_id=me.id,
+    )
     await session.commit()
     await session.refresh(message)
     sender = await session.get(User, message.sender_id)
+    author_premium, author_emblem = await _sender_marks(session, message.sender_id)
     outgoing = message_out(
         message,
         sender or me,
         me.id,
         gift=compact_gift(gift),
+        sender_premium=author_premium,
+        sender_name_gift=author_emblem,
         claimed_by=compact_user(me),
     )
     await chat_connections.broadcast(
@@ -5181,6 +7366,7 @@ async def read_messages(
     )
     reactions = await _message_reactions(session, [message.id for message, _ in ordered], me.id)
     premium = await premium_user_ids(session, [sender.id for _, sender in ordered])
+    emblems = await name_gift_map(session, [sender.id for _, sender in ordered])
     gifts = await _message_gifts(
         session, [message.gift_id for message, _ in ordered if message.gift_id]
     )
@@ -5191,6 +7377,9 @@ async def read_messages(
     forwarders = await _message_claimers(
         session, [message.forwarded_from_id for message, _ in ordered]
     )
+    stories = await _message_stories(
+        session, [message.story_id for message, _ in ordered if message.story_id]
+    )
     peers_read_at = await _peers_read_at(session, chat_id, me.id)
     return [
         message_out(
@@ -5200,6 +7389,7 @@ async def read_messages(
             quote=quotes.get(message.reply_to_id),
             reactions=reactions.get(message.id),
             sender_premium=sender.id in premium,
+            sender_name_gift=emblems.get(sender.id),
             gift=gifts.get(message.gift_id) if message.gift_id else None,
             peers_read_at=peers_read_at,
             claimed_by=claimers.get(message.gift_claimed_by_id)
@@ -5208,9 +7398,26 @@ async def read_messages(
             forwarded_from=forwarders.get(message.forwarded_from_id)
             if message.forwarded_from_id
             else None,
+            story=stories.get(message.story_id) if message.story_id else None,
         )
         for message, sender in ordered
     ]
+
+
+async def _message_stories(
+    session: AsyncSession, story_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, StoryCompact]:
+    """Story cards for a window of messages, in one query — with their authors in a second."""
+    if not story_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(ProfileStory, User)
+            .join(User, ProfileStory.author_id == User.id)
+            .where(ProfileStory.id.in_(set(story_ids)))
+        )
+    ).all()
+    return {story.id: compact_story(story, author) for story, author in rows}
 
 
 async def _message_claimers(
@@ -5290,7 +7497,7 @@ async def _message_quotes(
     }
 
 
-async def create_chat_message(  # noqa: PLR0913
+async def create_chat_message(  # noqa: C901, PLR0913
     session: AsyncSession,
     chat_id: uuid.UUID,
     me: User,
@@ -5299,6 +7506,9 @@ async def create_chat_message(  # noqa: PLR0913
     reply_to_id: uuid.UUID | None = None,
     forwarded_from_id: uuid.UUID | None = None,
     media_url: str | None = None,
+    media_kind: str | None = None,
+    document: tuple[str, str, int] | None = None,
+    story_id: uuid.UUID | None = None,
 ) -> ChatMessage:
     member = await require_chat_member(session, chat_id, me.id)
     if reply_to_id is not None:
@@ -5315,52 +7525,247 @@ async def create_chat_message(  # noqa: PLR0913
         # is never briefly longer than the chat's own rule allows.
         await purge_expired_messages(session, chat)
     message = Message(
+        id=uuid.uuid4(),
         chat_id=chat_id,
         sender_id=me.id,
         content=content,
         reply_to_id=reply_to_id,
         forwarded_from_id=forwarded_from_id,
         media_url=media_url,
+        media_kind=media_kind,
+        file_url=document[0] if document else None,
+        file_name=document[1] if document else None,
+        file_size=document[2] if document else None,
+        story_id=story_id,
     )
     session.add(message)
     # Writing into a chat is the clearest possible sign it is not deleted or unread.
     member.cleared_at = None
     member.marked_unread = False
-    # Muting is per person, so the query asks who still wants to hear about this.
-    recipients = (
-        await session.scalars(
-            select(ChatMember.user_id).where(
-                ChatMember.chat_id == chat_id,
-                ChatMember.user_id != me.id,
-                ChatMember.muted.is_(False),
-            )
+    # Load all members once: notification muting and durable transport delivery are different
+    # concerns. Muted members skip the notification but must still receive chat invalidation events.
+    member_rows = (
+        await session.execute(
+            select(ChatMember.user_id, ChatMember.muted).where(ChatMember.chat_id == chat_id)
         )
     ).all()
+    recipients = [
+        user_id for user_id, muted in member_rows if user_id != me.id and not muted
+    ]
+    # A wordless message still has to say something in the list and in the notification, so it
+    # is named by what it carries.
+    if media_kind == "video":
+        wordless = "Видео"
+    elif media_url:
+        wordless = "Фото"
+    elif document:
+        wordless = f"Файл · {document[1]}"
+    elif story_id is not None:
+        wordless = "История"
+    else:
+        wordless = ""
     for recipient_id in recipients:
         session.add(
             Notification(
                 user_id=recipient_id,
                 actor_id=me.id,
                 kind=NotificationKind.MESSAGE,
-                text=f"{me.display_name}: {content[:120] or ('Фото' if media_url else '')}",
+                text=f"{me.display_name}: {content[:120] or wordless}",
                 entity_id=str(chat_id),
             )
         )
+    if WIRE_OUTBOX_ENABLED:
+        for recipient_id, _muted in member_rows:
+            session.add(
+                RealtimeOutbox(
+                    user_id=recipient_id,
+                    event_type="chat.message_created",
+                    payload={
+                        "chat_id": str(chat_id),
+                        "message_id": str(message.id),
+                        "actor_id": str(me.id),
+                    },
+                    idempotency_key=f"message:{message.id}:{recipient_id}",
+                )
+            )
     await session.commit()
     await session.refresh(message)
+    # Everybody in the chat, muted included, so their chat list moves without being re-opened.
+    # The per-chat socket only reaches whoever has that conversation on screen; this is what makes
+    # a badge appear while the reader is somewhere else entirely.
+    await announce_chat_activity(session, chat_id, actor_id=me.id)
     quotes = await _message_quotes(session, [reply_to_id] if reply_to_id else [])
     forwarded = (
         compact_user(await session.get(User, forwarded_from_id) or me)
         if forwarded_from_id
         else None
     )
+    shared = await _shared_story(session, story_id)
+    # The author's own marks, so the frame that reaches everybody else already carries them. A
+    # socket frame is the only copy of a live message the other members get: without these, a
+    # premium star or a name gift appeared only after the thread was re-fetched.
+    author_premium = await premium_user_ids(session, [me.id])
+    author_emblem = await name_gift_map(session, [me.id])
     return message_out(
         message,
         me,
         me.id,
         quote=quotes.get(reply_to_id) if reply_to_id else None,
+        sender_premium=me.id in author_premium,
+        sender_name_gift=author_emblem.get(me.id),
         forwarded_from=forwarded,
+        story=shared,
     )
+
+
+WIRE_SOCIAL_EVENT_TYPES = frozenset(
+    {
+        "post_created",
+        "post_updated",
+        "post_deleted",
+        "post_reacted",
+        "comment_created",
+        "comment_updated",
+        "comment_deleted",
+        "comment_reacted",
+    }
+)
+
+
+async def enqueue_wire_social_event(
+    session: AsyncSession,
+    event_type: str,
+    post_id: uuid.UUID,
+    *,
+    author_id: uuid.UUID | None = None,
+    comment_id: uuid.UUID | None = None,
+    actor_id: uuid.UUID | None = None,
+) -> None:
+    """Queue one privacy-filtered social invalidation per active account in the transaction."""
+    if not WIRE_OUTBOX_ENABLED:
+        return
+    if event_type not in WIRE_SOCIAL_EVENT_TYPES:
+        raise ValueError("invalid Wire social event type")
+    recipient_query = (
+        select(RefreshSession.user_id)
+        .join(User, User.id == RefreshSession.user_id)
+        .where(
+            RefreshSession.revoked_at.is_(None),
+            RefreshSession.expires_at > func.now(),
+            User.banned_at.is_(None),
+        )
+        .distinct()
+    )
+    if author_id is not None:
+        blocked = select(UserBlock.id).where(
+            or_(
+                and_(
+                    UserBlock.blocker_id == RefreshSession.user_id,
+                    UserBlock.blocked_id == author_id,
+                ),
+                and_(
+                    UserBlock.blocker_id == author_id,
+                    UserBlock.blocked_id == RefreshSession.user_id,
+                ),
+            )
+        )
+        recipient_query = recipient_query.where(~blocked.exists())
+        private_account = bool(
+            await session.scalar(
+                select(UserSettings.private_account).where(UserSettings.user_id == author_id)
+            )
+        )
+        if private_account:
+            follows = select(Follow.id).where(
+                Follow.follower_id == RefreshSession.user_id,
+                Follow.following_id == author_id,
+            )
+            recipient_query = recipient_query.where(
+                or_(RefreshSession.user_id == author_id, follows.exists())
+            )
+    recipients = (await session.scalars(recipient_query)).all()
+    body = {"post_id": str(post_id)}
+    if comment_id is not None:
+        body["comment_id"] = str(comment_id)
+    if actor_id is not None:
+        body["actor_id"] = str(actor_id)
+    operation_id = uuid.uuid4().hex
+    for recipient_id in recipients:
+        session.add(
+            RealtimeOutbox(
+                user_id=recipient_id,
+                event_type=event_type,
+                payload=dict(body),
+                idempotency_key=f"social:{event_type}:{operation_id}:{recipient_id}",
+            )
+        )
+
+
+MAX_WIRE_EVENT_TYPE_LENGTH = 96
+
+
+async def enqueue_wire_chat_event(
+    session: AsyncSession,
+    chat_id: uuid.UUID,
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    actor_id: uuid.UUID | None = None,
+) -> None:
+    """Queue one durable per-member chat invalidation in the caller's transaction."""
+    if not WIRE_OUTBOX_ENABLED:
+        return
+    if not event_type.startswith("chat.") or len(event_type) > MAX_WIRE_EVENT_TYPE_LENGTH:
+        raise ValueError("invalid Wire chat event type")
+    members = (
+        await session.scalars(select(ChatMember.user_id).where(ChatMember.chat_id == chat_id))
+    ).all()
+    body: dict[str, Any] = {"chat_id": str(chat_id), **payload}
+    if actor_id is not None:
+        body["actor_id"] = str(actor_id)
+    operation_id = uuid.uuid4().hex
+    for recipient_id in members:
+        session.add(
+            RealtimeOutbox(
+                user_id=recipient_id,
+                event_type=event_type,
+                payload=body,
+                idempotency_key=f"{event_type}:{operation_id}:{recipient_id}",
+            )
+        )
+
+
+async def announce_chat_activity(
+    session: AsyncSession, chat_id: uuid.UUID, *, actor_id: uuid.UUID | None = None
+) -> None:
+    """
+    Tell every member's open tabs that this conversation moved.
+
+    Deliberately thin — a chat id and who caused it — so nothing here has to know what a message
+    looks like, and so the frame is safe to send to a tab showing an unrelated screen. The chat
+    list refetches on it; a tab that has the conversation open already had it from the per-chat
+    socket and merely refetches a list it was going to refetch anyway.
+    """
+    members = (
+        await session.scalars(select(ChatMember.user_id).where(ChatMember.chat_id == chat_id))
+    ).all()
+    payload: dict[str, Any] = {"type": "chat_activity", "chat_id": str(chat_id)}
+    if actor_id is not None:
+        payload["actor_id"] = str(actor_id)
+    await social_connections.send_to_users(members, payload)
+
+
+async def _shared_story(
+    session: AsyncSession, story_id: uuid.UUID | None
+) -> StoryCompact | None:
+    """The card for one shared story, or nothing when the message carries none."""
+    if story_id is None:
+        return None
+    story = await session.get(ProfileStory, story_id)
+    if story is None:
+        return None
+    author = await session.get(User, story.author_id)
+    return compact_story(story, author) if author else None
 
 
 async def _refuse_if_blocked(session: AsyncSession, chat: Chat, me: User) -> None:
@@ -5412,15 +7817,44 @@ async def send_message_media(  # noqa: PLR0913
     reply_to_id: Annotated[uuid.UUID | None, Form()] = None,
 ) -> ChatMessage:
     """
-    Send a picture, with the text beside it as its caption.
+    Send a picture, a clip or a document, with the text beside it as its caption.
+
+    One endpoint for all three because the composer has one attach button: what arrived is
+    decided from the upload's own declared type, and each kind is then stored by the helper
+    that already knows how to check it — nothing is trusted because of its name.
 
     Membership is checked before the bytes are stored, so a stranger cannot use a chat id as
     free file hosting.
     """
     await require_chat_member(session, chat_id, me.id)
-    url = await _store_image(file, "chats", me.id)
+    declared = (file.content_type or "").lower()
+    media_url: str | None = None
+    media_kind: str | None = None
+    document: tuple[str, str, int] | None = None
+    if declared.startswith("video/"):
+        media_url = await _store_video(
+            file, "chats", me.id, await upload_ceiling(session, me, MAX_VIDEO_BYTES)
+        )
+        media_kind = "video"
+    elif declared.startswith("image/"):
+        media_url = await _store_image(file, "chats", me.id)
+        media_kind = "image"
+    else:
+        # Documents share the one store the feed's own attachments use, and are handed back
+        # only as downloads by `download_post_file`.
+        url, name, size, _label = await _store_document(
+            file, "files", me.id, await upload_ceiling(session, me, MAX_FILE_BYTES)
+        )
+        document = (url, name, size)
     outgoing = await create_chat_message(
-        session, chat_id, me, caption.strip(), reply_to_id=reply_to_id, media_url=url
+        session,
+        chat_id,
+        me,
+        caption.strip(),
+        reply_to_id=reply_to_id,
+        media_url=media_url,
+        media_kind=media_kind,
+        document=document,
     )
     await chat_connections.broadcast(
         chat_id, {"type": "message", "message": broadcast_payload(outgoing)}
@@ -5525,11 +7959,24 @@ async def edit_message(
         )
     message.content = payload.content
     message.edited_at = utcnow()
+    await enqueue_wire_chat_event(
+        session,
+        chat_id,
+        "chat.message_edited",
+        {"message_id": str(message_id)},
+        actor_id=me.id,
+    )
     await session.commit()
     await session.refresh(message)
     quotes = await _message_quotes(session, [message.reply_to_id] if message.reply_to_id else [])
+    author_premium, author_emblem = await _sender_marks(session, me.id)
     outgoing = message_out(
-        message, me, me.id, quote=quotes.get(message.reply_to_id) if message.reply_to_id else None
+        message,
+        me,
+        me.id,
+        quote=quotes.get(message.reply_to_id) if message.reply_to_id else None,
+        sender_premium=author_premium,
+        sender_name_gift=author_emblem,
     )
     await chat_connections.broadcast(
         chat_id, {"type": "message_edited", "message": broadcast_payload(outgoing)}
@@ -5566,6 +8013,13 @@ async def delete_message(
             )
         # The row goes away entirely — no tombstone in its place. Replies survive because
         # `reply_to_id` is ON DELETE SET NULL, so only the quote disappears with it.
+        await enqueue_wire_chat_event(
+            session,
+            chat_id,
+            "chat.message_deleted",
+            {"message_id": str(message_id)},
+            actor_id=me.id,
+        )
         await session.delete(message)
         await session.commit()
         await chat_connections.broadcast(
@@ -5627,15 +8081,25 @@ async def toggle_reaction(
         await session.delete(existing)
     else:
         existing.emoji = payload.emoji
+    await enqueue_wire_chat_event(
+        session,
+        chat_id,
+        "chat.message_reacted",
+        {"message_id": str(message_id)},
+        actor_id=me.id,
+    )
     await session.commit()
     reactions = await _message_reactions(session, [message_id], me.id)
     quotes = await _message_quotes(session, [message.reply_to_id] if message.reply_to_id else [])
+    author_premium, author_emblem = await _sender_marks(session, message.sender_id)
     outgoing = message_out(
         message,
         sender,
         me.id,
         quote=quotes.get(message.reply_to_id) if message.reply_to_id else None,
         reactions=reactions.get(message_id),
+        sender_premium=author_premium,
+        sender_name_gift=author_emblem,
     )
     await chat_connections.broadcast(
         chat_id, {"type": "message_reacted", "message": broadcast_payload(outgoing)}
@@ -5685,9 +8149,19 @@ async def pin_message(
                 is_service=True,
             )
         )
+    await enqueue_wire_chat_event(
+        session,
+        chat_id,
+        "chat.message_pinned",
+        {"message_id": str(message_id), "pinned": pinning},
+        actor_id=me.id,
+    )
     await session.commit()
     await session.refresh(message)
-    outgoing = message_out(message, sender, me.id)
+    author_premium, author_emblem = await _sender_marks(session, message.sender_id)
+    outgoing = message_out(
+        message, sender, me.id, sender_premium=author_premium, sender_name_gift=author_emblem
+    )
     await chat_connections.broadcast(
         chat_id, {"type": "message_pinned", "message": broadcast_payload(outgoing)}
     )
@@ -5740,7 +8214,12 @@ def _ledger_change(  # noqa: PLR0913
 @app.get("/api/stars/wallet", response_model=WalletOut, tags=["Stars"])
 async def stars_wallet(session: SessionDep, me: CurrentUser) -> WalletOut:
     wallet = await _wallet_for_update(session, me.id)
-    return WalletOut(balance=wallet.balance, updated_at=wallet.updated_at)
+    return WalletOut(
+        balance=wallet.balance,
+        updated_at=wallet.updated_at,
+        # So the wallet can say the way out is closed instead of offering a form that will refuse.
+        payouts_enabled=STAR_PAYOUTS_ENABLED,
+    )
 
 
 async def _star_transactions(session: AsyncSession, me: User, limit: int) -> list[StarLedgerOut]:
@@ -5798,6 +8277,1741 @@ async def top_up_stars(
     )
     await session.commit()
     return WalletOut(balance=wallet.balance, updated_at=wallet.updated_at)
+
+
+# The shop. 100 stars for 5 Telegram Stars is the base rate — twenty of ours for one of theirs —
+# and a bigger pack buys them cheaper, which is the only honest reason to offer one.
+STAR_PACKAGES: tuple[tuple[str, int, int], ...] = (
+    ("starter", 100, 5),
+    ("plus", 250, 12),
+    ("crew", 500, 23),
+    ("pro", 1000, 44),
+    ("patron", 2500, 105),
+    ("legend", 5000, 200),
+    ("whale", 10_000, 380),
+)
+BASE_STARS_PER_XTR = STAR_PACKAGES[0][1] / STAR_PACKAGES[0][2]
+
+
+def _package_out(slug: str, stars: int, price_xtr: int) -> StarPackageOut:
+    rate = stars / price_xtr
+    return StarPackageOut(
+        slug=slug,
+        stars=stars,
+        price_xtr=price_xtr,
+        per_xtr=int(rate),
+        bonus_percent=round(rate / BASE_STARS_PER_XTR * 100) - 100,
+        # One star, one unit of fiat: 5 ★ is 5 ₴. The two rails therefore cost about the same and
+        # neither is the cheap way in — a crypto discount would be an arbitrage, not a feature.
+        price_fiat=float(stars),
+        fiat_currency=CRYPTO_PRICE_CURRENCY,
+    )
+
+
+def _bot_deep_link(payload: str) -> str:
+    """The link that opens our bot with this order already chosen."""
+    return f"https://t.me/{TELEGRAM_BOT_USERNAME}?start={payload}"
+
+
+def _order_expired(order: StarPurchase) -> bool:
+    """An unpaid order stops being openable so a stale link cannot be revived later."""
+    if order.status != "pending":
+        return False
+    return _as_utc(order.created_at) + timedelta(minutes=STAR_ORDER_TTL_MINUTES) < utcnow()
+
+
+def _refund_out(refund: StarRefund) -> StarRefundOut:
+    return StarRefundOut(
+        id=refund.id,
+        purchase_id=refund.purchase_id,
+        status=cast(
+            "Literal['pending', 'approved', 'declined', 'failed']", refund.status
+        ),
+        reason=refund.reason,
+        admin_note=refund.admin_note,
+        requested_at=refund.requested_at,
+        decided_at=refund.decided_at,
+    )
+
+
+def _refund_block(  # noqa: PLR0911 - one refusal per condition reads better than a nested tree
+    order: StarPurchase, balance: int, refund: StarRefund | None
+) -> str | None:
+    """
+    Why this payment cannot be handed back — or None when it can.
+
+    Three conditions, and each is a sentence a buyer can act on. The balance one is the honest
+    version of "unused": stars are fungible, so the only thing anybody can say for certain is
+    whether the credited amount is still there.
+    """
+    if order.status == "refunded":
+        return "Этот платёж уже возвращён"
+    if order.status == "paid_out":
+        return "Этот платёж уже использован для вывода звёзд"
+    if order.status != "paid" or order.paid_at is None:
+        return "Возврат возможен только для оплаченного заказа"
+    if refund is not None and refund.status == "pending":
+        return "Заявка уже отправлена — ждёт решения администратора"
+    if refund is not None and refund.status == "approved":
+        return "Возврат уже одобрен"
+    deadline = _as_utc(order.paid_at) + timedelta(days=REFUND_WINDOW_DAYS)
+    if deadline < utcnow():
+        return f"Срок возврата истёк — он составляет {REFUND_WINDOW_DAYS} дней с оплаты"
+    if balance < order.stars:
+        return (
+            f"Звёзды уже израсходованы: для возврата на балансе должно остаться "
+            f"не меньше {order.stars} ★, сейчас {balance} ★"
+        )
+    return None
+
+
+def _purchase_out(
+    order: StarPurchase, *, balance: int | None = None, refund: StarRefund | None = None
+) -> StarPurchaseOut:
+    blocked = (
+        "Возврат оформляется в чеке операции"
+        if balance is None
+        else _refund_block(order, balance, refund)
+    )
+    return StarPurchaseOut(
+        id=order.id,
+        package_slug=order.package_slug,
+        stars=order.stars,
+        price_xtr=order.price_xtr,
+        status=cast(
+            "Literal['pending', 'paid', 'cancelled', 'expired', 'refunded', 'paid_out']",
+            "expired" if _order_expired(order) else order.status,
+        ),
+        bot_url=_bot_deep_link(order.payload),
+        created_at=order.created_at,
+        paid_at=order.paid_at,
+        telegram_charge_id=order.telegram_charge_id,
+        refundable=balance is not None and blocked is None,
+        refund_blocked_reason=blocked,
+        refund=_refund_out(refund) if refund else None,
+    )
+
+
+async def _purchase_refund(session: AsyncSession, order_id: uuid.UUID) -> StarRefund | None:
+    """The refund that matters for an order: the newest one, whatever came of it."""
+    return await session.scalar(
+        select(StarRefund)
+        .where(StarRefund.purchase_id == order_id)
+        .order_by(StarRefund.requested_at.desc())
+        .limit(1)
+    )
+
+
+@app.get("/api/stars/packages", response_model=list[StarPackageOut], tags=["Stars"])
+async def read_star_packages(me: CurrentUser) -> list[StarPackageOut]:
+    """What a top-up costs in Telegram Stars. Prices are ours, the charge is Telegram's."""
+    del me
+    return [_package_out(*package) for package in STAR_PACKAGES]
+
+
+@app.post(
+    "/api/stars/orders",
+    response_model=StarPurchaseOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Stars"],
+)
+async def create_star_order(
+    payload: StarPurchaseCreate, session: SessionDep, me: CurrentUser
+) -> StarPurchaseOut:
+    """
+    Open an order and hand back the link that pays for it.
+
+    Nothing is credited here. The row is a promise the bot can verify: it carries the amount, the
+    price and a token nobody can guess, so what the buyer sees in Telegram cannot disagree with
+    what the site will grant.
+
+    A second tap on the same pack reuses the order that is already open rather than littering the
+    list with links that all mean the same thing.
+    """
+    package = next((item for item in STAR_PACKAGES if item[0] == payload.package), None)
+    if package is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Такого набора нет")
+    slug, stars, price_xtr = package
+    open_orders = (
+        await session.scalars(
+            select(StarPurchase)
+            .where(
+                StarPurchase.user_id == me.id,
+                StarPurchase.package_slug == slug,
+                StarPurchase.status == "pending",
+            )
+            .order_by(StarPurchase.created_at.desc())
+        )
+    ).all()
+    for existing in open_orders:
+        if not _order_expired(existing):
+            return _purchase_out(existing)
+    order = StarPurchase(
+        user_id=me.id,
+        package_slug=slug,
+        stars=stars,
+        price_xtr=price_xtr,
+        payload=secrets.token_urlsafe(18)[:24],
+    )
+    session.add(order)
+    await session.commit()
+    await session.refresh(order)
+    return _purchase_out(order)
+
+
+@app.get("/api/stars/orders", response_model=list[StarPurchaseOut], tags=["Stars"])
+async def read_star_orders(
+    session: SessionDep, me: CurrentUser, limit: Annotated[int, Query(ge=1, le=50)] = 10
+) -> list[StarPurchaseOut]:
+    """This account's recent orders, newest first — where an unfinished payment is picked up."""
+    orders = (
+        await session.scalars(
+            select(StarPurchase)
+            .where(StarPurchase.user_id == me.id)
+            .order_by(StarPurchase.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    refunds = await _refunds_for(session, [order.id for order in orders])
+    balance = await _wallet_balance(session, me.id)
+    return [
+        _purchase_out(order, balance=balance, refund=refunds.get(order.id)) for order in orders
+    ]
+
+
+async def _wallet_balance(session: AsyncSession, user_id: uuid.UUID) -> int:
+    return int(
+        await session.scalar(select(StarWallet.balance).where(StarWallet.user_id == user_id)) or 0
+    )
+
+
+async def _refunds_for(
+    session: AsyncSession, order_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, StarRefund]:
+    """The newest refund per order, in one query rather than one per row."""
+    if not order_ids:
+        return {}
+    rows = (
+        await session.scalars(
+            select(StarRefund)
+            .where(StarRefund.purchase_id.in_(set(order_ids)))
+            .order_by(StarRefund.requested_at)
+        )
+    ).all()
+    # Ascending order, so the last write per purchase wins and the newest one survives.
+    return {refund.purchase_id: refund for refund in rows}
+
+
+@app.get("/api/stars/orders/{order_id}", response_model=StarPurchaseOut, tags=["Stars"])
+async def read_star_order(
+    order_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> StarPurchaseOut:
+    """One order: polled while the buyer pays, and read again by its receipt afterwards."""
+    order = await session.get(StarPurchase, order_id)
+    if order is None or order.user_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    return _purchase_out(
+        order,
+        balance=await _wallet_balance(session, me.id),
+        refund=await _purchase_refund(session, order.id),
+    )
+
+
+@app.post(
+    "/api/stars/orders/{order_id}/refund",
+    response_model=StarPurchaseOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Stars"],
+)
+async def request_star_refund(
+    order_id: uuid.UUID, payload: StarRefundRequest, session: SessionDep, me: CurrentUser
+) -> StarPurchaseOut:
+    """
+    Ask for a payment back.
+
+    Nothing is decided here and nothing moves: the request goes to an admin in Telegram with the
+    buyer's own reason attached. The conditions are checked now *and* again when the admin answers,
+    because a two-week window closes and a balance can be spent in between.
+    """
+    order = await session.scalar(
+        select(StarPurchase).where(StarPurchase.id == order_id).with_for_update()
+    )
+    if order is None or order.user_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    balance = await _wallet_balance(session, me.id)
+    existing = await _purchase_refund(session, order.id)
+    blocked = _refund_block(order, balance, existing)
+    if blocked is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=blocked)
+    refund = StarRefund(purchase_id=order.id, user_id=me.id, reason=payload.reason)
+    session.add(refund)
+    await session.commit()
+    await session.refresh(refund)
+    await session.refresh(order)
+    return _purchase_out(order, balance=balance, refund=refund)
+
+
+@app.delete("/api/stars/orders/{order_id}", response_model=DetailResponse, tags=["Stars"])
+async def cancel_star_order(
+    order_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """Close an order the buyer walked away from, so its link stops working at once."""
+    order = await session.scalar(
+        select(StarPurchase).where(StarPurchase.id == order_id).with_for_update()
+    )
+    if order is None or order.user_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    if order.status == "paid":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Этот заказ уже оплачен"
+        )
+    order.status = "cancelled"
+    await session.commit()
+    return DetailResponse(detail="Заказ отменён")
+
+
+async def require_bot(
+    secret: Annotated[str | None, Header(alias="X-Bot-Secret")] = None,
+) -> None:
+    """
+    The bot's own credential.
+
+    A shared secret rather than a session: the bot acts for Telegram's payment, not for a
+    signed-in reader, and it must be able to credit an account nobody is currently logged into.
+    """
+    if not secret or not secrets.compare_digest(secret, BOT_API_SECRET):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Бот не авторизован"
+        )
+
+
+BotAuth = Annotated[None, Depends(require_bot)]
+
+
+@app.get("/api/bot/orders/{payload}", response_model=BotOrderOut, tags=["Stars"])
+async def bot_read_order(payload: str, session: SessionDep, _: BotAuth) -> BotOrderOut:
+    """What the bot needs before it sends an invoice: the amount, the price and who is buying."""
+    order = await session.scalar(
+        select(StarPurchase).where(StarPurchase.payload == payload.strip())
+    )
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    buyer = await session.get(User, order.user_id)
+    if buyer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Покупатель не найден")
+    return BotOrderOut(
+        payload=order.payload,
+        stars=order.stars,
+        price_xtr=order.price_xtr,
+        status="expired" if _order_expired(order) else order.status,
+        buyer_username=buyer.username,
+        buyer_display_name=buyer.display_name,
+    )
+
+
+@app.post("/api/bot/orders/{payload}/paid", response_model=DetailResponse, tags=["Stars"])
+async def bot_report_payment(
+    payload: str, body: BotPaymentReport, session: SessionDep, _: BotAuth
+) -> DetailResponse:
+    """
+    Credit an order Telegram has charged for.
+
+    Idempotent on the charge id, because Telegram re-delivers a successful payment when it is not
+    sure the bot saw it, and paying once must credit once.
+    """
+    order = await session.scalar(
+        select(StarPurchase).where(StarPurchase.payload == payload.strip()).with_for_update()
+    )
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    if order.telegram_charge_id == body.telegram_charge_id:
+        return DetailResponse(detail="already_credited")
+    if order.status == "paid":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Заказ уже оплачен другим платежом"
+        )
+    if order.status != "pending" or _order_expired(order):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Заказ закрыт — оформите новый"
+        )
+    if body.amount_xtr != order.price_xtr:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Оплачено {body.amount_xtr} XTR вместо {order.price_xtr}",
+        )
+    wallet = await _wallet_for_update(session, order.user_id)
+    _ledger_change(
+        session,
+        wallet,
+        order.stars,
+        kind="stars_telegram",
+        description=f"Покупка {order.stars} ★ за {order.price_xtr} Telegram Stars",
+        correlation_id=uuid.uuid4(),
+        entity_type="star_purchase",
+        entity_id=str(order.id),
+    )
+    order.status = "paid"
+    order.paid_at = utcnow()
+    order.telegram_user_id = body.telegram_user_id
+    order.telegram_charge_id = body.telegram_charge_id
+    session.add(
+        Notification(
+            user_id=order.user_id,
+            kind=NotificationKind.STARS,
+            text=f"Зачислено {order.stars} ★ — оплата {order.price_xtr} Telegram Stars",
+            entity_id=str(order.id),
+        )
+    )
+    await session.commit()
+    return DetailResponse(detail="credited")
+
+
+def _bot_refund_out(refund: StarRefund, order: StarPurchase, buyer: User) -> BotRefundOut:
+    return BotRefundOut(
+        id=refund.id,
+        purchase_id=order.id,
+        stars=order.stars,
+        price_xtr=order.price_xtr,
+        reason=refund.reason,
+        buyer_username=buyer.username,
+        buyer_display_name=buyer.display_name,
+        telegram_user_id=order.telegram_user_id,
+        telegram_charge_id=order.telegram_charge_id,
+        requested_at=refund.requested_at,
+    )
+
+
+async def _refund_rows(
+    session: AsyncSession, *, unannounced_only: bool
+) -> list[tuple[StarRefund, StarPurchase, User]]:
+    query = (
+        select(StarRefund, StarPurchase, User)
+        .join(StarPurchase, StarPurchase.id == StarRefund.purchase_id)
+        .join(User, User.id == StarRefund.user_id)
+        .where(StarRefund.status == "pending")
+        .order_by(StarRefund.requested_at)
+    )
+    if unannounced_only:
+        query = query.where(StarRefund.notified_at.is_(None))
+    return [tuple(row) for row in (await session.execute(query)).all()]
+
+
+@app.get("/api/bot/refunds/pending", response_model=list[BotRefundOut], tags=["Stars"])
+async def bot_pending_refunds(session: SessionDep, _: BotAuth) -> list[BotRefundOut]:
+    """
+    Requests no admin has been shown yet.
+
+    Handing one out stamps it as announced, so a bot polling every few seconds asks an admin once
+    rather than every few seconds. `/api/bot/refunds/open` is the list that does not stamp, for the
+    bot's own `/refunds` command.
+    """
+    rows = await _refund_rows(session, unannounced_only=True)
+    now = utcnow()
+    for refund, _order, _buyer in rows:
+        refund.notified_at = now
+    await session.commit()
+    return [_bot_refund_out(refund, order, buyer) for refund, order, buyer in rows]
+
+
+@app.get("/api/bot/refunds/open", response_model=list[BotRefundOut], tags=["Stars"])
+async def bot_open_refunds(session: SessionDep, _: BotAuth) -> list[BotRefundOut]:
+    """Everything still waiting for an answer, announced or not."""
+    rows = await _refund_rows(session, unannounced_only=False)
+    return [_bot_refund_out(refund, order, buyer) for refund, order, buyer in rows]
+
+
+async def _apply_refund_decision(  # noqa: PLR0913
+    session: AsyncSession,
+    refund_id: uuid.UUID,
+    *,
+    approved: bool,
+    note: str,
+    admin: User | None = None,
+    admin_telegram_id: int | None = None,
+) -> tuple[StarRefund, StarPurchase, BotRefundApplied]:
+    """
+    Apply one refund decision, wherever it was taken.
+
+    The order matters and is the same from either side: the site debits first and Telegram refunds
+    second. Refunding in Telegram first would leave a buyer holding both halves whenever the debit
+    turns out to be impossible — and it can, because the balance is checked again right here, at
+    the moment of the decision rather than at the moment of the request.
+
+    Nothing is committed here. The caller adds its own audit line and commits once, so a decision
+    and its record cannot come apart.
+    """
+    refund = await session.scalar(
+        select(StarRefund).where(StarRefund.id == refund_id).with_for_update()
+    )
+    if refund is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    if refund.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="По этой заявке уже есть решение"
+        )
+    order = await session.scalar(
+        select(StarPurchase).where(StarPurchase.id == refund.purchase_id).with_for_update()
+    )
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    refund.decided_at = utcnow()
+    refund.decided_by_telegram_id = admin_telegram_id
+    refund.admin_note = note.strip()[:240] or None
+
+    if not approved:
+        refund.status = "declined"
+        session.add(
+            Notification(
+                user_id=refund.user_id,
+                actor_id=admin.id if admin else None,
+                kind=NotificationKind.STARS,
+                text=(
+                    f"Возврат {order.stars} ★ отклонён"
+                    + (f": {refund.admin_note}" if refund.admin_note else "")
+                ),
+                entity_id=str(order.id),
+            )
+        )
+        return (
+            refund,
+            order,
+            BotRefundApplied(
+                status="declined",
+                stars=order.stars,
+                price_xtr=order.price_xtr,
+                telegram_user_id=order.telegram_user_id,
+                telegram_charge_id=order.telegram_charge_id,
+            ),
+        )
+
+    balance = await _wallet_balance(session, order.user_id)
+    blocked = _refund_block(order, balance, None)
+    if blocked is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=blocked)
+    wallet = await _wallet_for_update(session, order.user_id)
+    _ledger_change(
+        session,
+        wallet,
+        -order.stars,
+        kind="stars_refund",
+        description=f"Возврат {order.stars} ★ за {order.price_xtr} Telegram Stars",
+        correlation_id=uuid.uuid4(),
+        entity_type="star_purchase",
+        entity_id=str(order.id),
+    )
+    order.status = "refunded"
+    refund.status = "approved"
+    session.add(
+        Notification(
+            user_id=refund.user_id,
+            actor_id=admin.id if admin else None,
+            kind=NotificationKind.STARS,
+            text=(
+                f"Возврат одобрен: {order.price_xtr} Telegram Stars вернутся в Telegram, "
+                f"{order.stars} ★ списаны с баланса"
+            ),
+            entity_id=str(order.id),
+        )
+    )
+    return (
+        refund,
+        order,
+        BotRefundApplied(
+            status="approved",
+            stars=order.stars,
+            price_xtr=order.price_xtr,
+            telegram_user_id=order.telegram_user_id,
+            telegram_charge_id=order.telegram_charge_id,
+        ),
+    )
+
+
+@app.post(
+    "/api/bot/refunds/{refund_id}/decision", response_model=BotRefundApplied, tags=["Stars"]
+)
+async def bot_decide_refund(
+    refund_id: uuid.UUID, body: BotRefundDecision, session: SessionDep, _: BotAuth
+) -> BotRefundApplied:
+    """
+    An admin's answer taken on the bot's buttons.
+
+    The site moves the stars here and hands back the charge, which the bot then gives to Telegram;
+    `/settled` closes the loop so no approval is refunded twice.
+    """
+    refund, order, applied = await _apply_refund_decision(
+        session,
+        refund_id,
+        approved=body.approved,
+        note=body.note,
+        admin_telegram_id=body.admin_telegram_id,
+    )
+    session.add(
+        AdminAction(
+            action="refund_approved" if body.approved else "refund_declined",
+            target_type="refund",
+            target_id=str(refund.id),
+            target_label=f"{order.stars} ★ / {order.price_xtr} XTR",
+            reason=refund.admin_note,
+            details={"telegram_admin_id": body.admin_telegram_id, "source": "bot"},
+        )
+    )
+    await session.commit()
+    return applied
+
+
+@app.post("/api/bot/refunds/{refund_id}/failed", response_model=DetailResponse, tags=["Stars"])
+async def bot_refund_failed(
+    refund_id: uuid.UUID,
+    session: SessionDep,
+    _: BotAuth,
+    note: Annotated[str, Query(max_length=240)] = "",
+) -> DetailResponse:
+    """
+    Telegram refused the refund after the site had already debited for it.
+
+    The compensation exists because the two halves cannot be atomic: the stars go back on the
+    balance, the order returns to paid, and both the buyer and the admin are told the truth.
+    """
+    refund = await session.scalar(
+        select(StarRefund).where(StarRefund.id == refund_id).with_for_update()
+    )
+    if refund is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    if refund.status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Эта заявка не была одобрена"
+        )
+    order = await session.scalar(
+        select(StarPurchase).where(StarPurchase.id == refund.purchase_id).with_for_update()
+    )
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    wallet = await _wallet_for_update(session, order.user_id)
+    _ledger_change(
+        session,
+        wallet,
+        order.stars,
+        kind="stars_refund_reversed",
+        description=f"Возврат не прошёл — {order.stars} ★ снова на балансе",
+        correlation_id=uuid.uuid4(),
+        entity_type="star_purchase",
+        entity_id=str(order.id),
+    )
+    order.status = "paid"
+    refund.status = "failed"
+    refund.admin_note = (note.strip() or "Telegram отказал в возврате")[:240]
+    session.add(
+        Notification(
+            user_id=refund.user_id,
+            kind=NotificationKind.STARS,
+            text=f"Возврат не прошёл: {refund.admin_note}. {order.stars} ★ остались на балансе",
+            entity_id=str(order.id),
+        )
+    )
+    await session.commit()
+    return DetailResponse(detail="reversed")
+
+
+# ---------------------------------------------------------------------------------------------
+# Crypto top-ups (NOWPayments).
+#
+# The second rail into the wallet, priced from the same packs: one site star costs one unit of
+# `CRYPTO_PRICE_CURRENCY`, so 100 ★ is 100 ₴ whichever way it is paid. Three rules run through all
+# of it:
+#
+#   1. A credit is never decided by a callback. An IPN is a nudge; the decision is our own
+#      authenticated read of the payment. So the flow works with no IPN secret configured, and a
+#      forged callback cannot move a balance.
+#   2. A credit happens at most once, latched by `credited_at` under a row lock. A provider may
+#      report `finished` to a callback, to the buyer's open tab and to an admin's refresh in the
+#      same second.
+#   3. A coin is only offered when the provider's live minimum allows the chosen amount. Those
+#      minimums differ by two orders of magnitude between chains, so a fixed coin list sells
+#      payments that cannot be made.
+# ---------------------------------------------------------------------------------------------
+CRYPTO_COIN_LABELS = {coin: (asset, network) for coin, asset, network in CRYPTO_COINS}
+
+
+def _crypto_labels(currency: str) -> tuple[str, str]:
+    """The asset and network we show for a provider ticker, or the ticker itself if unknown."""
+    return CRYPTO_COIN_LABELS.get(currency, (currency.upper(), ""))
+
+
+def _crypto_invoice_out(invoice: CryptoInvoice) -> CryptoInvoiceOut:
+    asset, network = _crypto_labels(invoice.pay_currency)
+    return CryptoInvoiceOut(
+        id=invoice.id,
+        package_slug=invoice.package_slug,
+        stars=invoice.stars,
+        price_amount=invoice.price_amount,
+        price_currency=invoice.price_currency,
+        pay_currency=invoice.pay_currency,
+        asset_label=asset,
+        network_label=invoice.network_label or network,
+        pay_amount=invoice.pay_amount,
+        pay_address=invoice.pay_address,
+        payin_extra_id=invoice.payin_extra_id,
+        status=cast(
+            "Literal['pending', 'paid', 'expired', 'cancelled', 'underpaid', 'failed']",
+            invoice.status,
+        ),
+        provider_status=invoice.provider_status,
+        actually_paid=invoice.actually_paid,
+        provider_note=invoice.provider_note,
+        created_at=invoice.created_at,
+        expires_at=_as_utc(invoice.created_at)
+        + timedelta(minutes=CRYPTO_INVOICE_TTL_MINUTES),
+        credited_at=invoice.credited_at,
+        cancellable=invoice.status == "pending",
+    )
+
+
+def _crypto_invoice_expired(invoice: CryptoInvoice) -> bool:
+    """A pending invoice whose window has closed. The address may still work, but we stop waiting."""
+    if invoice.status != "pending":
+        return False
+    deadline = _as_utc(invoice.created_at) + timedelta(minutes=CRYPTO_INVOICE_TTL_MINUTES)
+    return deadline < utcnow()
+
+
+def _require_crypto() -> None:
+    if not nowpayments.configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Оплата криптовалютой сейчас недоступна",
+        )
+
+
+async def _quote_coins(amount: float) -> list[CryptoCoinOut]:
+    """
+    Every configured coin, priced for this amount, with the ones that cannot pay it marked.
+
+    One `estimate` and one `min-amount` per coin, run concurrently — twenty coins done serially is
+    twenty round trips and a visibly slow sheet. A coin whose lookup fails is reported as
+    unavailable rather than omitted: silence would look like a shorter list, not like a problem.
+    """
+    async def one(currency: str, asset: str, network: str) -> CryptoCoinOut:
+        try:
+            quote, floor = await asyncio.gather(
+                nowpayments.estimate(amount, CRYPTO_PRICE_CURRENCY, currency),
+                nowpayments.minimum(currency),
+            )
+        except nowpayments.NowPaymentsError as exc:
+            return CryptoCoinOut(
+                currency=currency,
+                asset=asset,
+                network=network,
+                available=False,
+                unavailable_reason=str(exc),
+            )
+        enough = quote.estimated_amount >= floor.min_amount
+        return CryptoCoinOut(
+            currency=currency,
+            asset=asset,
+            network=network,
+            available=enough,
+            estimated_amount=quote.estimated_amount,
+            min_amount=floor.min_amount,
+            unavailable_reason=(
+                None
+                if enough
+                else f"Минимум для этой сети — {floor.min_amount:g} {asset}"
+            ),
+        )
+
+    results = await asyncio.gather(
+        *(one(currency, asset, network) for currency, asset, network in CRYPTO_COINS)
+    )
+    # Payable coins first, each group keeping the configured order — the cheapest networks are
+    # listed first on purpose, and a person should not have to scroll past dead options.
+    return sorted(results, key=lambda coin: not coin.available)
+
+
+@app.get("/api/crypto/status", response_model=CryptoStatusOut, tags=["Stars"])
+async def read_crypto_status(me: CurrentUser) -> CryptoStatusOut:
+    """Whether crypto is switched on, and what it is priced in. Cheap enough to call on mount."""
+    del me
+    return CryptoStatusOut(
+        enabled=nowpayments.configured(),
+        price_currency=CRYPTO_PRICE_CURRENCY,
+        min_payout_stars=MIN_PAYOUT_STARS,
+    )
+
+
+@app.get("/api/crypto/coins", response_model=list[CryptoCoinOut], tags=["Stars"])
+async def read_crypto_coins(
+    me: CurrentUser,
+    package: Annotated[str | None, Query(max_length=32)] = None,
+    stars: Annotated[int | None, Query(ge=1, le=1_000_000)] = None,
+) -> list[CryptoCoinOut]:
+    """
+    Which coins can pay for this pack, quoted right now.
+
+    Either a pack slug or a bare star amount — the top-up sheet has a pack, the payout sheet has an
+    amount, and both need the same "can this coin move this much" answer.
+    """
+    del me
+    _require_crypto()
+    if package is not None:
+        found = next((item for item in STAR_PACKAGES if item[0] == package), None)
+        if found is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Такого набора нет")
+        amount = float(found[1])
+    elif stars is not None:
+        amount = float(stars)
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Укажите набор или сумму",
+        )
+    return await _quote_coins(amount)
+
+
+@app.post(
+    "/api/crypto/invoices",
+    response_model=CryptoInvoiceOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Stars"],
+)
+async def create_crypto_invoice(
+    payload: CryptoInvoiceCreate, session: SessionDep, me: CurrentUser
+) -> CryptoInvoiceOut:
+    """
+    Open a crypto payment and hand back the address to send to.
+
+    Nothing is credited here. A second attempt at the same pack *in the same coin* returns the open
+    invoice rather than a new address — a person watching two addresses for one purchase is a person
+    about to pay the wrong one.
+    """
+    _require_crypto()
+    package = next((item for item in STAR_PACKAGES if item[0] == payload.package), None)
+    if package is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Такого набора нет")
+    if payload.currency not in CRYPTO_COIN_LABELS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Эта монета не поддерживается",
+        )
+    slug, stars, _price_xtr = package
+    price_amount = float(stars)
+
+    open_rows = (
+        await session.scalars(
+            select(CryptoInvoice)
+            .where(
+                CryptoInvoice.user_id == me.id,
+                CryptoInvoice.package_slug == slug,
+                CryptoInvoice.pay_currency == payload.currency,
+                CryptoInvoice.status == "pending",
+            )
+            .order_by(CryptoInvoice.created_at.desc())
+        )
+    ).all()
+    for existing in open_rows:
+        if not _crypto_invoice_expired(existing):
+            return _crypto_invoice_out(existing)
+
+    asset, network = _crypto_labels(payload.currency)
+    order_id = f"gram-{uuid.uuid4().hex[:20]}"
+    try:
+        created = await nowpayments.create_payment(
+            price_amount=price_amount,
+            price_currency=CRYPTO_PRICE_CURRENCY,
+            pay_currency=payload.currency,
+            order_id=order_id,
+            order_description=f"GRAM {stars} ★ ({slug})",
+            ipn_callback_url=f"{SITE_PUBLIC_URL.rstrip('/')}/api/crypto/webhook",
+        )
+    except nowpayments.NowPaymentsError as exc:
+        # The provider's own refusal is the most useful thing we can say. `AMOUNT_MINIMAL_ERROR` is
+        # the common one and means this coin cannot move a sum this small.
+        detail = (
+            f"{asset} на сети «{network}» не подходит для этой суммы: {exc}"
+            if exc.code == "AMOUNT_MINIMAL_ERROR"
+            else str(exc)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=detail
+        ) from exc
+
+    invoice = CryptoInvoice(
+        user_id=me.id,
+        package_slug=slug,
+        stars=stars,
+        price_amount=price_amount,
+        price_currency=CRYPTO_PRICE_CURRENCY,
+        pay_currency=payload.currency,
+        pay_amount=created.pay_amount,
+        pay_address=created.pay_address,
+        payin_extra_id=created.payin_extra_id,
+        network_label=network,
+        order_id=order_id,
+        provider_payment_id=created.payment_id,
+        provider_status=created.payment_status,
+    )
+    session.add(invoice)
+    await session.commit()
+    await session.refresh(invoice)
+    return _crypto_invoice_out(invoice)
+
+
+async def _settle_crypto_invoice(
+    session: AsyncSession, invoice_id: uuid.UUID
+) -> CryptoInvoice:
+    """
+    Ask the provider what happened to one invoice, and credit it if it is really paid.
+
+    This is the only place a crypto top-up credits a wallet, and every route into it — the buyer's
+    poll, an IPN, an admin's refresh — goes through here. The row is locked and `credited_at` is
+    checked inside that lock, so concurrent callers cannot both credit.
+    """
+    invoice = await session.scalar(
+        select(CryptoInvoice).where(CryptoInvoice.id == invoice_id).with_for_update()
+    )
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
+    if invoice.credited_at is not None or invoice.status in {"cancelled", "expired"}:
+        return invoice
+    if invoice.provider_payment_id is None:
+        return invoice
+
+    try:
+        remote = await nowpayments.payment(invoice.provider_payment_id)
+    except nowpayments.NowPaymentsError as exc:
+        # A provider outage must not mark a real payment failed. The invoice keeps waiting and the
+        # note tells an admin why nothing is moving.
+        invoice.provider_note = str(exc)[:400]
+        await session.commit()
+        return invoice
+
+    invoice.provider_status = remote.payment_status
+    invoice.actually_paid = remote.actually_paid
+    if remote.pay_amount:
+        invoice.pay_amount = remote.pay_amount
+
+    if remote.is_paid:
+        wallet = await _wallet_for_update(session, invoice.user_id)
+        _ledger_change(
+            session,
+            wallet,
+            invoice.stars,
+            kind="crypto_top_up",
+            description=(
+                f"Пополнение {invoice.stars} ★ — "
+                f"{invoice.pay_amount:g} {_crypto_labels(invoice.pay_currency)[0]}"
+            ),
+            correlation_id=uuid.uuid4(),
+            entity_type="crypto_invoice",
+            entity_id=str(invoice.id),
+        )
+        invoice.status = "paid"
+        invoice.credited_at = utcnow()
+        invoice.provider_note = None
+        session.add(
+            Notification(
+                user_id=invoice.user_id,
+                kind=NotificationKind.STARS,
+                text=f"Крипто-оплата прошла: +{invoice.stars} ★",
+                entity_id=str(invoice.id),
+            )
+        )
+    elif remote.needs_attention:
+        # A real underpayment. Crediting a fraction silently would be a lie either way, so it goes
+        # to a human with the numbers attached.
+        invoice.status = "underpaid"
+        invoice.provider_note = (
+            f"Пришло {remote.actually_paid:g} из {remote.pay_amount:g} "
+            f"{_crypto_labels(invoice.pay_currency)[0]} — нужна проверка администратора"
+        )
+        await _notify_admins(
+            session,
+            f"Крипто-платёж недоплачен: {invoice.order_id} — "
+            f"{remote.actually_paid:g}/{remote.pay_amount:g}",
+            entity_id=str(invoice.id),
+        )
+    elif remote.is_dead:
+        invoice.status = "failed" if remote.payment_status == "failed" else "expired"
+        invoice.provider_note = f"Провайдер: {remote.payment_status}"
+
+    await session.commit()
+    await session.refresh(invoice)
+    return invoice
+
+
+@app.get("/api/crypto/invoices", response_model=list[CryptoInvoiceOut], tags=["Stars"])
+async def read_crypto_invoices(
+    session: SessionDep, me: CurrentUser, limit: Annotated[int, Query(ge=1, le=50)] = 10
+) -> list[CryptoInvoiceOut]:
+    """This account's crypto top-ups, newest first, with stale ones retired as they are read."""
+    rows = (
+        await session.scalars(
+            select(CryptoInvoice)
+            .where(CryptoInvoice.user_id == me.id)
+            .order_by(CryptoInvoice.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    changed = False
+    for row in rows:
+        if _crypto_invoice_expired(row):
+            row.status = "expired"
+            changed = True
+    if changed:
+        await session.commit()
+    return [_crypto_invoice_out(row) for row in rows]
+
+
+@app.get("/api/crypto/invoices/{invoice_id}", response_model=CryptoInvoiceOut, tags=["Stars"])
+async def read_crypto_invoice(
+    invoice_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> CryptoInvoiceOut:
+    """
+    One invoice, re-checked against the provider.
+
+    This is what the payment sheet polls. Checking on read rather than only on callback is what
+    makes the flow work at all without an IPN secret, and what makes it survive a lost callback.
+    """
+    owned = await session.get(CryptoInvoice, invoice_id)
+    if owned is None or owned.user_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
+    if _crypto_invoice_expired(owned):
+        owned.status = "expired"
+        await session.commit()
+        await session.refresh(owned)
+        return _crypto_invoice_out(owned)
+    if owned.status == "pending" and nowpayments.configured():
+        owned = await _settle_crypto_invoice(session, invoice_id)
+    return _crypto_invoice_out(owned)
+
+
+@app.delete("/api/crypto/invoices/{invoice_id}", response_model=CryptoInvoiceOut, tags=["Stars"])
+async def cancel_crypto_invoice(
+    invoice_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> CryptoInvoiceOut:
+    """
+    Abandon an invoice nobody has paid.
+
+    Deliberately re-checks with the provider first: cancelling something that has just been paid
+    would throw the money away, so a paid invoice refuses to be cancelled and credits instead.
+    """
+    owned = await session.get(CryptoInvoice, invoice_id)
+    if owned is None or owned.user_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
+    if owned.status == "pending" and nowpayments.configured():
+        owned = await _settle_crypto_invoice(session, invoice_id)
+    if owned.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Этот счёт уже нельзя отменить",
+        )
+    invoice = await session.scalar(
+        select(CryptoInvoice).where(CryptoInvoice.id == invoice_id).with_for_update()
+    )
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
+    invoice.status = "cancelled"
+    await session.commit()
+    await session.refresh(invoice)
+    return _crypto_invoice_out(invoice)
+
+
+@app.post("/api/crypto/webhook", response_model=DetailResponse, tags=["Stars"])
+async def crypto_webhook(request: Request, session: SessionDep) -> DetailResponse:
+    """
+    The provider's callback. A nudge, never a credit.
+
+    Unauthenticated by necessity — NOWPayments calls it — and harmless for exactly that reason:
+    the body is used only to find which invoice to re-check, and the re-check is an authenticated
+    call of ours. When an IPN secret is configured the signature is verified as well and a bad one
+    is refused outright; without a secret an unsigned callback still cannot do more than make us
+    ask the provider a question we were going to ask anyway.
+    """
+    raw = await request.body()
+    signature = request.headers.get("x-nowpayments-sig")
+    if NOWPAYMENTS_IPN_SECRET and not nowpayments.verify_ipn(raw, signature):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Подпись не совпадает"
+        )
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = {}
+    order_id = str(body.get("order_id") or "") or None
+    payment_id = str(body.get("payment_id") or "") or None
+    invoice: CryptoInvoice | None = None
+    if order_id:
+        invoice = await session.scalar(
+            select(CryptoInvoice).where(CryptoInvoice.order_id == order_id)
+        )
+    if invoice is None and payment_id:
+        invoice = await session.scalar(
+            select(CryptoInvoice).where(CryptoInvoice.provider_payment_id == payment_id)
+        )
+    if invoice is None:
+        # Not ours, or already cleaned up. Answering 200 stops the provider from retrying forever.
+        return DetailResponse(detail="ignored")
+    await _settle_crypto_invoice(session, invoice.id)
+    return DetailResponse(detail="ok")
+
+
+# ---------------------------------------------------------------------------------------------
+# Taking stars out.
+#
+# The shop read backwards, at the same rate: twenty of ours for one of theirs, so 100 ★ leave as
+# the 5 Telegram Stars they cost. One thing makes this not a mirror image — Telegram has no API
+# for *sending* Stars to a person. Only a human can do the last step, which is why every payout
+# waits for an admin and why the site does the part it can do first: the stars leave the balance
+# at the moment of the request, so the same stars cannot be spent while their payout is queued.
+#
+# Crypto withdrawals join the same queue. The destination differs — an address, a coin and a
+# network instead of a Telegram handle — and so does who sends it, but the money moves in the same
+# order for the same reason: the stars are withheld first, an admin decides second, and a refusal
+# or a failure puts them back.
+# ---------------------------------------------------------------------------------------------
+PAYOUT_STARS_PER_XTR = int(BASE_STARS_PER_XTR)
+MIN_PAYOUT_STARS = STAR_PACKAGES[0][1]
+# Somebody with five open requests is not withdrawing, they are queueing. Held stars are real
+# money out of circulation, so the queue has an end.
+MAX_OPEN_PAYOUTS = 3
+OPEN_PAYOUT_STATUSES = ("pending", "approved")
+
+
+def _crypto_details_out(details: CryptoPayoutDetails) -> CryptoPayoutDetailsOut:
+    return CryptoPayoutDetailsOut(
+        currency=details.currency,
+        asset_label=details.asset_label or _crypto_labels(details.currency)[0],
+        network_label=details.network_label or _crypto_labels(details.currency)[1],
+        address=details.address,
+        extra_id=details.extra_id,
+        fiat_amount=details.fiat_amount,
+        fiat_currency=details.fiat_currency,
+        quoted_amount=details.quoted_amount,
+        quoted_at=details.quoted_at,
+        tx_hash=details.tx_hash,
+    )
+
+
+def _payout_out(
+    payout: StarPayout, crypto: CryptoPayoutDetails | None = None
+) -> StarPayoutOut:
+    return StarPayoutOut(
+        id=payout.id,
+        stars=payout.stars,
+        price_xtr=payout.price_xtr,
+        status=cast(
+            "Literal['pending', 'approved', 'paid', 'declined', 'failed', 'cancelled']",
+            payout.status,
+        ),
+        # Derived from the details rather than stored twice, so the rail and the destination can
+        # never disagree.
+        method="crypto" if crypto is not None else "telegram",
+        telegram_user_id=payout.telegram_user_id,
+        telegram_username=payout.telegram_username,
+        crypto=_crypto_details_out(crypto) if crypto else None,
+        admin_note=payout.admin_note,
+        requested_at=payout.requested_at,
+        decided_at=payout.decided_at,
+        paid_at=payout.paid_at,
+        cancellable=payout.status == "pending",
+    )
+
+
+async def _crypto_details_for(
+    session: AsyncSession, payout_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, CryptoPayoutDetails]:
+    """Crypto destinations for a batch of payouts, in one query rather than one per row."""
+    if not payout_ids:
+        return {}
+    rows = (
+        await session.scalars(
+            select(CryptoPayoutDetails).where(
+                CryptoPayoutDetails.payout_id.in_(set(payout_ids))
+            )
+        )
+    ).all()
+    return {row.payout_id: row for row in rows}
+
+
+async def _known_telegram_id(session: AsyncSession, user_id: uuid.UUID) -> int | None:
+    """
+    The Telegram account this one has paid from.
+
+    A payout should land where the money came from, and this is the only link the site has that
+    nobody typed: the bot reported it with a charge Telegram itself confirmed.
+    """
+    return await session.scalar(
+        select(StarPurchase.telegram_user_id)
+        .where(
+            StarPurchase.user_id == user_id,
+            StarPurchase.telegram_user_id.is_not(None),
+            # Every state a real charge can end up in. What happened to the payment afterwards —
+            # refunded, or spent on a payout — does not change which Telegram account paid it.
+            StarPurchase.status.in_(("paid", "refunded", "paid_out")),
+        )
+        .order_by(StarPurchase.created_at.desc())
+        .limit(1)
+    )
+
+
+@app.get("/api/stars/payouts", response_model=list[StarPayoutOut], tags=["Stars"])
+async def read_star_payouts(
+    session: SessionDep, me: CurrentUser, limit: Annotated[int, Query(ge=1, le=50)] = 20
+) -> list[StarPayoutOut]:
+    """This account's withdrawal requests, newest first."""
+    rows = (
+        await session.scalars(
+            select(StarPayout)
+            .where(StarPayout.user_id == me.id)
+            .order_by(StarPayout.requested_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    crypto = await _crypto_details_for(session, [row.id for row in rows])
+    return [_payout_out(row, crypto.get(row.id)) for row in rows]
+
+
+@app.get("/api/stars/payouts/coins", response_model=list[CryptoCoinOut], tags=["Stars"])
+async def read_payout_coins(
+    me: CurrentUser, stars: Annotated[int, Query(ge=1, le=1_000_000)]
+) -> list[CryptoCoinOut]:
+    """
+    Which coins can carry a withdrawal of this size, and what each one would send.
+
+    The same minimum problem as a top-up, in the other direction: a network whose floor is above
+    the withdrawal is a network that cannot deliver it, and finding that out after an admin has
+    approved the request wastes everybody's time.
+    """
+    del me
+    _require_crypto()
+    return await _quote_coins(float(stars))
+
+
+@app.post(
+    "/api/stars/payouts",
+    response_model=StarPayoutOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Stars"],
+)
+async def request_star_payout(
+    payload: StarPayoutCreate, session: SessionDep, me: CurrentUser
+) -> StarPayoutOut:
+    """
+    Ask to take stars out — into Telegram, or into a crypto wallet.
+
+    The stars are withheld here, before anybody has agreed to anything. That is deliberate: an
+    admin confirming a payout an hour later must not find the balance already spent, and a person
+    watching their own wallet should see the amount leave when they ask for it rather than at some
+    later moment they cannot predict. A refusal, a cancellation or a failure puts it all back.
+
+    A crypto destination is validated against the provider *before* the stars move: a bad checksum
+    is a typo, and a payout that cannot be delivered should be refused while it is still a form and
+    not a queued obligation.
+    """
+    # Closed for now, and said plainly. Refusing here rather than at the form means a request cannot
+    # be queued while there is nobody to settle it: the Telegram half is done by a person, and a
+    # queue that does not move is worse than a button that admits it is shut.
+    if not STAR_PAYOUTS_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Вывод звёзд временно недоступен",
+        )
+    if payload.stars < MIN_PAYOUT_STARS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Минимальная сумма вывода — {MIN_PAYOUT_STARS} ★",
+        )
+    if payload.stars % PAYOUT_STARS_PER_XTR:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Сумма должна быть кратна {PAYOUT_STARS_PER_XTR} ★ — "
+                f"это ровно 1 Telegram Star"
+            ),
+        )
+    open_requests = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(StarPayout)
+            .where(
+                StarPayout.user_id == me.id,
+                StarPayout.status.in_(OPEN_PAYOUT_STATUSES),
+            )
+        )
+        or 0
+    )
+    if open_requests >= MAX_OPEN_PAYOUTS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Уже {open_requests} заявки в работе — дождитесь решения по ним, "
+                "прежде чем открывать новую"
+            ),
+        )
+
+    telegram_user_id: int | None = None
+    crypto_quote: tuple[str, str, str, float] | None = None
+    if payload.method == "crypto":
+        _require_crypto()
+        currency = payload.crypto_currency or ""
+        if currency not in CRYPTO_COIN_LABELS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Эта монета не поддерживается для вывода",
+            )
+        asset, network = _crypto_labels(currency)
+        address = payload.crypto_address or ""
+        complaint = await nowpayments.validate_address(
+            address, currency, payload.crypto_extra_id
+        )
+        if complaint:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Адрес не подходит для {asset} ({network}). "
+                    "Проверьте сеть и сам адрес."
+                ),
+            )
+        try:
+            quote = await nowpayments.estimate(
+                float(payload.stars), CRYPTO_PRICE_CURRENCY, currency
+            )
+            floor = await nowpayments.minimum(currency)
+        except nowpayments.NowPaymentsError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Не удалось рассчитать сумму вывода: {exc}",
+            ) from exc
+        if quote.estimated_amount < floor.min_amount:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Для сети «{network}» минимум {floor.min_amount:g} {asset}, "
+                    f"а {payload.stars} ★ — это {quote.estimated_amount:g} {asset}. "
+                    "Выберите другую сеть или увеличьте сумму."
+                ),
+            )
+        crypto_quote = (currency, asset, network, quote.estimated_amount)
+    else:
+        telegram_user_id = await _known_telegram_id(session, me.id)
+        if telegram_user_id is None and not payload.telegram_username:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Мы не знаем ваш Telegram: укажите юзернейм или один раз купите звёзды "
+                    "через бота — тогда вывод пойдёт на тот же аккаунт"
+                ),
+            )
+
+    wallet = await _wallet_for_update(session, me.id)
+    if wallet.balance < payload.stars:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"На балансе {wallet.balance} ★, а для вывода нужно {payload.stars} ★",
+        )
+    price_xtr = payload.stars // PAYOUT_STARS_PER_XTR
+    payout = StarPayout(
+        user_id=me.id,
+        stars=payload.stars,
+        price_xtr=price_xtr,
+        telegram_user_id=telegram_user_id,
+        telegram_username=payload.telegram_username if payload.method == "telegram" else None,
+    )
+    session.add(payout)
+    await session.flush()
+
+    details: CryptoPayoutDetails | None = None
+    if crypto_quote is not None:
+        currency, asset, network, amount = crypto_quote
+        details = CryptoPayoutDetails(
+            payout_id=payout.id,
+            currency=currency,
+            asset_label=asset,
+            network_label=network,
+            address=payload.crypto_address or "",
+            extra_id=payload.crypto_extra_id,
+            fiat_amount=float(payload.stars),
+            fiat_currency=CRYPTO_PRICE_CURRENCY,
+            quoted_amount=amount,
+        )
+        session.add(details)
+
+    destination = (
+        f"{crypto_quote[3]:g} {crypto_quote[1]} ({crypto_quote[2]})"
+        if crypto_quote
+        else f"{price_xtr} Telegram Stars"
+    )
+    _ledger_change(
+        session,
+        wallet,
+        -payload.stars,
+        kind="payout_hold",
+        description=f"Заявка на вывод {payload.stars} ★ → {destination}",
+        correlation_id=uuid.uuid4(),
+        entity_type="star_payout",
+        entity_id=str(payout.id),
+    )
+    await _notify_admins(
+        session,
+        f"Заявка на вывод: @{me.username} — {payload.stars} ★ → {destination}",
+        entity_id=str(payout.id),
+    )
+    await session.commit()
+    await session.refresh(payout)
+    if details is not None:
+        await session.refresh(details)
+    return _payout_out(payout, details)
+
+
+@app.delete("/api/stars/payouts/{payout_id}", response_model=StarPayoutOut, tags=["Stars"])
+async def cancel_star_payout(
+    payout_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> StarPayoutOut:
+    """Take the request back while it is still waiting. The held stars return immediately."""
+    payout = await session.scalar(
+        select(StarPayout).where(StarPayout.id == payout_id).with_for_update()
+    )
+    if payout is None or payout.user_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    if payout.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Отменить можно только заявку, по которой ещё нет решения",
+        )
+    wallet = await _wallet_for_update(session, me.id)
+    _ledger_change(
+        session,
+        wallet,
+        payout.stars,
+        kind="payout_cancelled",
+        description=f"Заявка на вывод {payout.stars} ★ отменена",
+        correlation_id=uuid.uuid4(),
+        entity_type="star_payout",
+        entity_id=str(payout.id),
+    )
+    payout.status = "cancelled"
+    payout.decided_at = utcnow()
+    await session.commit()
+    await session.refresh(payout)
+    details = await session.get(CryptoPayoutDetails, payout.id)
+    return _payout_out(payout, details)
+
+
+def _bot_payout_out(
+    payout: StarPayout, user: User, charge: StarPurchase | None = None
+) -> BotPayoutOut:
+    return BotPayoutOut(
+        id=payout.id,
+        stars=payout.stars,
+        price_xtr=payout.price_xtr,
+        telegram_user_id=payout.telegram_user_id,
+        telegram_username=payout.telegram_username,
+        username=user.username,
+        display_name=user.display_name,
+        decided_at=payout.decided_at,
+        auto_purchase_id=charge.id if charge else None,
+        auto_charge_id=charge.telegram_charge_id if charge else None,
+    )
+
+
+async def _auto_payout_charge(
+    session: AsyncSession, payout: StarPayout
+) -> StarPurchase | None:
+    """
+    A charge this account paid us that is worth exactly what the payout owes.
+
+    This is the whole trick behind an automatic withdrawal. Telegram has no call that sends Stars
+    to a person, but `refundStarPayment` gives a charge back — and a charge given back is Stars
+    arriving in the same account that paid them. So a payout of 5 XTR can be carried out by handing
+    back a 5 XTR purchase, with nobody in the loop.
+
+    Exactly one charge, never a combination: two refunds cannot fail as one, and a half-finished
+    payout is worse than one that waits for a person. Anything without a match falls back to the
+    manual path, which is why this returning None is not an error.
+    """
+    spoken_for = select(StarRefund.purchase_id).where(
+        StarRefund.status.in_(("pending", "approved"))
+    )
+    return await session.scalar(
+        select(StarPurchase)
+        .where(
+            StarPurchase.user_id == payout.user_id,
+            StarPurchase.status == "paid",
+            StarPurchase.price_xtr == payout.price_xtr,
+            StarPurchase.telegram_charge_id.is_not(None),
+            StarPurchase.payout_id.is_(None),
+            StarPurchase.id.not_in(spoken_for),
+        )
+        # Newest first: the more recent a charge, the likelier Telegram still lets it be refunded.
+        .order_by(StarPurchase.paid_at.desc())
+        .limit(1)
+    )
+
+
+async def _approved_payout_rows(
+    session: AsyncSession, *, unannounced_only: bool
+) -> list[tuple[StarPayout, User]]:
+    query = (
+        select(StarPayout, User)
+        .join(User, User.id == StarPayout.user_id)
+        .where(StarPayout.status == "approved")
+        .order_by(StarPayout.decided_at)
+    )
+    if unannounced_only:
+        query = query.where(StarPayout.notified_at.is_(None))
+    return [(row[0], row[1]) for row in (await session.execute(query)).all()]
+
+
+@app.get("/api/bot/payouts/approved", response_model=list[BotPayoutOut], tags=["Stars"])
+async def bot_approved_payouts(session: SessionDep, _: BotAuth) -> list[BotPayoutOut]:
+    """
+    Payouts an admin has confirmed on the site and nobody has been shown in Telegram yet.
+
+    Handing one over stamps it, so the bot asks once instead of once per poll. Each row carries the
+    charge that can carry it out on its own, when one exists: then the bot refunds that charge and
+    nobody has to send anything by hand. Without one the message is an instruction to a person,
+    because Telegram has no call that sends Stars to somebody.
+    """
+    rows = await _approved_payout_rows(session, unannounced_only=True)
+    charges = {payout.id: await _auto_payout_charge(session, payout) for payout, _user in rows}
+    now = utcnow()
+    for payout, _user in rows:
+        payout.notified_at = now
+    await session.commit()
+    return [_bot_payout_out(payout, user, charges.get(payout.id)) for payout, user in rows]
+
+
+@app.get("/api/bot/payouts/open", response_model=list[BotPayoutOut], tags=["Stars"])
+async def bot_open_payouts(session: SessionDep, _: BotAuth) -> list[BotPayoutOut]:
+    """Every confirmed payout still waiting to be sent, announced or not."""
+    rows = await _approved_payout_rows(session, unannounced_only=False)
+    return [
+        _bot_payout_out(payout, user, await _auto_payout_charge(session, payout))
+        for payout, user in rows
+    ]
+
+
+async def _consume_charge(
+    session: AsyncSession, payout: StarPayout, purchase_id: uuid.UUID
+) -> None:
+    """
+    Mark the charge that carried out a payout as spent.
+
+    The order matters as much here as it does in a refund: the bot has already asked Telegram for
+    the money by the time this runs, so what is recorded is a fact rather than an intention. A
+    charge that does not belong to this account, or is not worth what the payout owed, is refused —
+    that would be a different payment being given away.
+    """
+    charge = await session.scalar(
+        select(StarPurchase).where(StarPurchase.id == purchase_id).with_for_update()
+    )
+    if charge is None or charge.user_id != payout.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Платёж не найден у этого аккаунта"
+        )
+    if charge.price_xtr != payout.price_xtr:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Платёж на {charge.price_xtr} XTR не закрывает вывод "
+                f"на {payout.price_xtr} XTR"
+            ),
+        )
+    if charge.payout_id is not None or charge.status != "paid":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Этот платёж уже использован"
+        )
+    charge.status = "paid_out"
+    charge.payout_id = payout.id
+
+
+async def _settle_payout(  # noqa: PLR0913
+    session: AsyncSession,
+    payout_id: uuid.UUID,
+    *,
+    sent: bool,
+    note: str,
+    admin: User | None = None,
+    admin_telegram_id: int | None = None,
+    purchase_id: uuid.UUID | None = None,
+) -> StarPayout:
+    """
+    The last step of a payout, from Telegram or from the panel.
+
+    Sent is the end of it: the stars left the balance when the request was made and they are gone
+    for good now. A failure is the compensation — the same amount goes back, because the site took
+    it on the promise of a transfer that did not happen.
+
+    `purchase_id` is how the bot says it settled this by handing back a charge. That charge is spent
+    from then on: it is marked `paid_out`, so the refund flow can never give the same money back a
+    second time.
+    """
+    payout = await session.scalar(
+        select(StarPayout).where(StarPayout.id == payout_id).with_for_update()
+    )
+    if payout is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    if payout.status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Отметить отправленным можно только подтверждённую заявку",
+        )
+    cleaned = note.strip()[:240]
+    payout.admin_note = cleaned or payout.admin_note
+    if admin is not None:
+        payout.decided_by_id = admin.id
+    if admin_telegram_id is not None:
+        payout.decided_by_telegram_id = admin_telegram_id
+    if sent:
+        payout.status = "paid"
+        payout.paid_at = utcnow()
+        if purchase_id is not None:
+            await _consume_charge(session, payout, purchase_id)
+        session.add(
+            Notification(
+                user_id=payout.user_id,
+                actor_id=admin.id if admin else None,
+                kind=NotificationKind.STARS,
+                text=f"Вывод исполнен: {payout.price_xtr} Telegram Stars отправлены"
+                + (f". {cleaned}" if cleaned else ""),
+                entity_id=str(payout.id),
+            )
+        )
+    else:
+        wallet = await _wallet_for_update(session, payout.user_id)
+        _ledger_change(
+            session,
+            wallet,
+            payout.stars,
+            kind="payout_failed",
+            description=f"Вывод не прошёл — {payout.stars} ★ снова на балансе",
+            correlation_id=uuid.uuid4(),
+            entity_type="star_payout",
+            entity_id=str(payout.id),
+        )
+        payout.status = "failed"
+        payout.admin_note = (cleaned or "Не удалось отправить Telegram Stars")[:240]
+        session.add(
+            Notification(
+                user_id=payout.user_id,
+                actor_id=admin.id if admin else None,
+                kind=NotificationKind.STARS,
+                text=(
+                    f"Вывод не прошёл: {payout.admin_note}. "
+                    f"{payout.stars} ★ вернулись на баланс"
+                ),
+                entity_id=str(payout.id),
+            )
+        )
+    return payout
+
+
+@app.post("/api/bot/payouts/{payout_id}/paid", response_model=DetailResponse, tags=["Stars"])
+async def bot_payout_paid(
+    payout_id: uuid.UUID, body: BotPayoutSettle, session: SessionDep, _: BotAuth
+) -> DetailResponse:
+    """
+    The payout is out: either an admin sent the Stars by hand, or the bot handed a charge back.
+
+    `purchase_id` distinguishes the two, and it is the automatic case that needs it — that charge
+    is spent from now on and must never be refundable again.
+    """
+    payout = await _settle_payout(
+        session,
+        payout_id,
+        sent=True,
+        note=body.note,
+        admin_telegram_id=body.admin_telegram_id,
+        purchase_id=body.purchase_id,
+    )
+    session.add(
+        AdminAction(
+            action="payout_paid",
+            target_type="payout",
+            target_id=str(payout.id),
+            target_label=f"{payout.stars} ★ → {payout.price_xtr} XTR",
+            reason=payout.admin_note,
+            details={
+                "telegram_admin_id": body.admin_telegram_id,
+                "source": "bot-auto" if body.purchase_id else "bot",
+                "charge_returned": str(body.purchase_id) if body.purchase_id else None,
+            },
+        )
+    )
+    await session.commit()
+    return DetailResponse(detail="paid")
+
+
+@app.post("/api/bot/payouts/{payout_id}/failed", response_model=DetailResponse, tags=["Stars"])
+async def bot_payout_failed(
+    payout_id: uuid.UUID, body: BotPayoutSettle, session: SessionDep, _: BotAuth
+) -> DetailResponse:
+    """It did not go through, so the stars go back and the request says why."""
+    payout = await _settle_payout(
+        session,
+        payout_id,
+        sent=False,
+        note=body.note,
+        admin_telegram_id=body.admin_telegram_id,
+    )
+    session.add(
+        AdminAction(
+            action="payout_failed",
+            target_type="payout",
+            target_id=str(payout.id),
+            target_label=f"{payout.stars} ★ → {payout.price_xtr} XTR",
+            reason=payout.admin_note,
+            details={"telegram_admin_id": body.admin_telegram_id, "source": "bot"},
+        )
+    )
+    await session.commit()
+    return DetailResponse(detail="reversed")
+
+
+@app.get("/api/bot/refunds/approved", response_model=list[BotRefundOut], tags=["Stars"])
+async def bot_approved_refunds(session: SessionDep, _: BotAuth) -> list[BotRefundOut]:
+    """
+    Refunds the site has already debited for and Telegram has not been asked about yet.
+
+    This is what makes an approval in the admin panel reach Telegram at all: the panel can move
+    stars, only the bot can call `refundStarPayment`. Rows leave this list when the bot reports
+    back — settled on success, failed on refusal — so neither answer refunds twice.
+    """
+    rows = (
+        await session.execute(
+            select(StarRefund, StarPurchase, User)
+            .join(StarPurchase, StarPurchase.id == StarRefund.purchase_id)
+            .join(User, User.id == StarRefund.user_id)
+            .where(
+                StarRefund.status == "approved",
+                StarRefund.telegram_done_at.is_(None),
+                StarPurchase.telegram_charge_id.is_not(None),
+            )
+            .order_by(StarRefund.decided_at)
+        )
+    ).all()
+    return [_bot_refund_out(refund, order, buyer) for refund, order, buyer in rows]
+
+
+@app.post("/api/bot/refunds/{refund_id}/settled", response_model=DetailResponse, tags=["Stars"])
+async def bot_refund_settled(
+    refund_id: uuid.UUID,
+    session: SessionDep,
+    _: BotAuth,
+) -> DetailResponse:
+    """Telegram gave the payment back. Stamped so it is never asked for twice."""
+    refund = await session.scalar(
+        select(StarRefund).where(StarRefund.id == refund_id).with_for_update()
+    )
+    if refund is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    if refund.status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Эта заявка не была одобрена"
+        )
+    if refund.telegram_done_at is None:
+        refund.telegram_done_at = utcnow()
+        await session.commit()
+    return DetailResponse(detail="settled")
 
 
 @app.post("/api/stars/send", response_model=StarTransferReceipt, tags=["Stars"])
@@ -6027,26 +10241,107 @@ PREMIUM_PRICE_FIAT = 103.99
 PREMIUM_FIAT_CURRENCY = "UAH"
 PREMIUM_PERIOD_DAYS = 30
 
+# ---------------------------------------------------------------------------------------------
+# What Premium actually changes.
+#
+# Gathered here so the sheet and the endpoints cannot disagree — a benefit list that promises
+# what nothing enforces is worse than a shorter one. Two rules hold throughout:
+#
+# * Additive only. Every number a free account had before Premium existed is still its number;
+#   Premium raises the ceiling. Nobody loses anything by somebody else paying.
+# * Written, not shown. Choosing a name colour or an emoji status needs Premium; a colour already
+#   chosen keeps working if the subscription lapses. Taking decoration back off a profile would be
+#   a punishment, and the point of the subscription is what it lets you do.
+# ---------------------------------------------------------------------------------------------
+# The composer allowed 560 characters before any of this existed, so a free account gains room
+# here rather than losing it, and Premium is four times that.
+FREE_POST_LENGTH = 1000
+PREMIUM_POST_LENGTH = 4000
+FREE_POST_IMAGES = MAX_POST_IMAGES
+PREMIUM_POST_IMAGES = 10
+FREE_BIO_LENGTH = 280
+PREMIUM_BIO_LENGTH = 560
+# The cover holds four gift showcases; one of them is anyone's. `COVER_SLOTS` below names them.
+COVER_SLOT_COUNT = 4
+# Uploads: the same files, four times the ceiling. Nothing is transcoded here, so this is purely
+# how much a reader may be asked to pull down.
+PREMIUM_UPLOAD_FACTOR = 4
+# How far ahead a publication may be queued.
+SCHEDULE_HORIZON_DAYS = 365
+
+
+async def has_premium(session: AsyncSession, user_id: uuid.UUID) -> bool:
+    """One account's subscription state. The plural form exists for lists; this is the single."""
+    return user_id in await premium_user_ids(session, [user_id])
+
+
+async def premium_or_staff(session: AsyncSession, user: User) -> bool:
+    """
+    Premium, or the people who cannot buy it.
+
+    Staff and the platform account are marked differently and are not customers of the shop, so
+    gating their personalisation behind a purchase would be theatre.
+    """
+    return (
+        user.is_admin
+        or user.username.lower() == OFFICIAL_USERNAME
+        or await has_premium(session, user.id)
+    )
+
+
+async def _require_premium(
+    session: AsyncSession, user: User, detail: str, *, staff_pass: bool = True
+) -> None:
+    """Refuse with the reason and the price, which is what a person can act on."""
+    allowed = (
+        await premium_or_staff(session, user) if staff_pass else await has_premium(session, user.id)
+    )
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=detail)
+
+
+async def upload_ceiling(session: AsyncSession, user: User, base_bytes: int) -> int:
+    """How large a file this account may send. Premium lifts every media ceiling by one factor."""
+    return base_bytes * PREMIUM_UPLOAD_FACTOR if await has_premium(session, user.id) else base_bytes
+
 PREMIUM_BENEFITS: tuple[tuple[str, str, str, str, bool], ...] = (
     ("subscription", "Подписка GRAM Premium", "Ежемесячная подписка: поддержка GRAM и все возможности ниже.", "crown", False),
-    ("name-color", "Цвет ника", "Премиум-палитра имени в профиле, ленте и чатах.", "palette", False),
+    ("name-color", "Цвет ника", "Премиум-палитра имени в профиле, ленте и чатах. Выбранный цвет остаётся с вами и после окончания подписки.", "palette", False),
     ("premium-badge", "Premium-значок", "Фирменная звезда рядом с ником и до 7 особых галочек.", "badge-check", False),
-    ("emoji-status", "Эмодзи-статус", "Статус-подарок рядом с ником в профиле и чатах.", "sparkles", False),
-    ("double-limits", "Удвоенные лимиты", "Длиннее посты, больше фото и символов в био. Сравнение ниже.", "gauge", False),
+    ("emoji-status", "Эмодзи-статус", "Эмодзи рядом с именем в профиле, ленте и чатах.", "sparkles", False),
+    ("double-limits", "Расширенные лимиты", "Длиннее посты и описание, больше фото в одной публикации. Сравнение ниже.", "gauge", False),
+    ("scheduled-posts", "Отложенные публикации", "Пишите сейчас — выйдет в выбранное время. Своя очередь запланированного в профиле.", "clock", False),
+    ("large-files", "Большие файлы", "Вчетверо больший размер видео, документов и вложений в чатах.", "upload", False),
+    ("gift-showcase", "Витрина подарков", "Подарок рядом с именем и три дополнительных места в шапке профиля.", "gift", False),
+    ("streak-protection", "Защита серии", "Один пропущенный день не обнуляет серию посещений — защита применяется автоматически.", "flame", False),
     ("voice-to-text", "Голос в текст", "Расшифровка голосовых сообщений одним касанием.", "audio-lines", True),
     ("realtime-translation", "Перевод в реальном времени", "Авто-перевод постов и переписки на твой язык.", "languages", True),
     ("custom-emoji", "Кастом-эмодзи в тексте", "Анимированные и кастомные эмодзи в сообщениях и профиле.", "smile-plus", True),
     ("stories-priority", "Сторис: приоритет и невидимка", "Приоритетная загрузка, скрытый просмотр и расширенные лимиты сторис.", "video", True),
-    ("chat-wallpapers", "Обои чата", "Свой фон для чатов из набора премиум-обоев.", "image", True),
-    ("large-files", "Большие файлы", "Загружай файлы большего размера в чаты и посты.", "upload", True),
-    ("fast-uploads", "Быстрые загрузки", "Медиа и файлы грузятся без ограничения скорости.", "download", True),
+    ("chat-wallpapers", "Премиум-обои чата", "Эксклюзивные фоны Midnight, Neon и Constellation поверх обычной коллекции.", "image", False),
 )
 
+# The comparison table. Every row here is checked by an endpoint — see the constants above and
+# `_require_premium` at each write — because a table nobody enforces is a false advertisement.
 PREMIUM_LIMITS: tuple[tuple[str, str, int, int], ...] = (
-    ("post-length", "Длина поста", 280, 1200),
-    ("post-photos", "Фото в посте", 6, 10),
-    ("bio-length", "Описание профиля", 280, 560),
-    ("special-marks", "Особые галочки", 3, 7),
+    ("post-length", "Длина поста", FREE_POST_LENGTH, PREMIUM_POST_LENGTH),
+    ("post-photos", "Фото в посте", FREE_POST_IMAGES, PREMIUM_POST_IMAGES),
+    ("bio-length", "Описание профиля", FREE_BIO_LENGTH, PREMIUM_BIO_LENGTH),
+    ("special-marks", "Особые галочки", FREE_BADGE_SLOTS, PREMIUM_BADGE_SLOTS),
+    ("cover-gifts", "Витрины в шапке", 1, COVER_SLOT_COUNT),
+    ("streak-freeze", "Защита серии, дней", 0, 1),
+    (
+        "video-size",
+        "Видео, МБ",
+        MAX_VIDEO_BYTES // (1024 * 1024),
+        MAX_VIDEO_BYTES * PREMIUM_UPLOAD_FACTOR // (1024 * 1024),
+    ),
+    (
+        "file-size",
+        "Файлы, МБ",
+        MAX_FILE_BYTES // (1024 * 1024),
+        MAX_FILE_BYTES * PREMIUM_UPLOAD_FACTOR // (1024 * 1024),
+    ),
 )
 
 PREMIUM_PAYMENT_METHODS: tuple[tuple[str, str, str, str, bool, tuple[str, ...]], ...] = (
@@ -6168,8 +10463,10 @@ async def purchase_premium(
         .where(PremiumEntitlement.user_id == me.id, PremiumEntitlement.plan == payload.plan)
         .with_for_update()
     )
-    if entitlement and entitlement.active and entitlement.expires_at > now:
-        entitlement.expires_at = entitlement.expires_at + timedelta(days=PREMIUM_PERIOD_DAYS)
+    if entitlement and entitlement.active and _as_utc(entitlement.expires_at) > now:
+        entitlement.expires_at = _as_utc(entitlement.expires_at) + timedelta(
+            days=PREMIUM_PERIOD_DAYS
+        )
         entitlement.cancelled_at = None
     else:
         entitlement = PremiumEntitlement(
@@ -6365,6 +10662,17 @@ async def render_community(session: AsyncSession, community: Community, me: User
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Владелец сообщества не найден"
         )
+    # Every handle pointing here, the channel's own address first.
+    handles = list(
+        (
+            await session.scalars(
+                select(UsernameAsset.username)
+                .where(UsernameAsset.community_id == community.id)
+                .order_by(UsernameAsset.created_at)
+            )
+        ).all()
+    )
+    usernames = [community.slug, *[handle for handle in handles if handle != community.slug]]
     member = await session.scalar(
         select(CommunityMember).where(
             CommunityMember.community_id == community.id, CommunityMember.user_id == me.id
@@ -6399,6 +10707,7 @@ async def render_community(session: AsyncSession, community: Community, me: User
         posts_count=posts_count,
         is_paid=False,
         monthly_price=0,
+        usernames=usernames,
         created_at=community.created_at,
     )
 
@@ -6420,9 +10729,9 @@ async def verify_community(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Галочку выдаёт только команда GRAM",
         )
-    community = await session.scalar(
-        select(Community).where(func.lower(Community.slug) == slug.lower()).with_for_update()
-    )
+    community = await _resolve_community(session, slug)
+    if community is not None:
+        await session.refresh(community, with_for_update=True)
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
     community.is_verified = payload.verified
@@ -6464,10 +10773,9 @@ async def read_communities(
 async def create_community(
     payload: CommunityCreate, session: SessionDep, me: CurrentUser
 ) -> CommunityOut:
-    if await session.scalar(select(Community.id).where(func.lower(Community.slug) == payload.slug)):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="Адрес сообщества уже занят"
-        )
+    # A channel's address is a handle like any other, so it cannot already be an account, another
+    # channel or somebody else's collectible.
+    await _refuse_taken_handle(session, payload.slug, user_id=me.id)
     community = Community(
         slug=payload.slug,
         title=payload.title.strip(),
@@ -6482,6 +10790,7 @@ async def create_community(
     session.add(community)
     await session.flush()
     session.add(CommunityMember(community_id=community.id, user_id=me.id, role="owner"))
+    await _claim_community_handle(session, community, payload.slug, me)
     await session.commit()
     await session.refresh(community)
     return await render_community(session, community, me)
@@ -6489,15 +10798,220 @@ async def create_community(
 
 @app.get("/api/communities/{slug}", response_model=CommunityOut, tags=["communities"])
 async def read_community(slug: str, session: SessionDep, me: CurrentUser) -> CommunityOut:
-    community = await session.scalar(
-        select(Community).where(func.lower(Community.slug) == slug.lower())
-    )
+    community = await _resolve_community(session, slug)
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
     rendered = await render_community(session, community, me)
     if community.is_private and not rendered.is_member:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Это закрытое сообщество")
     return rendered
+
+
+async def _resolve_community(session: AsyncSession, slug: str) -> Community | None:
+    """
+    A channel by its address — or by any handle pointing at it.
+
+    An extra handle is a real address, not a decoration: a link that uses one has to open the
+    channel, the same way its own slug does. The payload always names the canonical slug, so a
+    page opened this way still knows where it really lives.
+    """
+    wanted = slug.strip().removeprefix("@").lower()
+    community = await session.scalar(
+        select(Community).where(func.lower(Community.slug) == wanted)
+    )
+    if community is not None:
+        return community
+    attached = await session.scalar(
+        select(UsernameAsset.community_id).where(
+            func.lower(UsernameAsset.username) == wanted, UsernameAsset.community_id.is_not(None)
+        )
+    )
+    return await session.get(Community, attached) if attached else None
+
+
+async def _owned_community(session: AsyncSession, slug: str, me: User) -> Community:
+    """A channel the caller owns, or the right refusal."""
+    community = await _resolve_community(session, slug)
+    if community is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
+    if community.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Адресами канала распоряжается владелец"
+        )
+    return community
+
+
+async def _claim_community_handle(
+    session: AsyncSession, community: Community, handle: str, owner: User
+) -> UsernameAsset | None:
+    """
+    Make sure a channel's address exists as a handle pointing at it.
+
+    Returns nothing for an address that cannot be a handle at all: slugs may carry dashes and run
+    to 48 characters, and one of those is not a username anybody could hold.
+    """
+    wanted = handle.strip().lower()
+    if not HANDLE_SHAPE.fullmatch(wanted):
+        return None
+    asset = await session.scalar(
+        select(UsernameAsset).where(func.lower(UsernameAsset.username) == wanted)
+    )
+    if asset is None:
+        asset = UsernameAsset(
+            username=wanted,
+            owner_id=owner.id,
+            community_id=community.id,
+            status=UsernameStatus.RESERVED,
+            currency="STARS",
+            reserved_at=utcnow(),
+        )
+        session.add(asset)
+        await session.flush()
+    else:
+        asset.owner_id = asset.owner_id or owner.id
+        asset.community_id = community.id
+        asset.status = UsernameStatus.RESERVED
+        asset.price = None
+        asset.listed_at = None
+    session.add(
+        UsernameOwnershipEvent(
+            asset_id=asset.id, to_user_id=owner.id, action="community_username"
+        )
+    )
+    return asset
+
+
+@app.post(
+    "/api/communities/{slug}/usernames",
+    response_model=CommunityOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["communities"],
+)
+async def attach_community_username(
+    slug: str, payload: CommunityUsernameAttach, session: SessionDep, me: CurrentUser
+) -> CommunityOut:
+    """
+    Point one of my own handles at one of my own channels.
+
+    This is the part of the market a channel takes part in: a handle bought on it can become a
+    channel's address without anybody renaming anything, and it goes back to being a plain
+    collectible the moment it is taken off.
+    """
+    community = await _owned_community(session, slug, me)
+    wanted = payload.username.lower()
+    asset = await session.scalar(
+        select(UsernameAsset)
+        .where(func.lower(UsernameAsset.username) == wanted)
+        .with_for_update()
+    )
+    if asset is None or asset.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"@{wanted} вам не принадлежит — займите или купите его на маркете",
+        )
+    if asset.community_id == community.id:
+        return await render_community(session, community, me)
+    if asset.community_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{wanted} уже указывает на другое сообщество",
+        )
+    if asset.status == UsernameStatus.LISTED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Снимите имя с продажи, прежде чем отдавать его каналу",
+        )
+    if asset.username.lower() == me.username.lower():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{wanted} — ваш основной юзернейм, канал не может его занять",
+        )
+    asset.community_id = community.id
+    session.add(
+        UsernameOwnershipEvent(
+            asset_id=asset.id, from_user_id=me.id, to_user_id=me.id, action="community_username"
+        )
+    )
+    await session.commit()
+    await session.refresh(community)
+    return await render_community(session, community, me)
+
+
+@app.delete(
+    "/api/communities/{slug}/usernames/{asset_id}",
+    response_model=CommunityOut,
+    tags=["communities"],
+)
+async def detach_community_username(
+    slug: str, asset_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> CommunityOut:
+    """Take an extra handle back. A channel's own address cannot be taken from under it."""
+    community = await _owned_community(session, slug, me)
+    asset = await session.scalar(
+        select(UsernameAsset).where(UsernameAsset.id == asset_id).with_for_update()
+    )
+    if asset is None or asset.community_id != community.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Имя не найдено")
+    if asset.username.lower() == community.slug.lower():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Это адрес канала — сначала сделайте основным другое имя",
+        )
+    asset.community_id = None
+    session.add(
+        UsernameOwnershipEvent(
+            asset_id=asset.id, from_user_id=me.id, to_user_id=me.id, action="community_released"
+        )
+    )
+    await session.commit()
+    await session.refresh(community)
+    return await render_community(session, community, me)
+
+
+@app.post(
+    "/api/communities/{slug}/usernames/{asset_id}/primary",
+    response_model=CommunityOut,
+    tags=["communities"],
+)
+async def set_community_primary_username(
+    slug: str, asset_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> CommunityOut:
+    """
+    Swap which of a channel's handles is its address.
+
+    The previous address stays attached, so links that used it keep opening the channel — unless
+    it is one of those legacy slugs that also belongs to an account, in which case keeping it
+    would keep the very collision this is here to end.
+    """
+    community = await _owned_community(session, slug, me)
+    asset = await session.scalar(
+        select(UsernameAsset).where(UsernameAsset.id == asset_id).with_for_update()
+    )
+    if asset is None or asset.owner_id != me.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Имя не найдено")
+    if asset.community_id not in {None, community.id}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Имя занято другим сообществом"
+        )
+    if asset.status == UsernameStatus.LISTED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Снимите имя с продажи"
+        )
+    previous = community.slug
+    if previous.lower() == asset.username.lower():
+        return await render_community(session, community, me)
+    community.slug = asset.username.lower()
+    asset.community_id = community.id
+    if await _handle_conflict(session, previous, user_id=me.id, community_id=community.id) is None:
+        await _claim_community_handle(session, community, previous, me)
+    session.add(
+        UsernameOwnershipEvent(
+            asset_id=asset.id, from_user_id=me.id, to_user_id=me.id, action="community_primary"
+        )
+    )
+    await session.commit()
+    await session.refresh(community)
+    return await render_community(session, community, me)
 
 
 @app.patch("/api/communities/{slug}", response_model=CommunityOut, tags=["communities"])
@@ -6509,9 +11023,7 @@ async def update_community(
 
     The slug stays fixed: it is the channel's address, and links already point at it.
     """
-    community = await session.scalar(
-        select(Community).where(func.lower(Community.slug) == slug.lower())
-    )
+    community = await _resolve_community(session, slug)
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
     if community.owner_id != me.id:
@@ -6533,9 +11045,9 @@ async def update_community(
 
 @app.post("/api/communities/{slug}/join", response_model=CommunityOut, tags=["communities"])
 async def join_community(slug: str, session: SessionDep, me: CurrentUser) -> CommunityOut:
-    community = await session.scalar(
-        select(Community).where(func.lower(Community.slug) == slug.lower()).with_for_update()
-    )
+    community = await _resolve_community(session, slug)
+    if community is not None:
+        await session.refresh(community, with_for_update=True)
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
     if community.is_private:
@@ -6557,9 +11069,9 @@ async def join_community(slug: str, session: SessionDep, me: CurrentUser) -> Com
 
 @app.delete("/api/communities/{slug}/leave", response_model=CommunityOut, tags=["communities"])
 async def leave_community(slug: str, session: SessionDep, me: CurrentUser) -> CommunityOut:
-    community = await session.scalar(
-        select(Community).where(func.lower(Community.slug) == slug.lower()).with_for_update()
-    )
+    community = await _resolve_community(session, slug)
+    if community is not None:
+        await session.refresh(community, with_for_update=True)
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
     if community.owner_id == me.id:
@@ -6586,9 +11098,7 @@ async def community_posts(slug: str, session: SessionDep, me: CurrentUser) -> li
     They used to be their own thin shape — no likes, no comments, no views — which meant a
     channel's readers could not answer anything it said. Pinned first, then newest.
     """
-    community = await session.scalar(
-        select(Community).where(func.lower(Community.slug) == slug.lower())
-    )
+    community = await _resolve_community(session, slug)
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
     rendered = await render_community(session, community, me)
@@ -6599,7 +11109,13 @@ async def community_posts(slug: str, session: SessionDep, me: CurrentUser) -> li
             select(Post, User)
             .join(User, Post.author_id == User.id)
             .where(Post.community_id == community.id)
-            .order_by(Post.pinned_at.is_(None), Post.pinned_at.desc(), Post.created_at.desc())
+            # A queued channel post is nobody's to read yet, the author included.
+            .where(or_(Post.publish_at.is_(None), Post.publish_at <= utcnow()))
+            .order_by(
+                Post.pinned_at.is_(None),
+                Post.pinned_at.desc(),
+                func.coalesce(Post.publish_at, Post.created_at).desc(),
+            )
         )
     ).all()
     author_ids = [author.id for _, author in rows]
@@ -6629,9 +11145,7 @@ async def read_community_stories(
 ) -> list[ProfileStoryOut]:
     """Stories the channel itself published, newest first, expired ones left out."""
     del me
-    community = await session.scalar(
-        select(Community).where(func.lower(Community.slug) == slug.lower())
-    )
+    community = await _resolve_community(session, slug)
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
     rows = (
@@ -6664,9 +11178,7 @@ async def create_community_post(
     because a channel post is a post. Only its owner writes in it: members read, subscribe and
     gift, and the reference offers them no composer at all.
     """
-    community = await session.scalar(
-        select(Community).where(func.lower(Community.slug) == slug.lower())
-    )
+    community = await _resolve_community(session, slug)
     if community is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
     if community.owner_id != me.id:
@@ -6674,7 +11186,9 @@ async def create_community_post(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Публиковать в сообществе может только владелец",
         )
-    gallery = [url for url in (payload.image_urls or []) if url][:MAX_POST_IMAGES]
+    await _check_post_size(session, me, payload.content, payload.image_urls)
+    publish_at = await _resolve_publish_at(session, me, payload.publish_at)
+    gallery = [url for url in (payload.image_urls or []) if url][:PREMIUM_POST_IMAGES]
     post = Post(
         author_id=me.id,
         community_id=community.id,
@@ -6690,11 +11204,60 @@ async def create_community_post(
         link_url=payload.link_url,
         link_title=(payload.link_title or None),
         music=await resolve_post_music(payload.content),
+        publish_at=publish_at,
     )
     session.add(post)
     await session.commit()
     await session.refresh(post)
     return await render_post(session, post, me, me, community=community)
+
+
+async def _owned_username_count(session: AsyncSession, user_id: uuid.UUID) -> int:
+    """
+    How many personal handles this account holds.
+
+    Channel addresses are excluded: those belong to a community and are governed by whoever owns it,
+    so counting them would let a person's own collection be squeezed out by their own channels.
+    """
+    return int(
+        await session.scalar(
+            select(func.count())
+            .select_from(UsernameAsset)
+            .where(
+                UsernameAsset.owner_id == user_id,
+                UsernameAsset.community_id.is_(None),
+            )
+        )
+        or 0
+    )
+
+
+async def _refuse_username_overflow(
+    session: AsyncSession, user_id: uuid.UUID, *, handle: str
+) -> None:
+    """
+    Refuse a handle that would take an account past its cap.
+
+    Checked before anything is written, and re-checked by every route that can add one — reserving,
+    buying and accepting a transfer are three different ways to end up holding twenty-one names.
+    A handle the account already owns is free: re-reserving something you hold changes nothing.
+    """
+    already = await session.scalar(
+        select(UsernameAsset.id).where(
+            func.lower(UsernameAsset.username) == handle.lower(),
+            UsernameAsset.owner_id == user_id,
+        )
+    )
+    if already is not None:
+        return
+    if await _owned_username_count(session, user_id) >= MAX_OWNED_USERNAMES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Больше {MAX_OWNED_USERNAMES} юзернеймов на аккаунт нельзя — "
+                "освободите один из своих, чтобы занять новый"
+            ),
+        )
 
 
 @app.get("/api/usernames", response_model=list[UsernameAssetOut], tags=["usernames"])
@@ -6724,16 +11287,14 @@ async def reserve_username(
     payload: UsernameReserve, session: SessionDep, me: CurrentUser
 ) -> UsernameAssetOut:
     wanted = payload.username.lower().removeprefix("@")
-    # Handles live in two places (accounts and collectible assets); both must agree.
-    live_account = await session.scalar(
-        select(User.id).where(func.lower(User.username) == wanted, User.id != me.id)
-    )
-    if live_account:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Это имя уже занято")
+    # Accounts, channels and collectibles are one namespace, and this is the gate for all three.
+    await _refuse_taken_handle(session, wanted, user_id=me.id)
+    # And a collection has a ceiling, checked before the row is written.
+    await _refuse_username_overflow(session, me.id, handle=wanted)
     asset = await session.scalar(
         select(UsernameAsset).where(func.lower(UsernameAsset.username) == wanted).with_for_update()
     )
-    if asset is not None and asset.owner_id is not None:
+    if asset is not None and asset.owner_id is not None and asset.owner_id != me.id:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Это имя уже занято")
     now = utcnow()
     if asset is None:
@@ -6781,6 +11342,24 @@ async def update_username_listing(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Укажите цену"
         )
+    if payload.for_sale:
+        # A sold handle changes hands, so what is still in use cannot be sold: the buyer would
+        # own a name the seller keeps answering to.
+        if asset.username.lower() == me.username.lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"@{asset.username} — ваш основной юзернейм. "
+                "Сделайте основным другое имя, прежде чем продавать это",
+            )
+        community = (
+            await session.get(Community, asset.community_id) if asset.community_id else None
+        )
+        if community is not None and community.slug.lower() == asset.username.lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"@{asset.username} — адрес канала «{community.title}». "
+                "Сделайте основным другое имя канала, прежде чем продавать это",
+            )
     asset.status = UsernameStatus.LISTED if payload.for_sale else UsernameStatus.RESERVED
     asset.price = payload.price if payload.for_sale else None
     asset.currency = "STARS"
@@ -6823,6 +11402,9 @@ async def update_username_offers(
             status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим именем"
         )
     asset.offers_disabled = payload.offers_disabled
+    if payload.offers_disabled:
+        # Refusing offers means refusing the ones already standing, and their stars go back.
+        await _release_offers(session, asset, reason="declined")
     if payload.offers_disabled and asset.status == UsernameStatus.LISTED:
         asset.status = UsernameStatus.RESERVED
         asset.price = None
@@ -6860,30 +11442,77 @@ async def acquire_username(
     seller = await session.get(User, asset.owner_id)
     if seller is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Владелец недоступен")
+    # A listing written before addresses and handles became one namespace can still name a handle
+    # its owner is using; the sale is refused rather than sold out from under an address.
+    await _refuse_unsellable(session, asset, seller)
+    # Refused before the stars move: a buyer at their ceiling must not pay for a name they cannot
+    # be given.
+    await _refuse_username_overflow(session, me.id, handle=asset.username)
     price = int(asset.price)
-    wallets = (
-        await session.scalars(
-            select(StarWallet)
-            .where(StarWallet.user_id.in_([me.id, seller.id]))
-            .order_by(StarWallet.user_id)
-            .with_for_update()
-        )
-    ).all()
-    by_user = {wallet.user_id: wallet for wallet in wallets}
-    buyer_wallet = by_user.get(me.id) or await _wallet_for_update(session, me.id)
-    seller_wallet = by_user.get(seller.id) or await _wallet_for_update(session, seller.id)
-    correlation = uuid.uuid4()
-    _ledger_change(
+    handle = asset.username
+    await _settle_username_sale(
+        session, asset, seller=seller, buyer=me, price=price, action="acquired"
+    )
+    # Everyone else's standing bid is released: the handle they were bidding on is gone.
+    await _release_offers(session, asset, reason="cancelled")
+    _notify_market(
         session,
-        buyer_wallet,
-        -price,
-        kind="username_purchase",
-        description=f"Покупка @{asset.username}",
-        correlation_id=correlation,
-        counterparty_id=seller.id,
-        entity_type="username",
+        seller.id,
+        f"@{handle} продан за {price} ★ — покупатель {me.display_name}",
+        actor_id=me.id,
         entity_id=str(asset.id),
     )
+    await session.commit()
+    await session.refresh(asset)
+    return await render_username(session, asset, me, me)
+
+
+async def _refuse_unsellable(session: AsyncSession, asset: UsernameAsset, seller: User) -> None:
+    """A handle still serving as somebody's address cannot change hands."""
+    if asset.username.lower() == seller.username.lower():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{asset.username} — основной юзернейм владельца, он не продаётся",
+        )
+    community = await session.get(Community, asset.community_id) if asset.community_id else None
+    if community is not None and community.slug.lower() == asset.username.lower():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{asset.username} — адрес канала «{community.title}», он не продаётся",
+        )
+
+
+async def _settle_username_sale(  # noqa: PLR0913
+    session: AsyncSession,
+    asset: UsernameAsset,
+    *,
+    seller: User,
+    buyer: User,
+    price: int,
+    action: str,
+    held: bool = False,
+) -> None:
+    """
+    Move a handle and its money in one go.
+
+    `held` says the buyer's stars were already taken when they bid, so only the seller's side of
+    the ledger is written — otherwise the same offer would be paid for twice.
+    """
+    correlation = uuid.uuid4()
+    if not held:
+        buyer_wallet = await _wallet_for_update(session, buyer.id)
+        _ledger_change(
+            session,
+            buyer_wallet,
+            -price,
+            kind="username_purchase",
+            description=f"Покупка @{asset.username}",
+            correlation_id=correlation,
+            counterparty_id=seller.id,
+            entity_type="username",
+            entity_id=str(asset.id),
+        )
+    seller_wallet = await _wallet_for_update(session, seller.id)
     _ledger_change(
         session,
         seller_wallet,
@@ -6891,28 +11520,110 @@ async def acquire_username(
         kind="username_sale",
         description=f"Продажа @{asset.username}",
         correlation_id=correlation,
-        counterparty_id=me.id,
+        counterparty_id=buyer.id,
         entity_type="username",
         entity_id=str(asset.id),
     )
-    previous_owner = seller.id
-    asset.owner_id = me.id
+    _move_username(
+        session, asset, to_user=buyer, from_user_id=seller.id, action=action, price_stars=price
+    )
+
+
+def _move_username(  # noqa: PLR0913
+    session: AsyncSession,
+    asset: UsernameAsset,
+    *,
+    to_user: User,
+    from_user_id: uuid.UUID | None,
+    action: str,
+    price_stars: int | None = None,
+) -> None:
+    """
+    Hand a handle to its new owner.
+
+    It stops pointing at the seller's channel on the way out: an address sitting in somebody
+    else's collection is not one that channel can go on using.
+    """
+    asset.owner_id = to_user.id
+    asset.community_id = None
     asset.status = UsernameStatus.RESERVED
     asset.price = None
     asset.listed_at = None
     asset.reserved_at = utcnow()
+    asset.offers_disabled = False
     session.add(
         UsernameOwnershipEvent(
             asset_id=asset.id,
-            from_user_id=previous_owner,
-            to_user_id=me.id,
-            action="acquired",
-            price_stars=price,
+            from_user_id=from_user_id,
+            to_user_id=to_user.id,
+            action=action,
+            price_stars=price_stars,
         )
     )
-    await session.commit()
-    await session.refresh(asset)
-    return await render_username(session, asset, me, me)
+
+
+def _notify_market(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    text: str,
+    *,
+    actor_id: uuid.UUID | None = None,
+    entity_id: str | None = None,
+) -> None:
+    """A market event, under the kind the bell already draws for handles."""
+    session.add(
+        Notification(
+            user_id=user_id,
+            actor_id=actor_id,
+            kind=NotificationKind.USERNAME,
+            text=text[:240],
+            entity_id=entity_id,
+        )
+    )
+
+
+async def _release_offers(
+    session: AsyncSession,
+    asset: UsernameAsset,
+    *,
+    reason: str,
+    keep_offer_id: uuid.UUID | None = None,
+) -> None:
+    """
+    Give every standing bid its stars back.
+
+    A bid holds real money, so it cannot simply be forgotten when the handle is sold, taken off
+    the market or handed to somebody: each bidder is refunded and told why.
+    """
+    offers = (
+        await session.scalars(
+            select(UsernameOffer)
+            .where(UsernameOffer.asset_id == asset.id, UsernameOffer.status == "pending")
+            .with_for_update()
+        )
+    ).all()
+    for offer in offers:
+        if keep_offer_id is not None and offer.id == keep_offer_id:
+            continue
+        wallet = await _wallet_for_update(session, offer.bidder_id)
+        _ledger_change(
+            session,
+            wallet,
+            offer.amount_stars,
+            kind="username_offer_refund",
+            description=f"Возврат ставки на @{asset.username}",
+            correlation_id=uuid.uuid4(),
+            entity_type="username",
+            entity_id=str(asset.id),
+        )
+        offer.status = reason
+        offer.responded_at = utcnow()
+        _notify_market(
+            session,
+            offer.bidder_id,
+            f"Ставка {offer.amount_stars} ★ на @{asset.username} отменена — звёзды вернулись",
+            entity_id=str(asset.id),
+        )
 
 
 @app.get("/api/usernames/lookup", response_model=UsernameAssetOut, tags=["usernames"])
@@ -6970,13 +11681,16 @@ async def activate_username(
             status_code=status.HTTP_409_CONFLICT,
             detail="Снимите имя с продажи, прежде чем сделать его основным",
         )
+    if asset.community_id is not None:
+        community = await session.get(Community, asset.community_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{asset.username} занят каналом «{community.title if community else ''}» — "
+            "сначала отвяжите имя от канала",
+        )
     if asset.username.lower() == me.username.lower():
         return await render_profile(session, me, me)
-    taken = await session.scalar(
-        select(User.id).where(func.lower(User.username) == asset.username.lower(), User.id != me.id)
-    )
-    if taken:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Юзернейм уже занят")
+    await _refuse_taken_handle(session, asset.username, user_id=me.id)
     previous_handle = me.username
     kept = await session.scalar(
         select(UsernameAsset).where(func.lower(UsernameAsset.username) == previous_handle.lower())
@@ -7040,6 +11754,389 @@ async def username_history(
         )
         for event, source, destination in rows
     ]
+
+
+def _offer_out(
+    offer: UsernameOffer, bidder: User, handle: str, me_id: uuid.UUID
+) -> UsernameOfferOut:
+    return UsernameOfferOut(
+        id=offer.id,
+        asset_id=offer.asset_id,
+        username=handle,
+        bidder=compact_user(bidder),
+        amount_stars=offer.amount_stars,
+        status=cast(
+            "Literal['pending', 'accepted', 'declined', 'withdrawn', 'cancelled']", offer.status
+        ),
+        created_at=offer.created_at,
+        responded_at=offer.responded_at,
+        is_mine=offer.bidder_id == me_id,
+    )
+
+
+# Declared before `/api/usernames/{asset_id}/offers`: routes are matched in order, and "me" would
+# otherwise be read as an id and fail as one.
+@app.get("/api/usernames/me/offers", response_model=list[UsernameOfferOut], tags=["usernames"])
+async def read_my_username_offers(
+    session: SessionDep, me: CurrentUser
+) -> list[UsernameOfferOut]:
+    """Every bid this account has made, standing or settled."""
+    rows = (
+        await session.execute(
+            select(UsernameOffer, UsernameAsset)
+            .join(UsernameAsset, UsernameAsset.id == UsernameOffer.asset_id)
+            .where(UsernameOffer.bidder_id == me.id)
+            .order_by(UsernameOffer.created_at.desc())
+        )
+    ).all()
+    return [_offer_out(offer, me, asset.username, me.id) for offer, asset in rows]
+
+
+@app.get(
+    "/api/usernames/{asset_id}/offers", response_model=list[UsernameOfferOut], tags=["usernames"]
+)
+async def read_username_offers(
+    asset_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> list[UsernameOfferOut]:
+    """Bids on a handle: its owner sees all of them, anybody else only their own."""
+    asset = await session.get(UsernameAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Имя не найдено")
+    query = (
+        select(UsernameOffer, User)
+        .join(User, User.id == UsernameOffer.bidder_id)
+        .where(UsernameOffer.asset_id == asset.id)
+        .order_by(UsernameOffer.amount_stars.desc(), UsernameOffer.created_at)
+    )
+    if asset.owner_id != me.id:
+        query = query.where(UsernameOffer.bidder_id == me.id)
+    rows = (await session.execute(query)).all()
+    return [_offer_out(offer, bidder, asset.username, me.id) for offer, bidder in rows]
+
+
+@app.post(
+    "/api/usernames/{asset_id}/offers",
+    response_model=UsernameOfferOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["usernames"],
+)
+async def make_username_offer(
+    asset_id: uuid.UUID,
+    payload: UsernameOfferCreate,
+    session: SessionDep,
+    me: CurrentUser,
+) -> UsernameOfferOut:
+    """
+    Bid on a handle somebody owns, with the stars held until they answer.
+
+    Held, not promised: an accepted bid that cannot be paid is worse for a seller than no bid at
+    all, so the amount leaves the wallet now and comes back if the bid does not become a sale.
+    """
+    asset = await session.scalar(
+        select(UsernameAsset).where(UsernameAsset.id == asset_id).with_for_update()
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Имя не найдено")
+    if asset.owner_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Имя свободно — его не нужно выкупать, займите его",
+        )
+    if asset.owner_id == me.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Это имя уже ваше"
+        )
+    if asset.offers_disabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Владелец @{asset.username} не принимает предложения",
+        )
+    owner = await session.get(User, asset.owner_id)
+    if owner is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Владелец недоступен")
+    await _refuse_unsellable(session, asset, owner)
+    standing = await session.scalar(
+        select(UsernameOffer.id).where(
+            UsernameOffer.asset_id == asset.id,
+            UsernameOffer.bidder_id == me.id,
+            UsernameOffer.status == "pending",
+        )
+    )
+    if standing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ваша ставка уже стоит — отзовите её, чтобы предложить другую цену",
+        )
+    wallet = await _wallet_for_update(session, me.id)
+    if wallet.balance < payload.amount:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"Не хватает {payload.amount - wallet.balance} ★ — пополните кошелёк",
+        )
+    _ledger_change(
+        session,
+        wallet,
+        -payload.amount,
+        kind="username_offer_hold",
+        description=f"Ставка на @{asset.username}",
+        correlation_id=uuid.uuid4(),
+        counterparty_id=owner.id,
+        entity_type="username",
+        entity_id=str(asset.id),
+    )
+    offer = UsernameOffer(asset_id=asset.id, bidder_id=me.id, amount_stars=payload.amount)
+    session.add(offer)
+    _notify_market(
+        session,
+        owner.id,
+        f"Ставка {payload.amount} ★ на @{asset.username} от {me.display_name}",
+        actor_id=me.id,
+        entity_id=str(asset.id),
+    )
+    await session.commit()
+    await session.refresh(offer)
+    return _offer_out(offer, me, asset.username, me.id)
+
+
+async def _pending_offer(
+    session: AsyncSession, offer_id: uuid.UUID
+) -> tuple[UsernameOffer, UsernameAsset]:
+    """One standing bid with its handle, locked for the decision about to be made."""
+    offer = await session.scalar(
+        select(UsernameOffer).where(UsernameOffer.id == offer_id).with_for_update()
+    )
+    if offer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ставка не найдена")
+    if offer.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Эта ставка больше не актуальна"
+        )
+    asset = await session.scalar(
+        select(UsernameAsset).where(UsernameAsset.id == offer.asset_id).with_for_update()
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Имя не найдено")
+    return offer, asset
+
+
+@app.post(
+    "/api/usernames/offers/{offer_id}/accept",
+    response_model=UsernameAssetOut,
+    tags=["usernames"],
+)
+async def accept_username_offer(
+    offer_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> UsernameAssetOut:
+    """Take a bid. The stars are already held, so this is the seller's half plus the handover."""
+    offer, asset = await _pending_offer(session, offer_id)
+    if asset.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим именем"
+        )
+    bidder = await session.get(User, offer.bidder_id)
+    if bidder is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Покупатель недоступен")
+    await _refuse_unsellable(session, asset, me)
+    handle = asset.username
+    offer.status = "accepted"
+    offer.responded_at = utcnow()
+    await _settle_username_sale(
+        session,
+        asset,
+        seller=me,
+        buyer=bidder,
+        price=offer.amount_stars,
+        action="offer_accepted",
+        held=True,
+    )
+    await _release_offers(session, asset, reason="cancelled", keep_offer_id=offer.id)
+    _notify_market(
+        session,
+        bidder.id,
+        f"Ставка принята: @{handle} теперь ваш за {offer.amount_stars} ★",
+        actor_id=me.id,
+        entity_id=str(asset.id),
+    )
+    await session.commit()
+    await session.refresh(asset)
+    # Rendered with its new owner: the card the seller gets back is the truth about the handle
+    # now, not about who was holding it a moment ago.
+    return await render_username(session, asset, bidder, me)
+
+
+@app.post(
+    "/api/usernames/offers/{offer_id}/decline",
+    response_model=UsernameOfferOut,
+    tags=["usernames"],
+)
+async def decline_username_offer(
+    offer_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> UsernameOfferOut:
+    """Refuse a bid and give the stars back the same moment."""
+    offer, asset = await _pending_offer(session, offer_id)
+    if asset.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим именем"
+        )
+    bidder = await session.get(User, offer.bidder_id)
+    wallet = await _wallet_for_update(session, offer.bidder_id)
+    _ledger_change(
+        session,
+        wallet,
+        offer.amount_stars,
+        kind="username_offer_refund",
+        description=f"Возврат ставки на @{asset.username}",
+        correlation_id=uuid.uuid4(),
+        counterparty_id=me.id,
+        entity_type="username",
+        entity_id=str(asset.id),
+    )
+    offer.status = "declined"
+    offer.responded_at = utcnow()
+    _notify_market(
+        session,
+        offer.bidder_id,
+        f"Ставка {offer.amount_stars} ★ на @{asset.username} отклонена — звёзды вернулись",
+        actor_id=me.id,
+        entity_id=str(asset.id),
+    )
+    await session.commit()
+    await session.refresh(offer)
+    return _offer_out(offer, bidder or me, asset.username, me.id)
+
+
+@app.delete(
+    "/api/usernames/offers/{offer_id}", response_model=DetailResponse, tags=["usernames"]
+)
+async def withdraw_username_offer(
+    offer_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """Take my own bid back."""
+    offer, asset = await _pending_offer(session, offer_id)
+    if offer.bidder_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Это чужая ставка"
+        )
+    wallet = await _wallet_for_update(session, me.id)
+    _ledger_change(
+        session,
+        wallet,
+        offer.amount_stars,
+        kind="username_offer_refund",
+        description=f"Отзыв ставки на @{asset.username}",
+        correlation_id=uuid.uuid4(),
+        entity_type="username",
+        entity_id=str(asset.id),
+    )
+    offer.status = "withdrawn"
+    offer.responded_at = utcnow()
+    await session.commit()
+    return DetailResponse(detail=f"Ставка на @{asset.username} отозвана")
+
+
+@app.post(
+    "/api/usernames/{asset_id}/transfer", response_model=UsernameAssetOut, tags=["usernames"]
+)
+async def transfer_username(
+    asset_id: uuid.UUID, payload: UsernameTransfer, session: SessionDep, me: CurrentUser
+) -> UsernameAssetOut:
+    """
+    Hand a handle to somebody without a price.
+
+    Standing bids are refunded on the way out: they were bids for something its owner has just
+    given away, and holding somebody's stars for a handle they can no longer win is theft.
+    """
+    asset = await session.scalar(
+        select(UsernameAsset).where(UsernameAsset.id == asset_id).with_for_update()
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Имя не найдено")
+    if asset.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим именем"
+        )
+    await _refuse_unsellable(session, asset, me)
+    recipient = await resolve_user(session, payload.to_username)
+    if recipient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Такого пользователя нет")
+    if recipient.id == me.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Это имя и так ваше"
+        )
+    _refuse_banned_recipient(recipient)
+    await _refuse_closed_inbox(session, recipient, gift=False)
+    # Somebody at their ceiling cannot be handed another name — a gift that overflows a collection is
+    # a gift that cannot be accepted, and refusing here is kinder than failing after the transfer.
+    await _refuse_username_overflow(session, recipient.id, handle=asset.username)
+    handle = asset.username
+    await _release_offers(session, asset, reason="cancelled")
+    _move_username(session, asset, to_user=recipient, from_user_id=me.id, action="transferred")
+    _notify_market(
+        session,
+        recipient.id,
+        f"@{handle} передан вам — {me.display_name}",
+        actor_id=me.id,
+        entity_id=str(asset.id),
+    )
+    await session.commit()
+    await session.refresh(asset)
+    return await render_username(session, asset, recipient, me)
+
+
+@app.delete("/api/usernames/{asset_id}", response_model=UsernameAssetOut, tags=["usernames"])
+async def release_username(
+    asset_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> UsernameAssetOut:
+    """
+    Give a handle up. It leaves the collection and goes back on the shelf for anyone to register.
+
+    The counterpart of reserving one, and the only way out that does not need a willing recipient:
+    a transfer needs somebody to hand the name to, and a listing needs somebody to pay for it, so
+    without this a handle nobody wants is stuck in a collection forever — and it is the collection's
+    twenty places that make that matter.
+
+    The row itself survives, with its whole ownership history: a released name is meant to be found
+    and taken again, and the history is what tells the next holder where it has been. Standing bids
+    are refunded on the way out for the same reason a transfer refunds them — nobody's stars may be
+    held for a name its owner no longer has. The profile stops advertising it because the strip only
+    lists handles the account still holds.
+    """
+    asset = await session.scalar(
+        select(UsernameAsset).where(UsernameAsset.id == asset_id).with_for_update()
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Имя не найдено")
+    if asset.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим именем"
+        )
+    # The same two names that cannot be sold cannot be dropped either: one is how this account is
+    # reached, the other is how its channel is, and freeing either would strand it.
+    await _refuse_unsellable(session, asset, me)
+    handle = asset.username
+    await _release_offers(session, asset, reason="cancelled")
+    asset.owner_id = None
+    asset.community_id = None
+    asset.status = UsernameStatus.AVAILABLE
+    asset.price = None
+    asset.listed_at = None
+    asset.reserved_at = None
+    asset.offers_disabled = False
+    session.add(
+        UsernameOwnershipEvent(asset_id=asset.id, from_user_id=me.id, action="released")
+    )
+    # Taken off the profile as well: the list is the owner's, and a name they no longer hold is not
+    # theirs to advertise. Dropping it here means the strip does not depend on the read-time filter
+    # alone, and the edit sheet opens on a list that matches what the profile shows.
+    if me.related_usernames:
+        me.related_usernames = [
+            item
+            for item in me.related_usernames
+            if item.strip().removeprefix("@").lower() != handle.lower()
+        ]
+    await session.commit()
+    await session.refresh(asset)
+    return await render_username(session, asset, None, me)
 
 
 async def catalog_metrics(session: AsyncSession) -> tuple[dict[str, int], dict[str, list[int]]]:
@@ -7371,6 +12468,8 @@ async def purchase_gift(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Получатель не найден"
             )
+        _refuse_banned_recipient(resolved)
+        await _refuse_closed_inbox(session, resolved, gift=True)
         recipient = resolved
     note = (payload.message or "").strip() or None
     minted: list[Gift] = []
@@ -7419,6 +12518,7 @@ async def _mint_gift(  # noqa: PLR0913
     buyer: User,
     message: str | None = None,
     hide_sender: bool = False,
+    free: bool = False,
 ) -> Gift:
     """
     Charge the buyer and mint the next serial of `model` into `owner`'s collection.
@@ -7442,22 +12542,25 @@ async def _mint_gift(  # noqa: PLR0913
         or 0
     )
     serial = max(minted, highest) + 1
-    wallet = await _wallet_for_update(session, buyer.id)
-    _ledger_change(
-        session,
-        wallet,
-        -model.price_stars,
-        kind="gift_purchase",
-        description=(
-            f"Подарок {model.name} для @{owner.username}"
-            if owner.id != buyer.id
-            else f"Покупка {model.name}"
-        ),
-        correlation_id=uuid.uuid4(),
-        counterparty_id=owner.id if owner.id != buyer.id else None,
-        entity_type="gift_model",
-        entity_id=model.slug,
-    )
+    # A staff grant charges nobody: there is no buyer to debit, and inventing one would put a
+    # purchase somebody never made into their ledger.
+    if not free:
+        wallet = await _wallet_for_update(session, buyer.id)
+        _ledger_change(
+            session,
+            wallet,
+            -model.price_stars,
+            kind="gift_purchase",
+            description=(
+                f"Подарок {model.name} для @{owner.username}"
+                if owner.id != buyer.id
+                else f"Покупка {model.name}"
+            ),
+            correlation_id=uuid.uuid4(),
+            counterparty_id=owner.id if owner.id != buyer.id else None,
+            entity_type="gift_model",
+            entity_id=model.slug,
+        )
     # A mint produces a *plain* gift: the design's own artwork on its own neutral backdrop, with
     # no model, no rolled backdrop and no symbol. Those three are what `POST /upgrade` rolls, at
     # Telegram's real drop rates, which is the moment the item becomes a collectible.
@@ -7503,7 +12606,15 @@ async def _mint_gift(  # noqa: PLR0913
     return gift
 
 
-async def _apply_upgrade(session: AsyncSession, gift: Gift, model: GiftModel) -> Gift:
+async def _apply_upgrade(
+    session: AsyncSession,
+    gift: Gift,
+    model: GiftModel,
+    *,
+    pick_model: str | None = None,
+    pick_backdrop: str | None = None,
+    pick_symbol: str | None = None,
+) -> Gift:
     """
     Roll a model, a backdrop and a symbol onto a plain gift.
 
@@ -7511,11 +12622,22 @@ async def _apply_upgrade(session: AsyncSession, gift: Gift, model: GiftModel) ->
     decides the odds, and the rolled percentages are recorded so two owners of the same design
     can compare what they actually got. These are Telegram's own per-mille rates, not an
     approximation of them.
+
+    `pick_*` bypasses the roll for staff grants: a prize is chosen, not won, and an admin who
+    promised somebody a particular model should be able to hand over that model.
     """
     source = giftart.BY_SLUG.get(model.slug)
-    rolled_model = giftart.roll(source.models) if source else None
-    rolled_backdrop = giftart.roll(source.backdrops) if source else None
-    rolled_symbol = giftart.roll(source.symbols) if source else None
+
+    def named(pool: tuple[Any, ...], wanted: str | None) -> Any | None:
+        return next((item for item in pool if item.name == wanted), None) if wanted else None
+
+    rolled_model = named(source.models, pick_model) if source else None
+    rolled_backdrop = named(source.backdrops, pick_backdrop) if source else None
+    rolled_symbol = named(source.symbols, pick_symbol) if source else None
+    if source is not None:
+        rolled_model = rolled_model or giftart.roll(source.models)
+        rolled_backdrop = rolled_backdrop or giftart.roll(source.backdrops)
+        rolled_symbol = rolled_symbol or giftart.roll(source.symbols)
     variant_model = rolled_model.name if rolled_model else model.model_name
     variant_backdrop = rolled_backdrop.name if rolled_backdrop else model.backdrop
     variant_symbol = rolled_symbol.name if rolled_symbol else model.symbol
@@ -7735,8 +12857,10 @@ async def read_gift(gift_id: uuid.UUID, session: SessionDep, me: CurrentUser) ->
     return await render_gift(session, row.Gift, row.User, me)
 
 
-# The cover holds four, in this order. The first is anyone's to arrange; the others, and the
-# marker beside the name, are what a premium account gets for its personalization.
+# The cover holds four, in this order, and `COVER_SLOT_COUNT` up in the premium table is that
+# same four — the comparison row promises exactly these slots. The first is anyone's to arrange;
+# the others, and the marker beside the name, are what a premium account gets for its
+# personalization.
 COVER_SLOTS = ("featured", "cover2", "cover3", "cover4")
 PREMIUM_SLOTS = frozenset({"cover2", "cover3", "cover4", "name"})
 
@@ -7847,6 +12971,8 @@ async def transfer_gift(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Подарок уже принадлежит вам"
         )
+    _refuse_banned_recipient(recipient)
+    await _refuse_closed_inbox(session, recipient, gift=True)
     transferred_at = utcnow()
     session.add(
         GiftTransfer(
@@ -8518,6 +13644,118 @@ async def read_notification(
     )
 
 
+@app.delete("/api/notifications/{notification_id}", response_model=DetailResponse, tags=["notifications"])
+async def delete_notification(
+    notification_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """
+    Remove one notice from one's own list.
+
+    Marking as read was the only thing the list could do, so a notice about something long dealt
+    with stayed there for good and the only way to get a clean list was to stop looking at it.
+    Scoped to the caller by construction: the `user_id` predicate means somebody else's id simply
+    does not match, and the answer is the same 404 a made-up id gets.
+    """
+    notification = await session.scalar(
+        select(Notification).where(
+            Notification.id == notification_id, Notification.user_id == me.id
+        )
+    )
+    if notification is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Уведомление не найдено")
+    await session.delete(notification)
+    await session.commit()
+    return DetailResponse(detail="Уведомление удалено")
+
+
+@app.delete("/api/notifications", response_model=DetailResponse, tags=["notifications"])
+async def clear_notifications(
+    session: SessionDep,
+    me: CurrentUser,
+    scope: Annotated[str, Query(pattern="^(all|read)$")] = "all",
+) -> DetailResponse:
+    """
+    Empty the list: everything, or only what has already been read.
+
+    `scope=read` is the one people reach for — it clears the settled noise and leaves anything
+    still waiting for attention, so nothing is lost by pressing it.
+    """
+    query = delete(Notification).where(Notification.user_id == me.id)
+    if scope == "read":
+        query = query.where(Notification.is_read.is_(True))
+    removed = (await session.execute(query)).rowcount or 0
+    await session.commit()
+    return DetailResponse(detail=f"Удалено: {removed}")
+
+
+class SocialConnectionManager:
+    """
+    One authenticated read-only socket per browser for feed/comment invalidation events.
+
+    Two kinds of traffic share it. Post events go to everybody, because a like on a public post is
+    public. Chat events go to named people only — `send_to_users` — since the existence of a
+    conversation is not: a frame naming a chat id must not reach anybody who is not in it.
+    """
+
+    def __init__(self) -> None:
+        self.connections: set[WebSocket] = set()
+        self.owners: dict[WebSocket, uuid.UUID] = {}
+
+    async def connect(self, websocket: WebSocket, user_id: uuid.UUID) -> None:
+        await websocket.accept()
+        self.connections.add(websocket)
+        self.owners[websocket] = user_id
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        self.connections.discard(websocket)
+        self.owners.pop(websocket, None)
+
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        await self._send(self.connections, payload)
+
+    async def send_to_users(
+        self, user_ids: Iterable[uuid.UUID], payload: dict[str, Any]
+    ) -> None:
+        """Deliver to every open tab of these accounts, and to nobody else."""
+        wanted = set(user_ids)
+        if not wanted:
+            return
+        targets = [
+            connection
+            for connection in tuple(self.connections)
+            if self.owners.get(connection) in wanted
+        ]
+        await self._send(targets, payload)
+
+    async def _send(self, targets: Iterable[WebSocket], payload: dict[str, Any]) -> None:
+        stale: list[WebSocket] = []
+        for connection in tuple(targets):
+            try:
+                await connection.send_json(payload)
+            except (RuntimeError, OSError, WebSocketDisconnect):
+                stale.append(connection)
+        for connection in stale:
+            self.disconnect(connection)
+
+
+social_connections = SocialConnectionManager()
+
+
+async def broadcast_social(
+    event: str,
+    post_id: uuid.UUID,
+    *,
+    comment_id: uuid.UUID | None = None,
+    actor_id: uuid.UUID | None = None,
+) -> None:
+    payload: dict[str, Any] = {"type": event, "post_id": str(post_id)}
+    if comment_id is not None:
+        payload["comment_id"] = str(comment_id)
+    if actor_id is not None:
+        payload["actor_id"] = str(actor_id)
+    await social_connections.broadcast(payload)
+
+
 class ChatConnectionManager:
     """In-process WebSocket fan-out; messages remain durable in PostgreSQL."""
 
@@ -8533,9 +13771,23 @@ class ChatConnectionManager:
         if not self.connections[chat_id]:
             self.connections.pop(chat_id, None)
 
-    async def broadcast(self, chat_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async def broadcast(
+        self,
+        chat_id: uuid.UUID,
+        payload: dict[str, Any],
+        *,
+        exclude: WebSocket | None = None,
+    ) -> None:
+        """
+        Fan out to the chat's open sockets.
+
+        `exclude` leaves one out, which is what "somebody else is typing" needs: a typing frame
+        echoed back to its own author would draw the author typing to themselves.
+        """
         stale: list[WebSocket] = []
         for connection in tuple(self.connections.get(chat_id, ())):
+            if connection is exclude:
+                continue
             try:
                 await connection.send_json(payload)
             except RuntimeError:
@@ -8545,6 +13797,132 @@ class ChatConnectionManager:
 
 
 chat_connections = ChatConnectionManager()
+
+
+@app.websocket("/ws/social")
+async def social_websocket(websocket: WebSocket) -> None:
+    token = websocket.cookies.get(ACCESS_COOKIE) or websocket.query_params.get("access_token")
+    if not token:
+        await websocket.close(code=4401, reason="Требуется авторизация")
+        return
+    try:
+        payload = decode_access_token(token)
+        user_id = uuid.UUID(str(payload["sub"]))
+        auth_session_id = uuid.UUID(str(payload["sid"]))
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError):
+        await websocket.close(code=4401, reason="Сессия недействительна")
+        return
+    async with SessionFactory() as session:
+        auth_session = await session.scalar(
+            select(RefreshSession).where(
+                RefreshSession.id == auth_session_id,
+                RefreshSession.user_id == user_id,
+                RefreshSession.revoked_at.is_(None),
+                RefreshSession.expires_at > utcnow(),
+            )
+        )
+        user = await session.get(User, user_id)
+    if auth_session is None or user is None:
+        await websocket.close(code=4401, reason="Сессия завершена")
+        return
+    await social_connections.connect(websocket, user_id)
+    await websocket.send_json({"type": "ready"})
+    try:
+        while True:
+            frame = await websocket.receive_json()
+            if not isinstance(frame, dict) or frame.get("type") != "ping":
+                continue
+            # Pings also bound passive-session expiry and explicit revocation.
+            async with SessionFactory() as session:
+                alive = await session.scalar(
+                    select(RefreshSession.id).where(
+                        RefreshSession.id == auth_session_id,
+                        RefreshSession.user_id == user_id,
+                        RefreshSession.revoked_at.is_(None),
+                        RefreshSession.expires_at > utcnow(),
+                    )
+                )
+            if alive is None:
+                await websocket.close(code=4401, reason="Сессия завершена")
+                return
+            await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        social_connections.disconnect(websocket)
+
+
+async def _handle_chat_frame(  # noqa: PLR0913
+    frame: Any,
+    *,
+    session: AsyncSession,
+    chat_id: uuid.UUID,
+    user: User,
+    member: ChatMember,
+    websocket: WebSocket,
+) -> None:
+    """
+    One inbound frame on a conversation's socket.
+
+    Four kinds, and three of them are new work the thread used to do over HTTP or not at all: a
+    keepalive that used to be answered with a validation error, a typing hint, and a read receipt
+    that saves a round trip on every arriving message. Anything else is still a message to send.
+    """
+    kind = frame.get("type") if isinstance(frame, dict) else None
+    if kind == "ping":
+        await websocket.send_json({"type": "pong"})
+        return
+    # «печатает…». Never stored — it is true for a second and a half and then it is not — and
+    # never echoed to its author.
+    if kind == "typing":
+        await chat_connections.broadcast(
+            chat_id,
+            {
+                "type": "typing",
+                "chat_id": str(chat_id),
+                "user_id": str(user.id),
+                "display_name": user.display_name,
+                "username": user.username,
+            },
+            exclude=websocket,
+        )
+        return
+    # The reader has caught up.
+    if kind == "read":
+        now = utcnow()
+        member.last_read_at = now
+        member.marked_unread = False
+        await enqueue_wire_chat_event(
+            session,
+            chat_id,
+            "chat.read",
+            {"user_id": str(user.id), "at": now.isoformat()},
+            actor_id=user.id,
+        )
+        await session.commit()
+        await chat_connections.broadcast(
+            chat_id,
+            {
+                "type": "chat_read",
+                "chat_id": str(chat_id),
+                "user_id": str(user.id),
+                "at": now.isoformat(),
+            },
+            exclude=websocket,
+        )
+        await announce_chat_activity(session, chat_id, actor_id=user.id)
+        return
+    try:
+        message_payload = MessageCreate.model_validate(frame)
+    except ValidationError as exc:
+        await websocket.send_json(
+            {"type": "error", "detail": "Некорректное сообщение", "errors": exc.errors()}
+        )
+        return
+    outgoing = await create_chat_message(session, chat_id, user, message_payload.content)
+    await chat_connections.broadcast(
+        chat_id, {"type": "message", "message": broadcast_payload(outgoing)}
+    )
 
 
 @app.websocket("/ws/chats/{chat_id}")
@@ -8557,7 +13935,7 @@ async def chat_websocket(websocket: WebSocket, chat_id: uuid.UUID) -> None:
         payload = decode_access_token(token)
         user_id = uuid.UUID(str(payload["sub"]))
         auth_session_id = uuid.UUID(str(payload["sid"]))
-    except jwt.PyJWTError, KeyError, TypeError, ValueError:
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError):
         await websocket.close(code=4401, reason="Сессия недействительна")
         return
     async with SessionFactory() as session:
@@ -8573,6 +13951,11 @@ async def chat_websocket(websocket: WebSocket, chat_id: uuid.UUID) -> None:
         if auth_session is None or user is None:
             await websocket.close(code=4401, reason="Сессия завершена")
             return
+        # The socket writes messages, so a banned account is refused here too — the HTTP guard
+        # cannot see a connection that never makes a request.
+        if user.banned_at is not None:
+            await websocket.close(code=4403, reason="Аккаунт заблокирован администрацией")
+            return
         member = await session.scalar(
             select(ChatMember).where(ChatMember.chat_id == chat_id, ChatMember.user_id == user.id)
         )
@@ -8583,23 +13966,2536 @@ async def chat_websocket(websocket: WebSocket, chat_id: uuid.UUID) -> None:
         await websocket.send_json({"type": "ready", "chat_id": str(chat_id), "user": user.username})
         try:
             while True:
-                raw_payload = await websocket.receive_json()
-                try:
-                    message_payload = MessageCreate.model_validate(raw_payload)
-                except ValidationError as exc:
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "detail": "Некорректное сообщение",
-                            "errors": exc.errors(),
-                        }
-                    )
-                    continue
-                outgoing = await create_chat_message(
-                    session, chat_id, user, message_payload.content
-                )
-                await chat_connections.broadcast(
-                    chat_id, {"type": "message", "message": broadcast_payload(outgoing)}
+                await _handle_chat_frame(
+                    await websocket.receive_json(),
+                    session=session,
+                    chat_id=chat_id,
+                    user=user,
+                    member=member,
+                    websocket=websocket,
                 )
         except WebSocketDisconnect:
             chat_connections.disconnect(chat_id, websocket)
+
+
+# ---------------------------------------------------------------------------------------------
+# Staff tools.
+#
+# Everything below is gated on `AdminUser`, writes an `AdminAction` row, and tells whoever was
+# affected. Those three together are the difference between moderation and someone with database
+# access: a decision that is not logged and not explained cannot be reviewed or appealed.
+# ---------------------------------------------------------------------------------------------
+
+
+async def get_admin_user(me: CurrentUser) -> User:
+    """Staff-only gate. Refuses with 403 rather than 404, because hiding the panel is not
+    security — the accounts that hold the flag are visible on their own profiles anyway."""
+    if not me.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Нужны права администратора"
+        )
+    return me
+
+
+AdminUser = Annotated[User, Depends(get_admin_user)]
+
+
+def _audit(  # noqa: PLR0913
+    session: AsyncSession,
+    actor: User,
+    action: str,
+    *,
+    target_type: str,
+    target_id: str,
+    target_label: str | None = None,
+    reason: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Record one staff decision. Append-only: nothing in the panel deletes from this table."""
+    session.add(
+        AdminAction(
+            actor_id=actor.id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            target_label=target_label,
+            reason=reason,
+            details=details,
+        )
+    )
+
+
+def _notify(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    text: str,
+    *,
+    actor_id: uuid.UUID | None = None,
+    entity_id: str | None = None,
+) -> None:
+    """
+    Tell somebody what was done to them.
+
+    Staff actions use the system kind rather than a new one: `notifications.kind` is a checked
+    varchar, and `_add_missing_columns` cannot widen a CHECK, so a fresh value would start
+    rejecting inserts on databases that already exist.
+    """
+    session.add(
+        Notification(
+            user_id=user_id,
+            actor_id=actor_id,
+            kind=NotificationKind.SYSTEM,
+            text=text[:240],
+            entity_id=entity_id,
+        )
+    )
+
+
+async def _notify_admins(
+    session: AsyncSession, text: str, *, entity_id: str | None = None
+) -> None:
+    """
+    Tell the staff something is waiting for them.
+
+    A queue nobody is told about is a queue nobody empties. Admins are few and the message is one
+    line, so this is a notification each rather than a digest — the panel's counters are the
+    summary, this is the nudge towards them.
+    """
+    admin_ids = (await session.scalars(select(User.id).where(User.is_admin.is_(True)))).all()
+    for admin_id in admin_ids:
+        _notify(session, admin_id, text, entity_id=entity_id)
+
+
+async def admin_user_out(session: AsyncSession, user: User) -> AdminUserOut:
+    """One account with the numbers a moderator decides on."""
+    wallet = await session.get(StarWallet, user.id)
+    gifts = int(
+        await session.scalar(
+            select(func.count()).select_from(Gift).where(Gift.owner_id == user.id)
+        )
+        or 0
+    )
+    posts = int(
+        await session.scalar(
+            select(func.count()).select_from(Post).where(Post.author_id == user.id)
+        )
+        or 0
+    )
+    handles = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(UsernameAsset)
+            .where(UsernameAsset.owner_id == user.id)
+        )
+        or 0
+    )
+    reports = (
+        await session.execute(
+            select(ContentReport.status, func.count())
+            .where(ContentReport.subject_id == user.id)
+            .group_by(ContentReport.status)
+        )
+    ).all()
+    by_status = {row[0]: int(row[1]) for row in reports}
+    banned_by = await session.get(User, user.banned_by_id) if user.banned_by_id else None
+    premium = user.id in await premium_user_ids(session, [user.id])
+    return AdminUserOut(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        avatar_url=user.avatar_url,
+        bio=user.bio or "",
+        location=user.location,
+        role_title=None,
+        profile_color=user.profile_color or "default",
+        is_verified=user.is_verified,
+        verification_tier=user.verification_tier
+        or ("official" if user.is_verified else None),
+        is_admin=user.is_admin,
+        is_premium=premium,
+        is_banned=user.banned_at is not None,
+        banned_at=user.banned_at,
+        ban_reason=user.ban_reason,
+        banned_by=compact_user(banned_by) if banned_by else None,
+        joined_at=user.joined_at,
+        followers_count=user.followers_count,
+        stars_balance=wallet.balance if wallet else 0,
+        gifts_count=gifts,
+        posts_count=posts,
+        usernames_count=handles,
+        reports_count=sum(by_status.values()),
+        open_reports_count=by_status.get("open", 0),
+    )
+
+
+@app.get("/api/admin/overview", response_model=AdminOverviewOut, tags=["admin"])
+async def admin_overview(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+) -> AdminOverviewOut:
+    """Everything the panel's first screen needs, as one request rather than nine."""
+
+    async def count(model: Any, *where: Any) -> int:
+        return int(await session.scalar(select(func.count()).select_from(model).where(*where)) or 0)
+
+    since = utcnow() - timedelta(days=1)
+
+    async def total(column: Any, *where: Any) -> int:
+        return int(await session.scalar(select(func.sum(column)).where(*where)) or 0)
+
+    return AdminOverviewOut(
+        users=await count(User),
+        banned_users=await count(User, User.banned_at.is_not(None)),
+        admins=await count(User, User.is_admin.is_(True)),
+        verified_users=await count(User, User.is_verified.is_(True)),
+        open_reports=await count(ContentReport, ContentReport.status == "open"),
+        open_legal_reports=await count(LegalReport, LegalReport.status == "open"),
+        resolved_reports=await count(ContentReport, ContentReport.status != "open"),
+        hidden_posts=await count(Post, Post.hidden_at.is_not(None)),
+        hidden_comments=await count(PostComment, PostComment.hidden_at.is_not(None)),
+        communities=await count(Community),
+        gifts=await count(Gift),
+        stars_in_circulation=int(await session.scalar(select(func.sum(StarWallet.balance))) or 0),
+        actions_today=await count(AdminAction, AdminAction.created_at >= since),
+        # The money side: two queues that wait for a person, and what has actually moved.
+        pending_payouts=await count(StarPayout, StarPayout.status == "pending"),
+        pending_payout_stars=await total(
+            StarPayout.stars, StarPayout.status.in_(OPEN_PAYOUT_STATUSES)
+        ),
+        pending_refunds=await count(StarRefund, StarRefund.status == "pending"),
+        paid_orders=await count(StarPurchase, StarPurchase.status == "paid"),
+        xtr_collected=await total(
+            StarPurchase.price_xtr, StarPurchase.status.in_(("paid", "refunded"))
+        ),
+        xtr_refunded=await total(StarPurchase.price_xtr, StarPurchase.status == "refunded"),
+        xtr_paid_out=await total(StarPayout.price_xtr, StarPayout.status == "paid"),
+    )
+
+
+@app.get("/api/admin/users", response_model=list[AdminUserOut], tags=["admin"])
+async def admin_list_users(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    q: Annotated[str | None, Query(max_length=64)] = None,
+    scope: Annotated[Literal["all", "banned", "admins", "verified", "reported"], Query()] = "all",
+    limit: Annotated[int, Query(ge=1, le=200)] = 60,
+) -> list[AdminUserOut]:
+    query = select(User)
+    if q:
+        pattern = f"%{q.strip().lower().removeprefix('@')}%"
+        query = query.where(
+            or_(
+                func.lower(User.username).like(pattern),
+                func.lower(User.display_name).like(pattern),
+            )
+        )
+    if scope == "banned":
+        query = query.where(User.banned_at.is_not(None))
+    elif scope == "admins":
+        query = query.where(User.is_admin.is_(True))
+    elif scope == "verified":
+        query = query.where(User.is_verified.is_(True))
+    elif scope == "reported":
+        reported = select(ContentReport.subject_id).where(ContentReport.status == "open")
+        query = query.where(User.id.in_(reported))
+    rows = (await session.scalars(query.order_by(User.joined_at.desc()).limit(limit))).all()
+    return [await admin_user_out(session, user) for user in rows]
+
+
+async def _admin_target(session: AsyncSession, username: str) -> User:
+    user = await resolve_user(session, username)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+    return user
+
+
+@app.get("/api/admin/users/{username}", response_model=AdminUserOut, tags=["admin"])
+async def admin_read_user(
+    username: str,
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+) -> AdminUserOut:
+    return await admin_user_out(session, await _admin_target(session, username))
+
+
+@app.patch("/api/admin/users/{username}", response_model=AdminUserOut, tags=["admin"])
+async def admin_update_user(
+    username: str, payload: AdminUserUpdate, session: SessionDep, admin: AdminUser
+) -> AdminUserOut:
+    """
+    Rewrite an account's public presentation, its verification and its staff flag.
+
+    Verification and the tier move together: a tier without the tick would explain a mark that
+    is not drawn, and a tick without a tier would say "подтверждён" without saying of what.
+    """
+    user = await _admin_target(session, username)
+    fields = payload.model_dump(exclude_unset=True, exclude={"reason"})
+    if not fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Нечего изменять"
+        )
+    if payload.is_admin is False and user.id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Снять права с себя нельзя — попросите другого администратора",
+        )
+    details = await session.get(UserProfileDetails, user.id)
+    for field, value in fields.items():
+        if field == "role_title":
+            if details is None:
+                details = UserProfileDetails(user_id=user.id)
+                session.add(details)
+            details.role_title = value
+            continue
+        setattr(user, field, value)
+    # A tier is what the popover behind the tick reads out, so the two are kept consistent.
+    if payload.verification_tier is not None and payload.is_verified is None:
+        user.is_verified = True
+    if payload.is_verified is False:
+        user.verification_tier = None
+    _audit(
+        session,
+        admin,
+        "user_updated",
+        target_type="user",
+        target_id=str(user.id),
+        target_label=f"@{user.username}",
+        reason=payload.reason,
+        details=fields,
+    )
+    if payload.is_verified is True:
+        _notify(
+            session,
+            user.id,
+            "GRAM подтвердил ваш профиль: "
+            + VERIFICATION_LABELS.get(user.verification_tier or "official", "подтверждён"),
+            actor_id=admin.id,
+        )
+    if payload.is_admin is True:
+        _notify(session, user.id, "Вам выданы права администратора GRAM", actor_id=admin.id)
+    await session.commit()
+    await session.refresh(user)
+    return await admin_user_out(session, user)
+
+
+@app.post("/api/admin/users/{username}/ban", response_model=AdminUserOut, tags=["admin"])
+async def admin_ban_user(
+    username: str, payload: AdminBanRequest, session: SessionDep, admin: AdminUser
+) -> AdminUserOut:
+    """
+    Ban an account and tell it why, in the same words everyone else will read.
+
+    Nothing is deleted: the posts stay up carrying the mark, because a platform that erases the
+    trail when it punishes someone cannot be held to its own decisions afterwards.
+    """
+    user = await _admin_target(session, username)
+    if user.id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Забанить себя нельзя"
+        )
+    if user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Сначала снимите права администратора, потом баньте",
+        )
+    user.banned_at = utcnow()
+    user.ban_reason = payload.reason
+    user.banned_by_id = admin.id
+    # The session is deliberately left alone. Enforcement is `_refuse_banned_write`, which refuses
+    # every write on every request; revoking here would only sign them out, and signing back in
+    # was exactly the hole — while also hiding the notice they are supposed to read.
+    _audit(
+        session,
+        admin,
+        "user_banned",
+        target_type="user",
+        target_id=str(user.id),
+        target_label=f"@{user.username}",
+        reason=payload.reason,
+    )
+    _notify(
+        session,
+        user.id,
+        f"Ваш аккаунт заблокирован. Причина: {payload.reason}",
+        actor_id=admin.id,
+    )
+    await session.commit()
+    await session.refresh(user)
+    return await admin_user_out(session, user)
+
+
+@app.delete("/api/admin/users/{username}/ban", response_model=AdminUserOut, tags=["admin"])
+async def admin_unban_user(
+    username: str, session: SessionDep, admin: AdminUser
+) -> AdminUserOut:
+    user = await _admin_target(session, username)
+    if user.banned_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=f"@{user.username} не заблокирован"
+        )
+    user.banned_at = None
+    user.ban_reason = None
+    user.banned_by_id = None
+    _audit(
+        session,
+        admin,
+        "user_unbanned",
+        target_type="user",
+        target_id=str(user.id),
+        target_label=f"@{user.username}",
+    )
+    _notify(session, user.id, "Блокировка аккаунта снята", actor_id=admin.id)
+    await session.commit()
+    await session.refresh(user)
+    return await admin_user_out(session, user)
+
+
+@app.post("/api/admin/users/{username}/stars", response_model=AdminUserOut, tags=["admin"])
+async def admin_grant_stars(
+    username: str, payload: AdminStarsGrant, session: SessionDep, admin: AdminUser
+) -> AdminUserOut:
+    """Hand stars over or take them back. Either way it lands in the person's own ledger."""
+    if payload.amount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Укажите ненулевую сумму"
+        )
+    user = await _admin_target(session, username)
+    wallet = await _wallet_for_update(session, user.id)
+    if wallet.balance + payload.amount < 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"У @{user.username} только {wallet.balance} ★",
+        )
+    given = payload.amount > 0
+    _ledger_change(
+        session,
+        wallet,
+        payload.amount,
+        kind="admin_grant" if given else "admin_debit",
+        description=payload.reason
+        or ("Начисление от администрации" if given else "Списание администрацией"),
+        correlation_id=uuid.uuid4(),
+        counterparty_id=admin.id,
+        entity_type="admin",
+        entity_id=str(admin.id),
+    )
+    _audit(
+        session,
+        admin,
+        "stars_granted" if given else "stars_taken",
+        target_type="user",
+        target_id=str(user.id),
+        target_label=f"@{user.username}",
+        reason=payload.reason,
+        details={"amount": payload.amount},
+    )
+    _notify(
+        session,
+        user.id,
+        f"Администрация начислила вам {payload.amount} ★"
+        if given
+        else f"Администрация списала {abs(payload.amount)} ★",
+        actor_id=admin.id,
+    )
+    await session.commit()
+    await session.refresh(user)
+    return await admin_user_out(session, user)
+
+
+@app.post("/api/admin/users/{username}/gifts", response_model=GiftOut, tags=["admin"])
+async def admin_grant_gift(
+    username: str, payload: AdminGiftGrant, session: SessionDep, admin: AdminUser
+) -> GiftOut:
+    """Mint a design straight into somebody's collection, optionally already upgraded."""
+    user = await _admin_target(session, username)
+    model = await session.scalar(select(GiftModel).where(GiftModel.slug == payload.slug))
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Дизайна «{payload.slug}» нет"
+        )
+    gift = await _mint_gift(session, model, owner=user, buyer=admin, free=True)
+    if payload.upgraded or payload.model or payload.backdrop or payload.symbol:
+        for wanted, pool_name in (
+            (payload.model, "модели"),
+            (payload.backdrop, "фона"),
+            (payload.symbol, "узора"),
+        ):
+            source = giftart.BY_SLUG.get(model.slug)
+            pools = {
+                "модели": source.models if source else (),
+                "фона": source.backdrops if source else (),
+                "узора": source.symbols if source else (),
+            }[pool_name]
+            if wanted and not any(item.name == wanted for item in pools):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"У «{model.name}» нет {pool_name} «{wanted}»",
+                )
+        await _apply_upgrade(
+            session,
+            gift,
+            model,
+            pick_model=payload.model,
+            pick_backdrop=payload.backdrop,
+            pick_symbol=payload.symbol,
+        )
+    _audit(
+        session,
+        admin,
+        "gift_granted",
+        target_type="user",
+        target_id=str(user.id),
+        target_label=f"@{user.username}",
+        reason=payload.reason,
+        details={"slug": model.slug, "serial": gift.serial_number, "upgraded": payload.upgraded},
+    )
+    _notify(
+        session,
+        user.id,
+        f"Администрация подарила вам «{model.name}» #{gift.serial_number}"
+        + (f" — {gift.model_name}" if gift.model_name else ""),
+        actor_id=admin.id,
+        entity_id=str(gift.id),
+    )
+    await session.commit()
+    await session.refresh(gift)
+    return await render_gift(session, gift, user, admin)
+
+
+@app.delete("/api/admin/gifts/{gift_id}", response_model=DetailResponse, tags=["admin"])
+async def admin_revoke_gift(
+    gift_id: uuid.UUID,
+    session: SessionDep,
+    admin: AdminUser,
+    reason: Annotated[str | None, Query(max_length=240)] = None,
+) -> DetailResponse:
+    """
+    Take a collectible back.
+
+    The item is destroyed rather than moved to staff: a moderator holding somebody's confiscated
+    Pepe in their own collection would be indistinguishable from taking it for themselves.
+    """
+    gift = await session.get(Gift, gift_id)
+    if gift is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Подарок не найден")
+    owner = await session.get(User, gift.owner_id)
+    label = f"{gift.name} #{gift.serial_number}"
+    _audit(
+        session,
+        admin,
+        "gift_revoked",
+        target_type="gift",
+        target_id=str(gift.id),
+        target_label=label,
+        reason=reason,
+        details={"owner": owner.username if owner else None},
+    )
+    if owner is not None:
+        _notify(
+            session,
+            owner.id,
+            f"Администрация изъяла «{label}»" + (f". Причина: {reason}" if reason else ""),
+            actor_id=admin.id,
+        )
+    await session.delete(gift)
+    await session.commit()
+    return DetailResponse(detail="gift_revoked")
+
+
+@app.post("/api/admin/users/{username}/usernames", response_model=AdminUserOut, tags=["admin"])
+async def admin_grant_username(
+    username: str, payload: AdminUsernameGrant, session: SessionDep, admin: AdminUser
+) -> AdminUserOut:
+    """Hand a collectible handle to an account, creating the asset if it never existed."""
+    user = await _admin_target(session, username)
+    handle = payload.username
+    asset = await session.scalar(
+        select(UsernameAsset).where(func.lower(UsernameAsset.username) == handle)
+    )
+    taken_by_account = await session.scalar(
+        select(User).where(func.lower(User.username) == handle, User.id != user.id)
+    )
+    if taken_by_account is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{handle} — это чужой аккаунт, а не свободный ник",
+        )
+    if asset is None:
+        asset = UsernameAsset(username=handle)
+        session.add(asset)
+    asset.owner_id = user.id
+    asset.status = UsernameStatus.RESERVED
+    asset.price = None
+    asset.listed_at = None
+    asset.reserved_at = utcnow()
+    _audit(
+        session,
+        admin,
+        "username_granted",
+        target_type="user",
+        target_id=str(user.id),
+        target_label=f"@{user.username}",
+        reason=payload.reason,
+        details={"username": handle},
+    )
+    _notify(session, user.id, f"Администрация закрепила за вами @{handle}", actor_id=admin.id)
+    await session.commit()
+    await session.refresh(user)
+    return await admin_user_out(session, user)
+
+
+@app.delete(
+    "/api/admin/users/{username}/usernames/{handle}",
+    response_model=AdminUserOut,
+    tags=["admin"],
+)
+async def admin_revoke_username(
+    username: str,
+    handle: str,
+    session: SessionDep,
+    admin: AdminUser,
+    reason: Annotated[str | None, Query(max_length=240)] = None,
+) -> AdminUserOut:
+    user = await _admin_target(session, username)
+    normalized = handle.strip().removeprefix("@").lower()
+    asset = await session.scalar(
+        select(UsernameAsset).where(
+            func.lower(UsernameAsset.username) == normalized, UsernameAsset.owner_id == user.id
+        )
+    )
+    if asset is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"@{normalized} не принадлежит этому аккаунту",
+        )
+    if normalized == user.username.lower():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Это основной ник аккаунта — сначала смените его",
+        )
+    asset.owner_id = None
+    asset.status = UsernameStatus.AVAILABLE
+    asset.reserved_at = None
+    _audit(
+        session,
+        admin,
+        "username_revoked",
+        target_type="user",
+        target_id=str(user.id),
+        target_label=f"@{user.username}",
+        reason=reason,
+        details={"username": normalized},
+    )
+    _notify(session, user.id, f"Администрация забрала @{normalized}", actor_id=admin.id)
+    await session.commit()
+    await session.refresh(user)
+    return await admin_user_out(session, user)
+
+
+async def report_out(session: AsyncSession, report: ContentReport, same_target: int) -> ReportOut:
+    reporter = await session.get(User, report.reporter_id)
+    subject = await session.get(User, report.subject_id) if report.subject_id else None
+    resolver = await session.get(User, report.resolved_by_id) if report.resolved_by_id else None
+    return ReportOut(
+        id=report.id,
+        reporter=compact_user(reporter) if reporter else None,
+        target_type=report.target_kind,
+        target_id=report.target_id,
+        subject=compact_user(subject) if subject else None,
+        reason=report.reason,
+        reason_label=REASON_LABELS.get(report.reason, report.reason),
+        text=report.comment,
+        excerpt=report.excerpt,
+        status=report.status or "open",
+        resolution=report.resolution,
+        resolved_by=compact_user(resolver) if resolver else None,
+        resolved_at=report.resolved_at,
+        created_at=report.created_at,
+        target_reports=same_target,
+    )
+
+
+@app.get("/api/admin/reports", response_model=list[ReportOut], tags=["admin"])
+async def admin_list_reports(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    report_status: Annotated[Literal["open", "resolved", "all"], Query(alias="status")] = "open",
+    kind: Annotated[str | None, Query(max_length=20)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 80,
+) -> list[ReportOut]:
+    """
+    The review queue, newest first.
+
+    Complaints about the same thing are counted together, so a moderator sees "seven people said
+    this" rather than seven separate rows they have to notice are identical.
+    """
+    query = select(ContentReport)
+    if report_status == "open":
+        query = query.where(ContentReport.status == "open")
+    elif report_status == "resolved":
+        query = query.where(ContentReport.status != "open")
+    if kind:
+        query = query.where(ContentReport.target_kind == kind)
+    rows = (
+        await session.scalars(query.order_by(ContentReport.created_at.desc()).limit(limit))
+    ).all()
+    counts = {
+        (row[0], row[1]): int(row[2])
+        for row in (
+            await session.execute(
+                select(
+                    ContentReport.target_kind, ContentReport.target_id, func.count()
+                ).group_by(ContentReport.target_kind, ContentReport.target_id)
+            )
+        ).all()
+    }
+    return [
+        await report_out(session, row, counts.get((row.target_kind, row.target_id), 1))
+        for row in rows
+    ]
+
+
+async def legal_report_out(session: AsyncSession, report: LegalReport) -> LegalReportOut:
+    resolver = await session.get(User, report.resolved_by_id) if report.resolved_by_id else None
+    return LegalReportOut(
+        id=report.id,
+        reference_code=_legal_reference(report.id),
+        kind=report.kind,
+        reporter_role=report.reporter_role,
+        reporter_name=report.reporter_name,
+        reporter_email=report.reporter_email,
+        country=report.country,
+        account_username=report.account_username,
+        content_urls=list(report.content_urls or []),
+        original_work=report.original_work,
+        details=report.details,
+        requested_action=report.requested_action,
+        electronic_signature=report.electronic_signature,
+        status=report.status or "open",
+        resolution=report.resolution,
+        resolved_by=compact_user(resolver) if resolver else None,
+        resolved_at=report.resolved_at,
+        created_at=report.created_at,
+    )
+
+
+@app.get("/api/admin/legal-reports", response_model=list[LegalReportOut], tags=["admin"])
+async def admin_list_legal_reports(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    response: Response,
+    report_status: Annotated[Literal["open", "resolved", "all"], Query(alias="status")] = "open",
+    limit: Annotated[int, Query(ge=1, le=200)] = 80,
+) -> list[LegalReportOut]:
+    """List public legal and support cases without exposing them outside the staff boundary."""
+
+    response.headers["Cache-Control"] = "no-store"
+    query = select(LegalReport)
+    if report_status == "open":
+        query = query.where(LegalReport.status == "open")
+    elif report_status == "resolved":
+        query = query.where(LegalReport.status != "open")
+    rows = (
+        await session.scalars(query.order_by(LegalReport.created_at.desc()).limit(limit))
+    ).all()
+    return [await legal_report_out(session, row) for row in rows]
+
+
+@app.post(
+    "/api/admin/legal-reports/{report_id}/resolve",
+    response_model=LegalReportOut,
+    tags=["admin"],
+)
+async def admin_resolve_legal_report(
+    report_id: uuid.UUID,
+    payload: LegalReportResolve,
+    session: SessionDep,
+    admin: AdminUser,
+    response: Response,
+) -> LegalReportOut:
+    response.headers["Cache-Control"] = "no-store"
+    report = await session.get(LegalReport, report_id)
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Обращение не найдено")
+    if report.status != "open":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Обращение уже рассмотрено",
+        )
+    report.status = "dismissed" if payload.action == "dismiss" else "resolved"
+    report.resolution = payload.resolution.strip()
+    report.resolved_by_id = admin.id
+    report.resolved_at = utcnow()
+    _audit(
+        session,
+        admin,
+        f"legal_report_{payload.action}",
+        target_type="legal_report",
+        target_id=str(report.id),
+        target_label=_legal_reference(report.id),
+        reason=report.resolution,
+        details={"kind": report.kind},
+    )
+    await session.commit()
+    await session.refresh(report)
+    return await legal_report_out(session, report)
+
+
+async def _hide_reported_target(  # noqa: PLR0911
+    session: AsyncSession, admin: User, report: ContentReport, reason: str
+) -> str | None:
+    """Hide or remove whatever the report points at, and tell its author. Returns a label."""
+    def as_uuid(value: str) -> uuid.UUID | None:
+        try:
+            return uuid.UUID(value)
+        except (ValueError, AttributeError):
+            return None
+
+    now = utcnow()
+    if report.target_kind == "post" and (post_id := as_uuid(report.target_id)):
+        post = await session.get(Post, post_id)
+        if post is None:
+            return None
+        post.hidden_at = now
+        post.hidden_by_id = admin.id
+        post.hidden_reason = reason
+        _notify(
+            session,
+            post.author_id,
+            f"Администрация скрыла вашу публикацию. Причина: {reason}",
+            actor_id=admin.id,
+            entity_id=str(post.id),
+        )
+        return "post"
+    if report.target_kind == "comment" and (comment_id := as_uuid(report.target_id)):
+        comment = await session.get(PostComment, comment_id)
+        if comment is None:
+            return None
+        comment.hidden_at = now
+        comment.hidden_by_id = admin.id
+        comment.hidden_reason = reason
+        _notify(
+            session,
+            comment.author_id,
+            f"Администрация удалила ваш комментарий. Причина: {reason}",
+            actor_id=admin.id,
+            entity_id=str(comment.id),
+        )
+        return "comment"
+    if report.target_kind == "message" and (message_id := as_uuid(report.target_id)):
+        message = await session.get(Message, message_id)
+        if message is None:
+            return None
+        _notify(
+            session,
+            message.sender_id,
+            f"Администрация удалила ваше сообщение. Причина: {reason}",
+            actor_id=admin.id,
+        )
+        await session.delete(message)
+        return "message"
+    return None
+
+
+@app.post("/api/admin/reports/{report_id}/resolve", response_model=ReportOut, tags=["admin"])
+async def admin_resolve_report(
+    report_id: uuid.UUID, payload: ReportResolve, session: SessionDep, admin: AdminUser
+) -> ReportOut:
+    """
+    Close a complaint, and carry out the decision in the same request.
+
+    `hide` and `ban` are not separate buttons somewhere else: a moderator who has just read the
+    case should not have to go and find the account, and a queue that only closes rows teaches
+    everyone that reporting does nothing.
+    """
+    report = await session.get(ContentReport, report_id)
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Жалоба не найдена")
+    reason = payload.resolution or REASON_LABELS.get(report.reason, report.reason)
+    if payload.action == "hide" and (
+        await _hide_reported_target(session, admin, report, reason) is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Объект жалобы уже удалён — закройте её как рассмотренную",
+        )
+    if payload.action == "ban":
+        subject = await session.get(User, report.subject_id) if report.subject_id else None
+        if subject is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="Непонятно, кого банить"
+            )
+        if subject.is_admin or subject.id == admin.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="Этот аккаунт нельзя забанить"
+            )
+        subject.banned_at = utcnow()
+        subject.ban_reason = reason
+        subject.banned_by_id = admin.id
+        _notify(
+            session,
+            subject.id,
+            f"Ваш аккаунт заблокирован по жалобе. Причина: {reason}",
+            actor_id=admin.id,
+        )
+    report.status = "dismissed" if payload.action == "dismiss" else "resolved"
+    report.resolution = payload.resolution
+    report.resolved_by_id = admin.id
+    report.resolved_at = utcnow()
+    # Everyone who complained about the same thing gets the same answer: leaving duplicates open
+    # would keep the queue full of cases that have already been decided.
+    await session.execute(
+        update(ContentReport)
+        .where(
+            ContentReport.target_kind == report.target_kind,
+            ContentReport.target_id == report.target_id,
+            ContentReport.status == "open",
+        )
+        .values(
+            status=report.status,
+            resolution=payload.resolution,
+            resolved_by_id=admin.id,
+            resolved_at=report.resolved_at,
+        )
+    )
+    _audit(
+        session,
+        admin,
+        f"report_{payload.action}",
+        target_type=report.target_kind,
+        target_id=report.target_id,
+        target_label=report.excerpt[:120] if report.excerpt else None,
+        reason=payload.resolution,
+    )
+    if report.reporter_id != admin.id:
+        _notify(
+            session,
+            report.reporter_id,
+            "Ваша жалоба рассмотрена"
+            + (f": {payload.resolution}" if payload.resolution else ""),
+            actor_id=admin.id,
+        )
+    await session.commit()
+    await session.refresh(report)
+    return await report_out(session, report, 1)
+
+
+@app.post("/api/admin/posts/{post_id}/hide", response_model=DetailResponse, tags=["admin"])
+async def admin_hide_post(
+    post_id: uuid.UUID, payload: AdminHideRequest, session: SessionDep, admin: AdminUser
+) -> DetailResponse:
+    """Hide a post from everyone except its author and staff, and say why."""
+    post = await session.get(Post, post_id)
+    if post is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
+    post.hidden_at = utcnow()
+    post.hidden_by_id = admin.id
+    post.hidden_reason = payload.reason
+    _audit(
+        session,
+        admin,
+        "post_hidden",
+        target_type="post",
+        target_id=str(post.id),
+        target_label=post.content[:120],
+        reason=payload.reason,
+    )
+    _notify(
+        session,
+        post.author_id,
+        f"Администрация скрыла вашу публикацию. Причина: {payload.reason}",
+        actor_id=admin.id,
+        entity_id=str(post.id),
+    )
+    await session.commit()
+    return DetailResponse(detail="post_hidden")
+
+
+@app.delete("/api/admin/posts/{post_id}/hide", response_model=DetailResponse, tags=["admin"])
+async def admin_unhide_post(
+    post_id: uuid.UUID, session: SessionDep, admin: AdminUser
+) -> DetailResponse:
+    post = await session.get(Post, post_id)
+    if post is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
+    post.hidden_at = None
+    post.hidden_by_id = None
+    post.hidden_reason = None
+    _audit(
+        session,
+        admin,
+        "post_restored",
+        target_type="post",
+        target_id=str(post.id),
+        target_label=post.content[:120],
+    )
+    _notify(
+        session,
+        post.author_id,
+        "Администрация вернула вашу публикацию",
+        actor_id=admin.id,
+        entity_id=str(post.id),
+    )
+    await session.commit()
+    return DetailResponse(detail="post_restored")
+
+
+@app.delete("/api/admin/comments/{comment_id}", response_model=DetailResponse, tags=["admin"])
+async def admin_hide_comment(
+    comment_id: uuid.UUID,
+    session: SessionDep,
+    admin: AdminUser,
+    reason: Annotated[str, Query(min_length=3, max_length=240)],
+) -> DetailResponse:
+    comment = await session.get(PostComment, comment_id)
+    if comment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Комментарий не найден")
+    comment.hidden_at = utcnow()
+    comment.hidden_by_id = admin.id
+    comment.hidden_reason = reason
+    _audit(
+        session,
+        admin,
+        "comment_hidden",
+        target_type="comment",
+        target_id=str(comment.id),
+        target_label=comment.content[:120],
+        reason=reason,
+    )
+    _notify(
+        session,
+        comment.author_id,
+        f"Администрация удалила ваш комментарий. Причина: {reason}",
+        actor_id=admin.id,
+        entity_id=str(comment.post_id),
+    )
+    await session.commit()
+    return DetailResponse(detail="comment_hidden")
+
+
+@app.get("/api/admin/communities", response_model=list[AdminCommunityOut], tags=["admin"])
+async def admin_list_communities(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    q: Annotated[str | None, Query(max_length=64)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 60,
+) -> list[AdminCommunityOut]:
+    query = select(Community)
+    if q:
+        pattern = f"%{q.strip().lower()}%"
+        query = query.where(
+            or_(
+                func.lower(Community.slug).like(pattern),
+                func.lower(Community.title).like(pattern),
+            )
+        )
+    rows = (await session.scalars(query.order_by(Community.created_at.desc()).limit(limit))).all()
+    reports = {
+        row[0]: int(row[1])
+        for row in (
+            await session.execute(
+                select(ContentReport.target_id, func.count())
+                .where(ContentReport.target_kind == "community")
+                .group_by(ContentReport.target_id)
+            )
+        ).all()
+    }
+    out: list[AdminCommunityOut] = []
+    for community in rows:
+        owner = await session.get(User, community.owner_id) if community.owner_id else None
+        posts = int(
+            await session.scalar(
+                select(func.count()).select_from(Post).where(Post.community_id == community.id)
+            )
+            or 0
+        )
+        out.append(
+            AdminCommunityOut(
+                id=community.id,
+                slug=community.slug,
+                title=community.title,
+                description=community.description or "",
+                category=community.category,
+                location=community.location,
+                owner=compact_user(owner) if owner else None,
+                members_count=community.members_count,
+                posts_count=posts,
+                reports_count=reports.get(community.slug, 0),
+                created_at=community.created_at,
+            )
+        )
+    return out
+
+
+@app.patch("/api/admin/communities/{slug}", response_model=AdminCommunityOut, tags=["admin"])
+async def admin_update_community(
+    slug: str, payload: AdminCommunityUpdate, session: SessionDep, admin: AdminUser
+) -> AdminCommunityOut:
+    community = await session.scalar(select(Community).where(Community.slug == slug))
+    if community is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
+    fields = payload.model_dump(exclude_unset=True, exclude={"reason"})
+    if not fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Нечего изменять"
+        )
+    for field, value in fields.items():
+        setattr(community, field, value)
+    _audit(
+        session,
+        admin,
+        "community_updated",
+        target_type="community",
+        target_id=community.slug,
+        target_label=community.title,
+        reason=payload.reason,
+        details=fields,
+    )
+    if community.owner_id:
+        _notify(
+            session,
+            community.owner_id,
+            f"Администрация изменила сообщество «{community.title}»",
+            actor_id=admin.id,
+        )
+    await session.commit()
+    await session.refresh(community)
+    owner = await session.get(User, community.owner_id) if community.owner_id else None
+    return AdminCommunityOut(
+        id=community.id,
+        slug=community.slug,
+        title=community.title,
+        description=community.description or "",
+        category=community.category,
+        location=community.location,
+        owner=compact_user(owner) if owner else None,
+        members_count=community.members_count,
+        posts_count=0,
+        reports_count=0,
+        created_at=community.created_at,
+    )
+
+
+@app.delete("/api/admin/communities/{slug}", response_model=DetailResponse, tags=["admin"])
+async def admin_delete_community(
+    slug: str,
+    session: SessionDep,
+    admin: AdminUser,
+    reason: Annotated[str, Query(min_length=3, max_length=240)],
+) -> DetailResponse:
+    """Close a community. Its posts go with it, which is why the reason is mandatory."""
+    community = await session.scalar(select(Community).where(Community.slug == slug))
+    if community is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
+    _audit(
+        session,
+        admin,
+        "community_deleted",
+        target_type="community",
+        target_id=community.slug,
+        target_label=community.title,
+        reason=reason,
+    )
+    if community.owner_id:
+        _notify(
+            session,
+            community.owner_id,
+            f"Администрация закрыла сообщество «{community.title}». Причина: {reason}",
+            actor_id=admin.id,
+        )
+    # Handles pointing at it go back to being plain collectibles. Without this they point at a
+    # channel that no longer exists — and a handle pointing at nothing opens nothing.
+    await _release_community_handles(session, community)
+    await session.delete(community)
+    await session.commit()
+    return DetailResponse(detail="community_deleted")
+
+
+async def _release_community_handles(session: AsyncSession, community: Community) -> None:
+    """
+    Erase a channel that is about to stop existing from everything still pointing at it.
+
+    Two kinds of reference, both of which used to survive the deletion. A handle left pointing at a
+    dead channel opens nothing. And a profile advertising it asked the API for it on every view —
+    two 404s per profile — and drew no card, so the reference was invisible and could not be
+    withdrawn: the edit sheet offers the channels an account owns, and a deleted one is not one.
+    """
+    assets = (
+        await session.scalars(
+            select(UsernameAsset).where(UsernameAsset.community_id == community.id)
+        )
+    ).all()
+    for asset in assets:
+        asset.community_id = None
+        if asset.owner_id is not None:
+            session.add(
+                UsernameOwnershipEvent(
+                    asset_id=asset.id, to_user_id=asset.owner_id, action="community_released"
+                )
+            )
+    slug = community.slug
+    advertisers = (
+        await session.scalars(
+            select(UserProfileDetails).where(
+                or_(
+                    UserProfileDetails.featured_community_slug == slug,
+                    UserProfileDetails.featured_community_slugs.is_not(None),
+                )
+            )
+        )
+    ).all()
+    for details in advertisers:
+        kept = [item for item in (details.featured_community_slugs or []) if item != slug]
+        if kept == list(details.featured_community_slugs or []) and (
+            details.featured_community_slug != slug
+        ):
+            continue
+        details.featured_community_slugs = kept
+        # The single slug is documented as the first of the list, so it follows the list.
+        details.featured_community_slug = kept[0] if kept else None
+
+
+@app.get("/api/admin/actions", response_model=list[AdminActionOut], tags=["admin"])
+async def admin_audit_log(  # noqa: PLR0913, PLR0917
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    limit: Annotated[int, Query(ge=1, le=200)] = 80,
+    action: Annotated[str | None, Query(max_length=40)] = None,
+    actor: Annotated[str | None, Query(max_length=64)] = None,
+    target_type: Annotated[str | None, Query(max_length=16)] = None,
+    q: Annotated[str | None, Query(max_length=64)] = None,
+    hours: Annotated[int | None, Query(ge=1, le=8760)] = None,
+) -> list[AdminActionOut]:
+    """
+    The trail. Append-only, and readable by every admin — including about each other.
+
+    A log worth keeping is a log that can be questioned, and eighty newest rows answer "what just
+    happened" but never "what did @leon do to this payout last week". Hence the filters: by kind of
+    decision, by who took it, by what it touched, and by a window in hours.
+    """
+    query = select(AdminAction).order_by(AdminAction.created_at.desc())
+    if action:
+        query = query.where(AdminAction.action == action.strip())
+    if target_type:
+        query = query.where(AdminAction.target_type == target_type.strip())
+    if hours:
+        query = query.where(AdminAction.created_at >= utcnow() - timedelta(hours=hours))
+    if actor:
+        who = await resolve_user(session, actor)
+        if who is None:
+            return []
+        query = query.where(AdminAction.actor_id == who.id)
+    if q:
+        pattern = f"%{q.strip().lower()}%"
+        query = query.where(
+            or_(
+                func.lower(AdminAction.target_label).like(pattern),
+                func.lower(AdminAction.target_id).like(pattern),
+                func.lower(AdminAction.reason).like(pattern),
+            )
+        )
+    rows = (await session.scalars(query.limit(limit))).all()
+    actors = {
+        user.id: compact_user(user)
+        for user in (
+            await session.scalars(
+                select(User).where(User.id.in_({row.actor_id for row in rows if row.actor_id}))
+            )
+        ).all()
+    }
+    return [
+        AdminActionOut(
+            id=row.id,
+            actor=actors.get(row.actor_id) if row.actor_id else None,
+            action=row.action,
+            target_type=row.target_type,
+            target_id=row.target_id,
+            target_label=row.target_label,
+            reason=row.reason,
+            details=row.details,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+
+# ---------------------------------------------------------------------------------------------
+# Staff tools, part three: the money.
+#
+# Stars are the one thing here somebody paid real money for, so every star that comes in or goes
+# out is a row that can be shown to a person: purchases, refunds, payouts, and the wallet history
+# under them. Two of those are queues rather than logs — a refund and a payout each wait for an
+# answer — and both answers live here as well as on the bot's buttons, because an admin at a
+# keyboard should not have to open Telegram to do their job.
+# ---------------------------------------------------------------------------------------------
+
+
+async def _admin_payout_out(
+    session: AsyncSession, payout: StarPayout, user: User
+) -> AdminPayoutOut:
+    decided_by = (
+        await session.get(User, payout.decided_by_id) if payout.decided_by_id else None
+    )
+    crypto = await session.get(CryptoPayoutDetails, payout.id)
+    return AdminPayoutOut(
+        **_payout_out(payout, crypto).model_dump(),
+        user=compact_user(user),
+        balance=await _wallet_balance(session, user.id),
+        decided_by=compact_user(decided_by) if decided_by else None,
+        # A crypto payout is never automatic: the provider's API needs credentials this server does
+        # not hold, so an admin sends it and records the hash. Claiming otherwise would put a
+        # "confirm and done" button on something nobody has actually sent.
+        automatic=(
+            crypto is None and await _auto_payout_charge(session, payout) is not None
+        ),
+    )
+
+
+@app.get("/api/admin/payouts", response_model=list[AdminPayoutOut], tags=["admin"])
+async def admin_list_payouts(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    payout_status: Annotated[
+        Literal["pending", "open", "paid", "declined", "failed", "all"], Query(alias="status")
+    ] = "pending",
+    limit: Annotated[int, Query(ge=1, le=200)] = 60,
+) -> list[AdminPayoutOut]:
+    """
+    Withdrawal requests, oldest first — a queue is served from its front.
+
+    `open` is the pair that still needs somebody: waiting for a decision, and decided but not yet
+    sent. Everything else is history.
+    """
+    query = select(StarPayout, User).join(User, User.id == StarPayout.user_id)
+    if payout_status == "open":
+        query = query.where(StarPayout.status.in_(OPEN_PAYOUT_STATUSES))
+    elif payout_status != "all":
+        query = query.where(StarPayout.status == payout_status)
+    rows = (
+        await session.execute(query.order_by(StarPayout.requested_at).limit(limit))
+    ).all()
+    return [await _admin_payout_out(session, payout, user) for payout, user in rows]
+
+
+@app.post("/api/admin/payouts/{payout_id}/decision", response_model=AdminPayoutOut, tags=["admin"])
+async def admin_decide_payout(
+    payout_id: uuid.UUID, body: AdminDecision, session: SessionDep, admin: AdminUser
+) -> AdminPayoutOut:
+    """
+    Confirm a withdrawal or refuse it.
+
+    A confirmation does not move stars — they left the balance when the request was made — it
+    authorises the Telegram half and puts the request in front of whoever sends it. A refusal is
+    the only branch that touches the wallet: the held amount goes straight back.
+    """
+    payout = await session.scalar(
+        select(StarPayout).where(StarPayout.id == payout_id).with_for_update()
+    )
+    if payout is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    if payout.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="По этой заявке уже есть решение"
+        )
+    note = body.note.strip()[:240]
+    crypto = await session.get(CryptoPayoutDetails, payout.id)
+    payout.decided_at = utcnow()
+    payout.decided_by_id = admin.id
+    payout.admin_note = note or None
+    if body.approved:
+        payout.status = "approved"
+        # The destination is what the person needs to hear, and it is not the same sentence for the
+        # two rails — a crypto payout has no Telegram Stars in it at all.
+        arriving = (
+            f"{crypto.quoted_amount:g} {crypto.asset_label} ({crypto.network_label})"
+            if crypto
+            else f"{payout.price_xtr} Telegram Stars"
+        )
+        text = f"Вывод подтверждён: {arriving} будут отправлены" + (f". {note}" if note else "")
+    else:
+        payout.status = "declined"
+        wallet = await _wallet_for_update(session, payout.user_id)
+        _ledger_change(
+            session,
+            wallet,
+            payout.stars,
+            kind="payout_declined",
+            description=f"Вывод отклонён — {payout.stars} ★ снова на балансе",
+            correlation_id=uuid.uuid4(),
+            entity_type="star_payout",
+            entity_id=str(payout.id),
+        )
+        text = (
+            f"Вывод {payout.stars} ★ отклонён" + (f": {note}" if note else "")
+        ) + f". {payout.stars} ★ вернулись на баланс"
+    session.add(
+        Notification(
+            user_id=payout.user_id,
+            actor_id=admin.id,
+            kind=NotificationKind.STARS,
+            text=text,
+            entity_id=str(payout.id),
+        )
+    )
+    _audit(
+        session,
+        admin,
+        "payout_approved" if body.approved else "payout_declined",
+        target_type="payout",
+        target_id=str(payout.id),
+        target_label=f"{payout.stars} ★ → {payout.price_xtr} XTR",
+        reason=note or None,
+        details={"stars": payout.stars, "xtr": payout.price_xtr},
+    )
+    await session.commit()
+    await session.refresh(payout)
+    user = await session.get(User, payout.user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Аккаунт не найден")
+    return await _admin_payout_out(session, payout, user)
+
+
+@app.post("/api/admin/payouts/{payout_id}/paid", response_model=AdminPayoutOut, tags=["admin"])
+async def admin_payout_paid(
+    payout_id: uuid.UUID, body: AdminCryptoPaidIn, session: SessionDep, admin: AdminUser
+) -> AdminPayoutOut:
+    """
+    The money was sent. This is the admin recording that by hand.
+
+    For a Telegram payout the note is optional and that is all there is to say. For a crypto payout
+    the transaction hash is the receipt — the one thing that lets the person verify the transfer
+    themselves — so it is stored on the request and shown to them. It is not *required*, because a
+    payout that really was sent must always be recordable even when a hash has been mislaid, and
+    refusing to close it would leave the queue lying about what has happened.
+    """
+    crypto = await session.get(CryptoPayoutDetails, payout_id)
+    if crypto is not None and body.tx_hash:
+        crypto.tx_hash = body.tx_hash
+    payout = await _settle_payout(
+        session, payout_id, sent=True, note=body.note or "", admin=admin
+    )
+    _audit(
+        session,
+        admin,
+        "payout_paid",
+        target_type="payout",
+        target_id=str(payout.id),
+        target_label=(
+            f"{payout.stars} ★ → {crypto.quoted_amount:g} {crypto.asset_label}"
+            if crypto
+            else f"{payout.stars} ★ → {payout.price_xtr} XTR"
+        ),
+        reason=(body.note or "").strip() or None,
+        details={
+            "stars": payout.stars,
+            "xtr": payout.price_xtr,
+            "source": "panel",
+            **(
+                {
+                    "method": "crypto",
+                    "currency": crypto.currency,
+                    "amount": crypto.quoted_amount,
+                    "address": crypto.address,
+                    "tx_hash": crypto.tx_hash,
+                }
+                if crypto
+                else {"method": "telegram"}
+            ),
+        },
+    )
+    await session.commit()
+    await session.refresh(payout)
+    user = await session.get(User, payout.user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Аккаунт не найден")
+    return await _admin_payout_out(session, payout, user)
+
+
+@app.post("/api/admin/payouts/{payout_id}/failed", response_model=AdminPayoutOut, tags=["admin"])
+async def admin_payout_failed(
+    payout_id: uuid.UUID, body: AdminNote, session: SessionDep, admin: AdminUser
+) -> AdminPayoutOut:
+    """It could not be sent. The compensation: the held stars go back and the note says why."""
+    payout = await _settle_payout(session, payout_id, sent=False, note=body.note, admin=admin)
+    _audit(
+        session,
+        admin,
+        "payout_failed",
+        target_type="payout",
+        target_id=str(payout.id),
+        target_label=f"{payout.stars} ★ → {payout.price_xtr} XTR",
+        reason=payout.admin_note,
+        details={"stars": payout.stars, "xtr": payout.price_xtr, "source": "panel"},
+    )
+    await session.commit()
+    await session.refresh(payout)
+    user = await session.get(User, payout.user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Аккаунт не найден")
+    return await _admin_payout_out(session, payout, user)
+
+
+@app.get("/api/admin/refunds", response_model=list[AdminRefundOut], tags=["admin"])
+async def admin_list_refunds(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    refund_status: Annotated[
+        Literal["pending", "approved", "declined", "failed", "all"], Query(alias="status")
+    ] = "pending",
+    limit: Annotated[int, Query(ge=1, le=200)] = 60,
+) -> list[AdminRefundOut]:
+    """
+    Refund requests, oldest first, with the answer already worked out.
+
+    `blocked_reason` is the same check the decision itself runs, shown beforehand: a two-week
+    window closes and a balance gets spent between the asking and the answering, so an admin should
+    see that an approval would fail before they press it.
+    """
+    query = (
+        select(StarRefund, StarPurchase, User)
+        .join(StarPurchase, StarPurchase.id == StarRefund.purchase_id)
+        .join(User, User.id == StarRefund.user_id)
+        .order_by(StarRefund.requested_at)
+    )
+    if refund_status != "all":
+        query = query.where(StarRefund.status == refund_status)
+    rows = (await session.execute(query.limit(limit))).all()
+    out: list[AdminRefundOut] = []
+    for refund, order, buyer in rows:
+        balance = await _wallet_balance(session, buyer.id)
+        out.append(
+            AdminRefundOut(
+                id=refund.id,
+                purchase_id=order.id,
+                user=compact_user(buyer),
+                stars=order.stars,
+                price_xtr=order.price_xtr,
+                balance=balance,
+                reason=refund.reason,
+                status=refund.status,
+                admin_note=refund.admin_note,
+                telegram_charge_id=order.telegram_charge_id,
+                telegram_user_id=order.telegram_user_id,
+                blocked_reason=(
+                    _refund_block(order, balance, None) if refund.status == "pending" else None
+                ),
+                requested_at=refund.requested_at,
+                decided_at=refund.decided_at,
+                telegram_done_at=refund.telegram_done_at,
+            )
+        )
+    return out
+
+
+@app.post("/api/admin/refunds/{refund_id}/decision", response_model=DetailResponse, tags=["admin"])
+async def admin_decide_refund(
+    refund_id: uuid.UUID, body: AdminDecision, session: SessionDep, admin: AdminUser
+) -> DetailResponse:
+    """
+    The same decision the bot's buttons take, taken in the panel instead.
+
+    Identical money movement, because it is the same code. What the panel cannot do is call
+    Telegram: an approval here lands in `/api/bot/refunds/approved`, and the bot carries out the
+    Telegram half on its next poll.
+    """
+    refund, order, applied = await _apply_refund_decision(
+        session, refund_id, approved=body.approved, note=body.note, admin=admin
+    )
+    _audit(
+        session,
+        admin,
+        "refund_approved" if body.approved else "refund_declined",
+        target_type="refund",
+        target_id=str(refund.id),
+        target_label=f"{order.stars} ★ / {order.price_xtr} XTR",
+        reason=refund.admin_note,
+        details={"stars": order.stars, "xtr": order.price_xtr, "source": "panel"},
+    )
+    await session.commit()
+    return DetailResponse(
+        detail=(
+            "Возврат одобрен — бот вернёт Telegram Stars при следующей проверке"
+            if applied.status == "approved"
+            else "Возврат отклонён"
+        )
+    )
+
+
+@app.get("/api/admin/star-orders", response_model=list[AdminStarOrderOut], tags=["admin"])
+async def admin_list_star_orders(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    order_status: Annotated[
+        Literal["paid", "pending", "refunded", "cancelled", "all"], Query(alias="status")
+    ] = "paid",
+    q: Annotated[str | None, Query(max_length=64)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 60,
+) -> list[AdminStarOrderOut]:
+    """Every Telegram Stars purchase, newest first. The income side of the same ledger."""
+    query = select(StarPurchase, User).join(User, User.id == StarPurchase.user_id)
+    if order_status != "all":
+        query = query.where(StarPurchase.status == order_status)
+    if q:
+        needle = q.strip().lstrip("@").lower()
+        query = query.where(
+            or_(
+                func.lower(User.username).like(f"%{needle}%"),
+                func.lower(StarPurchase.telegram_charge_id).like(f"%{needle}%"),
+            )
+        )
+    rows = (
+        await session.execute(query.order_by(StarPurchase.created_at.desc()).limit(limit))
+    ).all()
+    refunds = await _refunds_for(session, [order.id for order, _user in rows])
+    return [
+        AdminStarOrderOut(
+            id=order.id,
+            user=compact_user(user),
+            package_slug=order.package_slug,
+            stars=order.stars,
+            price_xtr=order.price_xtr,
+            status="expired" if _order_expired(order) else order.status,
+            telegram_user_id=order.telegram_user_id,
+            telegram_charge_id=order.telegram_charge_id,
+            created_at=order.created_at,
+            paid_at=order.paid_at,
+            refund_status=refunds[order.id].status if order.id in refunds else None,
+        )
+        for order, user in rows
+    ]
+
+
+@app.get("/api/admin/crypto-invoices", response_model=list[AdminCryptoInvoiceOut], tags=["admin"])
+async def admin_list_crypto_invoices(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    invoice_status: Annotated[
+        Literal["pending", "paid", "underpaid", "failed", "expired", "cancelled", "all"],
+        Query(alias="status"),
+    ] = "all",
+    q: Annotated[str | None, Query(max_length=64)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 60,
+) -> list[AdminCryptoInvoiceOut]:
+    """
+    Every crypto top-up, newest first — the other half of the income side.
+
+    Searchable by handle, by our order id and by the provider's payment id, because those are the
+    three things somebody asking "where is my money" can actually quote.
+    """
+    query = select(CryptoInvoice, User).join(User, User.id == CryptoInvoice.user_id)
+    if invoice_status != "all":
+        query = query.where(CryptoInvoice.status == invoice_status)
+    if q:
+        needle = q.strip().lstrip("@").lower()
+        query = query.where(
+            or_(
+                func.lower(User.username).like(f"%{needle}%"),
+                func.lower(CryptoInvoice.order_id).like(f"%{needle}%"),
+                func.lower(CryptoInvoice.provider_payment_id).like(f"%{needle}%"),
+            )
+        )
+    rows = (
+        await session.execute(query.order_by(CryptoInvoice.created_at.desc()).limit(limit))
+    ).all()
+    return [
+        AdminCryptoInvoiceOut(
+            id=invoice.id,
+            user=compact_user(user),
+            package_slug=invoice.package_slug,
+            stars=invoice.stars,
+            price_amount=invoice.price_amount,
+            price_currency=invoice.price_currency,
+            pay_currency=invoice.pay_currency,
+            asset_label=_crypto_labels(invoice.pay_currency)[0],
+            network_label=invoice.network_label or _crypto_labels(invoice.pay_currency)[1],
+            pay_amount=invoice.pay_amount,
+            actually_paid=invoice.actually_paid,
+            status=invoice.status,
+            provider_status=invoice.provider_status,
+            provider_payment_id=invoice.provider_payment_id,
+            provider_note=invoice.provider_note,
+            order_id=invoice.order_id,
+            created_at=invoice.created_at,
+            credited_at=invoice.credited_at,
+        )
+        for invoice, user in rows
+    ]
+
+
+@app.post(
+    "/api/admin/crypto-invoices/{invoice_id}/recheck",
+    response_model=AdminCryptoInvoiceOut,
+    tags=["admin"],
+)
+async def admin_recheck_crypto_invoice(
+    invoice_id: uuid.UUID, session: SessionDep, admin: AdminUser
+) -> AdminCryptoInvoiceOut:
+    """
+    Ask the provider again about one payment, and credit it if it turns out to be paid.
+
+    The manual counterpart to the buyer's own poll, for the case where a callback was lost and
+    nobody had the page open. It goes through exactly the same settle path, so it cannot double
+    credit: the latch is checked under the row lock either way.
+    """
+    del admin
+    _require_crypto()
+    invoice = await session.get(CryptoInvoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
+    settled = await _settle_crypto_invoice(session, invoice_id)
+    user = await session.get(User, settled.user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Аккаунт не найден")
+    return AdminCryptoInvoiceOut(
+        id=settled.id,
+        user=compact_user(user),
+        package_slug=settled.package_slug,
+        stars=settled.stars,
+        price_amount=settled.price_amount,
+        price_currency=settled.price_currency,
+        pay_currency=settled.pay_currency,
+        asset_label=_crypto_labels(settled.pay_currency)[0],
+        network_label=settled.network_label or _crypto_labels(settled.pay_currency)[1],
+        pay_amount=settled.pay_amount,
+        actually_paid=settled.actually_paid,
+        status=settled.status,
+        provider_status=settled.provider_status,
+        provider_payment_id=settled.provider_payment_id,
+        provider_note=settled.provider_note,
+        order_id=settled.order_id,
+        created_at=settled.created_at,
+        credited_at=settled.credited_at,
+    )
+
+
+@app.get("/api/admin/ledger", response_model=list[AdminLedgerOut], tags=["admin"])
+async def admin_star_ledger(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    username: Annotated[str | None, Query(max_length=64)] = None,
+    kind: Annotated[str | None, Query(max_length=40)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 80,
+) -> list[AdminLedgerOut]:
+    """
+    Everybody's wallet history in one place.
+
+    The panel could show balances and nothing else, and then "куда ушли 500 ★" would have no
+    answer. This is that answer: every line, whose it is, and what it was for — filterable by
+    account and by kind of movement.
+    """
+    holder = aliased(User)
+    other = aliased(User)
+    query = (
+        select(StarLedger, holder, other)
+        .join(holder, holder.id == StarLedger.user_id)
+        .outerjoin(other, other.id == StarLedger.counterparty_id)
+        .order_by(StarLedger.created_at.desc())
+    )
+    if username:
+        who = await resolve_user(session, username)
+        if who is None:
+            return []
+        query = query.where(StarLedger.user_id == who.id)
+    if kind:
+        query = query.where(StarLedger.kind == kind.strip())
+    rows = (await session.execute(query.limit(limit))).all()
+    return [
+        AdminLedgerOut(
+            id=entry.id,
+            user=compact_user(owner),
+            counterparty=compact_user(counterparty) if counterparty else None,
+            amount=entry.amount,
+            balance_after=entry.balance_after,
+            kind=entry.kind,
+            description=entry.description,
+            entity_type=entry.entity_type,
+            entity_id=entry.entity_id,
+            created_at=entry.created_at,
+        )
+        for entry, owner, counterparty in rows
+    ]
+
+
+@app.post("/api/admin/broadcast", response_model=DetailResponse, tags=["admin"])
+async def admin_broadcast(
+    body: AdminBroadcast, session: SessionDep, admin: AdminUser
+) -> DetailResponse:
+    """
+    One announcement to many people, as a notification each.
+
+    Scoped, because an announcement about Premium is noise for accounts without it. Banned accounts
+    are left out — a message to somebody who cannot read it is not communication — and the whole
+    thing is one audit row saying how many were reached, so nobody has to guess afterwards.
+    """
+    text = " ".join(body.text.split())
+    query = select(User.id).where(User.banned_at.is_(None))
+    if body.scope == "admins":
+        query = query.where(User.is_admin.is_(True))
+    elif body.scope == "active":
+        # Presence lives on the profile-details row, not on the account itself.
+        recently_seen = select(UserProfileDetails.user_id).where(
+            UserProfileDetails.last_seen_at >= utcnow() - timedelta(days=30)
+        )
+        query = query.where(User.id.in_(recently_seen))
+    recipients = list((await session.scalars(query)).all())
+    if body.scope == "premium":
+        premium = await premium_user_ids(session, recipients)
+        recipients = [user_id for user_id in recipients if user_id in premium]
+    for user_id in recipients:
+        _notify(session, user_id, text, actor_id=admin.id)
+    _audit(
+        session,
+        admin,
+        "broadcast_sent",
+        target_type="system",
+        target_id=body.scope,
+        target_label=f"{len(recipients)} получателей",
+        reason=text[:240],
+        details={"scope": body.scope, "recipients": len(recipients)},
+    )
+    await session.commit()
+    return DetailResponse(detail=f"Отправлено {len(recipients)} получателям")
+
+
+# ---------------------------------------------------------------------------------------------
+# Staff tools, part two: the inventory an account actually holds.
+#
+# The first block decides about people. This one decides about their things — collectibles,
+# handles, posts — because "управлять пользователем" without being able to touch what they own
+# is only half a panel.
+# ---------------------------------------------------------------------------------------------
+
+
+@app.get("/api/admin/users/{username}/inventory", response_model=AdminInventoryOut, tags=["admin"])
+async def admin_user_inventory(
+    username: str,
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+) -> AdminInventoryOut:
+    """Everything staff can act on for one account, in one request rather than four."""
+    user = await _admin_target(session, username)
+    gifts = (
+        await session.scalars(
+            select(Gift).where(Gift.owner_id == user.id).order_by(Gift.received_at.desc())
+        )
+    ).all()
+    transfers = {
+        row[0]: int(row[1])
+        for row in (
+            await session.execute(
+                select(GiftTransfer.gift_id, func.count())
+                .where(GiftTransfer.gift_id.in_([gift.id for gift in gifts] or [uuid.uuid4()]))
+                .group_by(GiftTransfer.gift_id)
+            )
+        ).all()
+    }
+    handles = (
+        await session.scalars(
+            select(UsernameAsset)
+            .where(UsernameAsset.owner_id == user.id)
+            .order_by(UsernameAsset.username)
+        )
+    ).all()
+    history = {
+        row[0]: int(row[1])
+        for row in (
+            await session.execute(
+                select(UsernameOwnershipEvent.asset_id, func.count()).group_by(
+                    UsernameOwnershipEvent.asset_id
+                )
+            )
+        ).all()
+    }
+    posts = (
+        await session.scalars(
+            select(Post)
+            .where(Post.author_id == user.id)
+            .order_by(Post.created_at.desc())
+            .limit(40)
+        )
+    ).all()
+    community_ids = {post.community_id for post in posts if post.community_id}
+    communities = (
+        {
+            row[0]: row[1]
+            for row in (
+                await session.execute(
+                    select(Community.id, Community.slug).where(Community.id.in_(community_ids))
+                )
+            ).all()
+        }
+        if community_ids
+        else {}
+    )
+    post_reports = {
+        row[0]: int(row[1])
+        for row in (
+            await session.execute(
+                select(ContentReport.target_id, func.count())
+                .where(ContentReport.target_kind == "post")
+                .group_by(ContentReport.target_id)
+            )
+        ).all()
+    }
+    return AdminInventoryOut(
+        gifts=[
+            AdminGiftItem(
+                id=gift.id,
+                slug=gift.slug,
+                name=gift.name,
+                serial_number=gift.serial_number,
+                rarity=str(gift.rarity),
+                upgraded=gift.upgraded_at is not None,
+                model_name=gift.model_name or "",
+                accent=gift.accent,
+                design_slug=design_slug(gift.slug),
+                is_listed=gift.sale_price_stars is not None,
+                sale_price_stars=gift.sale_price_stars,
+                transfers_count=transfers.get(gift.id, 0),
+                received_at=gift.received_at,
+            )
+            for gift in gifts
+        ],
+        usernames=[
+            AdminUsernameItem(
+                username=asset.username,
+                status=str(asset.status),
+                is_primary=asset.username.lower() == user.username.lower(),
+                price=float(asset.price) if asset.price is not None else None,
+                history_count=history.get(asset.id, 0),
+            )
+            for asset in handles
+        ],
+        posts=[
+            AdminPostItem(
+                id=post.id,
+                content=post.content[:280],
+                created_at=post.created_at,
+                hidden_at=post.hidden_at,
+                hidden_reason=post.hidden_reason,
+                community_slug=communities.get(post.community_id) if post.community_id else None,
+                reports_count=post_reports.get(str(post.id), 0),
+            )
+            for post in posts
+        ],
+    )
+
+
+@app.patch("/api/admin/gifts/{gift_id}", response_model=GiftOut, tags=["admin"])
+async def admin_update_gift(  # noqa: C901, PLR0915
+    gift_id: uuid.UUID, payload: AdminGiftUpdate, session: SessionDep, admin: AdminUser
+) -> GiftOut:
+    """
+    Rewrite what a collectible shows, or take its upgrade away.
+
+    Named variants are validated against the design's real pools: staff picking a model that
+    Telegram never made for this gift would put artwork in somebody's collection that no URL
+    can resolve, and the tile would silently render empty.
+    """
+    gift = await session.scalar(select(Gift).where(Gift.id == gift_id).with_for_update())
+    if gift is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Подарок не найден")
+    slug = design_slug(gift.slug)
+    source = giftart.BY_SLUG.get(slug)
+    if source is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="У этого подарка нет каталога вариантов"
+        )
+    changed: dict[str, Any] = {}
+    if payload.upgraded is False:
+        gift.upgraded_at = None
+        gift.model_name = ""
+        gift.pattern = ""
+        gift.pattern_color = "#ffffff"
+        gift.text_color = "#ffffff"
+        changed["upgraded"] = False
+    if payload.model is not None:
+        chosen = next((item for item in source.models if item.name == payload.model), None)
+        if chosen is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"У «{gift.name}» нет модели «{payload.model}»",
+            )
+        gift.model_name = chosen.name
+        gift.upgraded_at = gift.upgraded_at or utcnow()
+        changed["model"] = chosen.name
+    if payload.backdrop is not None:
+        chosen_backdrop = next(
+            (item for item in source.backdrops if item.name == payload.backdrop), None
+        )
+        if chosen_backdrop is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"У «{gift.name}» нет фона «{payload.backdrop}»",
+            )
+        gift.accent = chosen_backdrop.center
+        gift.backdrop_edge = chosen_backdrop.edge
+        gift.pattern_color = chosen_backdrop.pattern
+        gift.text_color = chosen_backdrop.text
+        gift.upgraded_at = gift.upgraded_at or utcnow()
+        changed["backdrop"] = chosen_backdrop.name
+    if payload.symbol is not None:
+        chosen_symbol = next((item for item in source.symbols if item.name == payload.symbol), None)
+        if chosen_symbol is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"У «{gift.name}» нет узора «{payload.symbol}»",
+            )
+        gift.pattern = chosen_symbol.name
+        gift.upgraded_at = gift.upgraded_at or utcnow()
+        changed["symbol"] = chosen_symbol.name
+    if not changed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Нечего изменять"
+        )
+    collectible = await session.scalar(
+        select(GiftCollectible).where(GiftCollectible.gift_id == gift.id)
+    )
+    if collectible is not None:
+        collectible.model = gift.model_name
+        collectible.symbol = gift.pattern
+        traits = dict(collectible.traits or {})
+        traits.update({"model": gift.model_name, "symbol": gift.pattern})
+        if "backdrop" in changed:
+            collectible.backdrop = str(changed["backdrop"])
+            traits["backdrop"] = changed["backdrop"]
+        collectible.traits = traits
+    label = f"{gift.name} #{gift.serial_number}"
+    _audit(
+        session,
+        admin,
+        "gift_updated",
+        target_type="gift",
+        target_id=str(gift.id),
+        target_label=label,
+        reason=payload.reason,
+        details=changed,
+    )
+    _notify(
+        session,
+        gift.owner_id,
+        f"Администрация изменила ваш подарок «{label}»"
+        + (f". Причина: {payload.reason}" if payload.reason else ""),
+        actor_id=admin.id,
+        entity_id=str(gift.id),
+    )
+    await session.commit()
+    await session.refresh(gift)
+    owner = await session.get(User, gift.owner_id)
+    return await render_gift(session, gift, owner or admin, admin)
+
+
+@app.post("/api/admin/gifts/{gift_id}/transfer", response_model=GiftOut, tags=["admin"])
+async def admin_transfer_gift(
+    gift_id: uuid.UUID, payload: AdminGiftTransfer, session: SessionDep, admin: AdminUser
+) -> GiftOut:
+    """Move a collectible to another account, recording it as a transfer like any other."""
+    gift = await session.scalar(select(Gift).where(Gift.id == gift_id).with_for_update())
+    if gift is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Подарок не найден")
+    recipient = await _admin_target(session, payload.username)
+    if recipient.id == gift.owner_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{recipient.username} и так владеет этим подарком",
+        )
+    previous_id = gift.owner_id
+    previous = await session.get(User, previous_id)
+    label = f"{gift.name} #{gift.serial_number}"
+    session.add(
+        GiftTransfer(
+            gift_id=gift.id,
+            from_user_id=previous_id,
+            to_user_id=recipient.id,
+            note=payload.reason or "Передано администрацией",
+        )
+    )
+    gift.owner_id = recipient.id
+    gift.received_at = utcnow()
+    gift.sale_price_stars = None
+    gift.listed_at = None
+    gift.message = None
+    # A showcased gift that changed hands must leave the previous owner's profile slots.
+    await session.execute(
+        delete(GiftShowcase).where(
+            GiftShowcase.gift_id == gift.id, GiftShowcase.user_id == previous_id
+        )
+    )
+    _audit(
+        session,
+        admin,
+        "gift_transferred",
+        target_type="gift",
+        target_id=str(gift.id),
+        target_label=label,
+        reason=payload.reason,
+        details={"from": previous.username if previous else None, "to": recipient.username},
+    )
+    if previous is not None:
+        _notify(
+            session,
+            previous.id,
+            f"Администрация передала ваш подарок «{label}» пользователю @{recipient.username}"
+            + (f". Причина: {payload.reason}" if payload.reason else ""),
+            actor_id=admin.id,
+        )
+    _notify(
+        session,
+        recipient.id,
+        f"Администрация передала вам подарок «{label}»",
+        actor_id=admin.id,
+        entity_id=str(gift.id),
+    )
+    await session.commit()
+    await session.refresh(gift)
+    return await render_gift(session, gift, recipient, admin)
+
+
+@app.delete("/api/admin/gifts/{gift_id}/history", response_model=DetailResponse, tags=["admin"])
+async def admin_clear_gift_history(
+    gift_id: uuid.UUID,
+    session: SessionDep,
+    admin: AdminUser,
+    reason: Annotated[str, Query(min_length=3, max_length=240)],
+) -> DetailResponse:
+    """
+    Wipe one collectible's transfer history.
+
+    Provenance is the point of a collectible, so this is not a routine action — it exists for the
+    case where the trail itself is the problem (a leaked handle, a mistaken chain of gifts), and
+    it is logged with the reason precisely because it destroys evidence.
+    """
+    gift = await session.get(Gift, gift_id)
+    if gift is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Подарок не найден")
+    # Counted before the delete: the audit entry should say how much history was destroyed, and
+    # `rowcount` is not part of the typed Result contract.
+    removed = int(
+        await session.scalar(
+            select(func.count()).select_from(GiftTransfer).where(GiftTransfer.gift_id == gift.id)
+        )
+        or 0
+    )
+    await session.execute(delete(GiftTransfer).where(GiftTransfer.gift_id == gift.id))
+    label = f"{gift.name} #{gift.serial_number}"
+    _audit(
+        session,
+        admin,
+        "gift_history_cleared",
+        target_type="gift",
+        target_id=str(gift.id),
+        target_label=label,
+        reason=reason,
+        details={"removed": removed},
+    )
+    _notify(
+        session,
+        gift.owner_id,
+        f"Администрация очистила историю передач «{label}». Причина: {reason}",
+        actor_id=admin.id,
+        entity_id=str(gift.id),
+    )
+    await session.commit()
+    return DetailResponse(detail="gift_history_cleared")
+
+
+@app.get("/api/admin/gift-designs", response_model=list[AdminDesignOut], tags=["admin"])
+async def admin_list_designs(
+    session: SessionDep,
+    admin: AdminUser,  # noqa: ARG001
+    q: Annotated[str | None, Query(max_length=64)] = None,
+) -> list[AdminDesignOut]:
+    query = select(GiftModel)
+    if q:
+        pattern = f"%{q.strip().lower()}%"
+        query = query.where(
+            or_(func.lower(GiftModel.slug).like(pattern), func.lower(GiftModel.name).like(pattern))
+        )
+    designs = (await session.scalars(query.order_by(GiftModel.name).limit(200))).all()
+    # `plush-pepe-042` -> `plush-pepe`: the mint count per design, without a join.
+    design_of_gift = func.substr(Gift.slug, 1, func.length(Gift.slug) - 4)
+    minted = {
+        row[0]: int(row[1])
+        for row in (
+            await session.execute(
+                select(design_of_gift, func.count()).group_by(design_of_gift)
+            )
+        ).all()
+    }
+    return [
+        AdminDesignOut(
+            slug=design.slug,
+            name=design.name,
+            price_stars=design.price_stars,
+            edition_size=design.edition_size,
+            minted=minted.get(design.slug, 0),
+            remaining=max(0, design.edition_size - minted.get(design.slug, 0)),
+            limited=design.limited,
+            available=design.available,
+            on_market=design.on_market,
+            models_count=len(design.models_pool or []),
+            backdrops_count=len(design.backdrops_pool or []),
+            symbols_count=len(design.symbols_pool or []),
+        )
+        for design in designs
+    ]
+
+
+@app.patch("/api/admin/gift-designs/{slug}", response_model=AdminDesignOut, tags=["admin"])
+async def admin_update_design(
+    slug: str, payload: AdminDesignUpdate, session: SessionDep, admin: AdminUser
+) -> AdminDesignOut:
+    """
+    Change the supply and the price of a design.
+
+    Lowering `edition_size` below what has already been minted is refused: the remaining count
+    would go negative, and the serials already in people's collections would start claiming to
+    be out of a run smaller than themselves.
+    """
+    design = await session.scalar(select(GiftModel).where(GiftModel.slug == slug))
+    if design is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дизайн не найден")
+    minted = int(
+        await session.scalar(
+            select(func.count()).select_from(Gift).where(Gift.slug.like(f"{design.slug}-%"))
+        )
+        or 0
+    )
+    fields = payload.model_dump(exclude_unset=True, exclude={"reason"})
+    if not fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Нечего изменять"
+        )
+    if payload.edition_size is not None and payload.edition_size < minted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Уже выпущено {minted} — тираж нельзя опустить ниже",
+        )
+    for field, value in fields.items():
+        setattr(design, field, value)
+    _audit(
+        session,
+        admin,
+        "design_updated",
+        target_type="gift_design",
+        target_id=design.slug,
+        target_label=design.name,
+        reason=payload.reason,
+        details=fields,
+    )
+    await session.commit()
+    await session.refresh(design)
+    return AdminDesignOut(
+        slug=design.slug,
+        name=design.name,
+        price_stars=design.price_stars,
+        edition_size=design.edition_size,
+        minted=minted,
+        remaining=max(0, design.edition_size - minted),
+        limited=design.limited,
+        available=design.available,
+        on_market=design.on_market,
+        models_count=len(design.models_pool or []),
+        backdrops_count=len(design.backdrops_pool or []),
+        symbols_count=len(design.symbols_pool or []),
+    )
+
+
+@app.post("/api/admin/usernames/{handle}/transfer", response_model=AdminUserOut, tags=["admin"])
+async def admin_transfer_username(
+    handle: str, payload: AdminGiftTransfer, session: SessionDep, admin: AdminUser
+) -> AdminUserOut:
+    """Hand a collectible handle from whoever holds it to somebody else, and record the move."""
+    normalized = handle.strip().removeprefix("@").lower()
+    recipient = await _admin_target(session, payload.username)
+    # Checked before the asset lookup: a live account handle usually has no collectible row at
+    # all, and "@nikita не найден" would be a confusing way to say "that is somebody's name".
+    account = await session.scalar(select(User).where(func.lower(User.username) == normalized))
+    if account is not None and account.id != recipient.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{normalized} — основной ник @{account.username}, сначала смените его",
+        )
+    asset = await session.scalar(
+        select(UsernameAsset).where(func.lower(UsernameAsset.username) == normalized)
+    )
+    if asset is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"@{normalized} не найден"
+        )
+    if asset.owner_id == recipient.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{normalized} уже принадлежит @{recipient.username}",
+        )
+    previous_id = asset.owner_id
+    previous = await session.get(User, previous_id) if previous_id else None
+    asset.owner_id = recipient.id
+    asset.status = UsernameStatus.RESERVED
+    asset.price = None
+    asset.listed_at = None
+    asset.reserved_at = utcnow()
+    session.add(
+        UsernameOwnershipEvent(
+            asset_id=asset.id,
+            from_user_id=previous_id,
+            to_user_id=recipient.id,
+            action="admin_transfer",
+        )
+    )
+    _audit(
+        session,
+        admin,
+        "username_transferred",
+        target_type="username",
+        target_id=asset.username,
+        target_label=f"@{asset.username}",
+        reason=payload.reason,
+        details={"from": previous.username if previous else None, "to": recipient.username},
+    )
+    if previous is not None:
+        _notify(
+            session,
+            previous.id,
+            f"Администрация передала ваш ник @{asset.username} "
+            f"пользователю @{recipient.username}"
+            + (f". Причина: {payload.reason}" if payload.reason else ""),
+            actor_id=admin.id,
+        )
+    _notify(
+        session,
+        recipient.id,
+        f"Администрация передала вам ник @{asset.username}",
+        actor_id=admin.id,
+    )
+    await session.commit()
+    await session.refresh(recipient)
+    return await admin_user_out(session, recipient)
+
+
+@app.delete(
+    "/api/admin/usernames/{handle}/history", response_model=DetailResponse, tags=["admin"]
+)
+async def admin_clear_username_history(
+    handle: str,
+    session: SessionDep,
+    admin: AdminUser,
+    reason: Annotated[str, Query(min_length=3, max_length=240)],
+) -> DetailResponse:
+    """Wipe one handle's ownership trail. Logged, for the same reason gift history is."""
+    normalized = handle.strip().removeprefix("@").lower()
+    asset = await session.scalar(
+        select(UsernameAsset).where(func.lower(UsernameAsset.username) == normalized)
+    )
+    if asset is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"@{normalized} не найден"
+        )
+    removed = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(UsernameOwnershipEvent)
+            .where(UsernameOwnershipEvent.asset_id == asset.id)
+        )
+        or 0
+    )
+    await session.execute(
+        delete(UsernameOwnershipEvent).where(UsernameOwnershipEvent.asset_id == asset.id)
+    )
+    _audit(
+        session,
+        admin,
+        "username_history_cleared",
+        target_type="username",
+        target_id=asset.username,
+        target_label=f"@{asset.username}",
+        reason=reason,
+        details={"removed": removed},
+    )
+    if asset.owner_id:
+        _notify(
+            session,
+            asset.owner_id,
+            f"Администрация очистила историю ника @{asset.username}. Причина: {reason}",
+            actor_id=admin.id,
+        )
+    await session.commit()
+    return DetailResponse(detail="username_history_cleared")
+
+
+@app.delete("/api/admin/posts/{post_id}", response_model=DetailResponse, tags=["admin"])
+async def admin_delete_post(
+    post_id: uuid.UUID,
+    session: SessionDep,
+    admin: AdminUser,
+    reason: Annotated[str, Query(min_length=3, max_length=240)],
+) -> DetailResponse:
+    """
+    Delete a post outright.
+
+    Hiding is the default and this is the exception: it exists for content that must not remain
+    on disk at all. The author is told, because a post that vanishes without a word is how a
+    platform teaches people it is arbitrary.
+    """
+    post = await session.get(Post, post_id)
+    if post is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Публикация не найдена")
+    _audit(
+        session,
+        admin,
+        "post_deleted",
+        target_type="post",
+        target_id=str(post.id),
+        target_label=post.content[:120],
+        reason=reason,
+    )
+    _notify(
+        session,
+        post.author_id,
+        f"Администрация удалила вашу публикацию. Причина: {reason}",
+        actor_id=admin.id,
+    )
+    await session.delete(post)
+    await session.commit()
+    return DetailResponse(detail="post_deleted")
+
+
+@app.post("/api/admin/communities/{slug}/owner", response_model=AdminCommunityOut, tags=["admin"])
+async def admin_transfer_community(
+    slug: str, payload: AdminOwnerTransfer, session: SessionDep, admin: AdminUser
+) -> AdminCommunityOut:
+    """Hand a community to somebody else — the alternative to closing it."""
+    community = await session.scalar(select(Community).where(Community.slug == slug))
+    if community is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщество не найдено")
+    recipient = await _admin_target(session, payload.username)
+    if community.owner_id == recipient.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=f"@{recipient.username} и так владелец"
+        )
+    previous = await session.get(User, community.owner_id) if community.owner_id else None
+    community.owner_id = recipient.id
+    # The new owner has to be a member, or they would own a community they cannot post in.
+    membership = await session.scalar(
+        select(CommunityMember).where(
+            CommunityMember.community_id == community.id,
+            CommunityMember.user_id == recipient.id,
+        )
+    )
+    if membership is None:
+        session.add(CommunityMember(community_id=community.id, user_id=recipient.id))
+        community.members_count += 1
+    _audit(
+        session,
+        admin,
+        "community_transferred",
+        target_type="community",
+        target_id=community.slug,
+        target_label=community.title,
+        reason=payload.reason,
+        details={"from": previous.username if previous else None, "to": recipient.username},
+    )
+    if previous is not None:
+        _notify(
+            session,
+            previous.id,
+            "Администрация передала сообщество "
+            f"«{community.title}» пользователю @{recipient.username}",
+            actor_id=admin.id,
+        )
+    _notify(
+        session,
+        recipient.id,
+        f"Администрация передала вам сообщество «{community.title}»",
+        actor_id=admin.id,
+    )
+    await session.commit()
+    await session.refresh(community)
+    return AdminCommunityOut(
+        id=community.id,
+        slug=community.slug,
+        title=community.title,
+        description=community.description or "",
+        category=community.category,
+        location=community.location,
+        owner=compact_user(recipient),
+        members_count=community.members_count,
+        posts_count=0,
+        reports_count=0,
+        created_at=community.created_at,
+    )
+
+
+@app.delete("/api/admin/users/{username}", response_model=DetailResponse, tags=["admin"])
+async def admin_delete_account(
+    username: str, payload: AdminAccountDelete, session: SessionDep, admin: AdminUser
+) -> DetailResponse:
+    """
+    Delete an account for good.
+
+    The only staff action with nothing left to review afterwards, so it is the only one that
+    makes staff type the handle again. An admin cannot be deleted while they hold the flag, and
+    nobody deletes themselves here — that is what the account settings are for.
+    """
+    user = await _admin_target(session, username)
+    if payload.confirm_username.strip().removeprefix("@").lower() != user.username.lower():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Для подтверждения введите @{user.username}",
+        )
+    if user.id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Свой аккаунт удаляют в настройках, а не в панели",
+        )
+    if user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Сначала снимите права администратора",
+        )
+    owned = (await session.scalars(select(Community).where(Community.owner_id == user.id))).all()
+    for community in owned:
+        if payload.communities == "delete":
+            # Handles and profile cards pointing at it have to let go first, exactly as when an
+            # admin closes a single channel — deleting the row does not update what referred to it.
+            await _release_community_handles(session, community)
+            await session.delete(community)
+        else:
+            # Handed to the acting admin rather than orphaned: `owner_id` is RESTRICT, and a
+            # community with no owner cannot be moderated by anybody.
+            community.owner_id = admin.id
+    # Transfer history references users with RESTRICT, so it goes before the account row.
+    await session.execute(
+        delete(GiftTransfer).where(
+            or_(GiftTransfer.from_user_id == user.id, GiftTransfer.to_user_id == user.id)
+        )
+    )
+    # Release the handles this account held, or the names stay reserved to nobody for good.
+    await session.execute(
+        update(UsernameAsset)
+        .where(UsernameAsset.owner_id == user.id)
+        .values(
+            owner_id=None,
+            status=UsernameStatus.AVAILABLE,
+            reserved_at=None,
+            listed_at=None,
+            price=None,
+        )
+    )
+    _audit(
+        session,
+        admin,
+        "user_deleted",
+        target_type="user",
+        target_id=str(user.id),
+        target_label=f"@{user.username}",
+        reason=payload.reason,
+        details={
+            "communities": payload.communities,
+            "owned_communities": [community.slug for community in owned],
+        },
+    )
+    await session.delete(user)
+    await session.commit()
+    return DetailResponse(detail="account_deleted")

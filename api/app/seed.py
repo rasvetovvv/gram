@@ -13,7 +13,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import giftart
-from app.config import DEMO_EMAIL, DEMO_PASSWORD, DEMO_USERNAME
+from app.config import DEMO_EMAIL, DEMO_PASSWORD, DEMO_USERNAME, FOUNDING_ADMINS
 from app.gifts import (
     DESIGN_BY_SLUG,
     DESIGNS,
@@ -165,9 +165,14 @@ async def _upsert_demo_users(session: AsyncSession, now: datetime) -> dict[str, 
         user.bio = str(data["bio"])
         user.location = str(data["location"]) if data["location"] else None
         user.is_verified = bool(data["verified"])
-        # Staff. Only the platform account holds it in a fresh database; the V badge is granted,
-        # never claimed, so nothing in the product can set this flag.
-        user.is_admin = username == "gram"
+        # Which kind of confirmation the tick stands for, so the popover behind it can say what
+        # was actually checked instead of just "подтверждён".
+        if user.is_verified and not user.verification_tier:
+            user.verification_tier = "official" if username == "gram" else "creator"
+        # Staff. Granted here for the founding accounts and by an admin for anyone else; nothing
+        # in the product itself can set this flag, and every later grant lands in the audit log.
+        if username in FOUNDING_ADMINS:
+            user.is_admin = True
         user.is_online = False
         user.related_usernames = list(data["related"])
         user.profile_color = str(data.get("profile_color", "default"))
@@ -223,6 +228,55 @@ async def _claim_official_handle(session: AsyncSession, official: User, now: dat
             created_at=now,
         )
     )
+
+
+async def _repair_official_welcome_chats(
+    session: AsyncSession, official: User, now: datetime
+) -> None:
+    """Backfill one idempotent @gram welcome chat for accounts created before @gram existed."""
+    people = (
+        await session.scalars(select(User).where(User.id != official.id).order_by(User.joined_at))
+    ).all()
+    for user in people:
+        candidate_ids = (
+            select(ChatMember.chat_id)
+            .where(ChatMember.user_id.in_([official.id, user.id]))
+            .group_by(ChatMember.chat_id)
+            .having(func.count(func.distinct(ChatMember.user_id)) == 2)
+        )
+        chat = await session.scalar(
+            select(Chat).where(
+                Chat.id.in_(candidate_ids), Chat.is_group.is_(False), Chat.kind == "direct"
+            )
+        )
+        if chat is not None:
+            continue
+        chat = Chat(
+            id=demo_id(f"official-chat:{user.id}"),
+            is_group=False,
+            kind="direct",
+            created_at=now,
+        )
+        session.add(chat)
+        await session.flush()
+        session.add_all(
+            [
+                ChatMember(chat_id=chat.id, user_id=official.id, joined_at=now),
+                ChatMember(chat_id=chat.id, user_id=user.id, joined_at=now),
+                Message(
+                    id=demo_id(f"official-welcome:{user.id}"),
+                    chat_id=chat.id,
+                    sender_id=official.id,
+                    content=(
+                        f"Добро пожаловать в GRAM, {user.display_name}!\n\n"
+                        "Это официальный аккаунт @gram. Здесь появляются сообщения о входах, "
+                        "безопасности аккаунта и важных изменениях.\n\n"
+                        "Сайт: https://vexory.xyz"
+                    ),
+                    created_at=now,
+                ),
+            ]
+        )
 
 
 async def _seed_accounts(session: AsyncSession, users: dict[str, User], now: datetime) -> None:
@@ -422,7 +476,7 @@ async def _seed_profile_parity(
 ) -> None:
     detail_specs = {
         "leon": {
-            "website_url": "https://unixgram.com/u/leon",
+            "website_url": "https://vexory.xyz/u/leon",
             "birthday": date(1997, 5, 14),
             "github_url": "https://github.com/leon",
             "telegram_url": "https://t.me/leon",
@@ -437,7 +491,7 @@ async def _seed_profile_parity(
             "last_seen_at": now - timedelta(minutes=2),
         },
         "artem": {
-            "website_url": "https://unixgram.com/u/artem",
+            "website_url": "https://vexory.xyz/u/artem",
             "birthday": date(1995, 10, 2),
             "github_url": "https://github.com/artem",
             "telegram_url": "https://t.me/artem",
@@ -452,7 +506,7 @@ async def _seed_profile_parity(
             "last_seen_at": now - timedelta(minutes=18),
         },
         "maya": {
-            "website_url": "https://unixgram.com/u/maya",
+            "website_url": "https://vexory.xyz/u/maya",
             "birthday": date(1999, 2, 21),
             "github_url": "https://github.com/maya",
             "telegram_url": "https://t.me/maya",
@@ -753,7 +807,7 @@ async def _seed_community(session: AsyncSession, users: dict[str, User], now: da
         # Channel metadata is refreshed on every run so existing rows gain new fields.
         community.category = "Цифровые объекты"
         community.location = "Киев"
-        community.website_url = "https://gram.local/objects"
+        community.website_url = "https://vexory.xyz/c/digital-objects"
     if community is None:
         community = Community(
             id=demo_id("community:digital-objects"),
@@ -764,7 +818,7 @@ async def _seed_community(session: AsyncSession, users: dict[str, User], now: da
             owner_id=users["leon"].id,
             category="Цифровые объекты",
             location="Киев",
-            website_url="https://gram.local/objects",
+            website_url="https://vexory.xyz/c/digital-objects",
             members_count=3,
             # Staff-granted, so the demo shows what a verified channel looks like.
             is_verified=True,
@@ -788,6 +842,22 @@ async def _seed_community(session: AsyncSession, users: dict[str, User], now: da
                     created_at=now - timedelta(days=2),
                 ),
             ]
+        )
+    # A channel takes part in the handle market too: one of its owner's own usernames points at
+    # it, so `/c/still` opens the same channel as `/c/digital-objects` does. The slug itself
+    # carries a dash and can never be a username, which is exactly why this exists.
+    extra = await session.scalar(
+        select(UsernameAsset).where(func.lower(UsernameAsset.username) == "still")
+    )
+    if extra is not None and extra.community_id is None and extra.owner_id == community.owner_id:
+        extra.community_id = community.id
+        session.add(
+            UsernameOwnershipEvent(
+                asset_id=extra.id,
+                to_user_id=community.owner_id,
+                action="community_username",
+                created_at=now - timedelta(days=30),
+            )
         )
 
 
@@ -1019,6 +1089,7 @@ async def seed_database(session: AsyncSession) -> bool:
     await _seed_feed_and_chats(session, users, now)
     await _seed_assets(session, users, now)
     await _claim_official_handle(session, users["gram"], now)
+    await _repair_official_welcome_chats(session, users["gram"], now)
     await _seed_gift_catalog(session, now)
     # Demo items read their name, edition and artwork from the catalogue, so they follow it.
     await _seed_demo_gifts(session, users, now)
@@ -1028,5 +1099,24 @@ async def seed_database(session: AsyncSession) -> bool:
     await _seed_community(session, users, now)
     await _seed_profile_parity(session, users, now)
     await _repair_notes_and_notifications(session, users, now)
+    await _promote_founding_admins(session)
     await session.commit()
     return before == 0
+
+
+async def _promote_founding_admins(session: AsyncSession) -> None:
+    """
+    Give staff powers to the founding handles, whether or not they are demo accounts.
+
+    `rasvetovvv` is a real account somebody registered, not part of the demo cast, so the
+    upsert above never touches it — and an admin panel whose owner cannot open it is useless.
+    Runs on every seed, and only ever adds the flag: nothing here takes it away, because that
+    is a decision for an admin to make in the panel, where it gets logged.
+    """
+    if not FOUNDING_ADMINS:
+        return
+    await session.execute(
+        update(User)
+        .where(func.lower(User.username).in_(FOUNDING_ADMINS), User.is_admin.is_(False))
+        .values(is_admin=True)
+    )

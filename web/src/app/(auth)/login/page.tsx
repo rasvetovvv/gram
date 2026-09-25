@@ -3,7 +3,7 @@ import { Suspense } from "react";
 
 import { LoginScreen } from "@/components/auth/login-form";
 
-export const metadata: Metadata = { title: "Вход" };
+export const metadata: Metadata = { title: "Sign in" };
 
 export default function LoginPage() {
   return (

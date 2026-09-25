@@ -14,7 +14,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
-  cancelLabel = "Отмена",
+  cancelLabel = "Cancel",
   tone = "danger",
   error,
   pending,

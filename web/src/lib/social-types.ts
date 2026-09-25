@@ -2,6 +2,13 @@ export type StarsWallet = {
   balance: number;
   currency: "STARS";
   updated_at: string;
+  /**
+   * Whether stars may be taken out right now.
+   *
+   * The Telegram half of a payout is settled by a person, so the way out can be closed. Absent on
+   * older responses, which is read as open.
+   */
+  payouts_enabled?: boolean;
 };
 
 export type SocialUserCompact = {
@@ -25,7 +32,16 @@ export type StarTransactionKind =
   | "transfer_received"
   | "subscription_income"
   | "gift_sale"
-  | "username_sale";
+  | "username_sale"
+  // Purchases and their reversals, all of them Telegram Stars payments through GRAM's own bot.
+  | "stars_telegram"
+  | "stars_refund"
+  | "stars_refund_reversed"
+  | "username_purchase"
+  | "username_offer_hold"
+  | "username_offer_refund"
+  | "gift_purchase"
+  | "premium_purchase";
 
 export type StarTransaction = {
   id: string;
@@ -102,6 +118,8 @@ export type Community = {
   location?: string | null;
   website_url?: string | null;
   created_at: string;
+  /** Every handle that opens this channel, its own address first. */
+  usernames?: string[];
 };
 
 /**

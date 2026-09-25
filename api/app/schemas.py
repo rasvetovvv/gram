@@ -7,7 +7,15 @@ from datetime import UTC, date, datetime
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from app.models import GiftRarity, NotificationKind, UsernameStatus
 
@@ -39,6 +47,7 @@ UsernameInput = Annotated[
     ),
 ]
 MAX_INTEREST_LENGTH = 40
+MAX_BIO_LENGTH_PREMIUM = 560
 CommunitySlug = Annotated[
     str, Field(min_length=3, max_length=48, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 ]
@@ -89,6 +98,10 @@ class UserCompact(ApiModel):
     is_official: bool = False
     # Staff, drawn as the V badge before the name. Not for sale and not claimable.
     is_admin: bool = False
+    # A ban travels with the compact user so a banned author is marked wherever their words
+    # still appear — a feed card, a comment, a chat bubble — and not only on a profile nobody
+    # clicks through to. The history stays up; it is labelled, not erased.
+    is_banned: bool = False
     role_title: str | None = None
     # The gift the owner put in their name slot, drawn bare beside the name wherever they
     # appear. Filled from one batched lookup per list, like premium above.
@@ -109,12 +122,59 @@ class ProfileBadge(ApiModel):
     visible_in_profile: bool = True
 
 
+class BadgeOffer(ApiModel):
+    """One badge as its owner sees it in the picker: earned or not, and how far off."""
+
+    badge: ProfileBadge
+    earned: bool
+    chosen: bool
+    # Empty for a badge staff hands out: there is nothing to work towards.
+    progress: int | None = None
+    target: int | None = None
+
+
+class MyBadgesOut(ApiModel):
+    limit: int
+    slots: list[str]
+    badges: list[BadgeOffer]
+
+
+class BadgeSelection(BaseModel):
+    """Which badges to wear, in the order they should appear."""
+
+    slugs: Annotated[list[str], Field(max_length=16)]
+
+
+# How many handles one account may hold at once.
+#
+# A handle is a scarce name in a shared namespace, so an unbounded collection is a way to sit on
+# every good word in the language and lock everybody else out. Twenty is generous for a person who
+# collects them and low enough that squatting the namespace takes deliberate effort. Channel
+# addresses are excluded from the count: those belong to a community, not to a collection.
+#
+# Declared up here rather than beside `ProfileUpdate` because `UserProfile` — defined below —
+# publishes it to the client as `max_usernames`.
+MAX_OWNED_USERNAMES = 20
+
+
 class UserProfile(UserCompact):
     cover_url: str | None
     bio: str
     location: str | None
     related_usernames: list[str]
+    # Every personal handle the account holds, and the ceiling on that collection. The edit sheet
+    # needs both: to offer the handles somebody can actually show, and to say how much room is left
+    # rather than letting a save fail with a 409.
+    owned_usernames: list[str] = Field(default_factory=list)
+    max_usernames: int = MAX_OWNED_USERNAMES
     badges: list[ProfileBadge] = Field(default_factory=list)
+    # Moderation, stated plainly on the profile: why the account was banned, and — separately —
+    # whether enough complaints have piled up that a visitor deserves the warning before they
+    # trust it. A count alone would be noise, so only a run of open reports raises the flag.
+    banned_at: datetime | None = None
+    ban_reason: str | None = None
+    reports_count: int = 0
+    heavily_reported: bool = False
     followers_count: int
     following_count: int
     joined_at: datetime
@@ -176,6 +236,9 @@ class UserSettingsOut(ApiModel):
     private_account: bool = False
     # everyone | following | nobody — who may open a direct chat with this account.
     who_can_message: Literal["everyone", "following", "nobody"] = "everyone"
+    # Whether anybody may hand this account a collectible handle, or a gift, without being asked.
+    accept_usernames: bool = True
+    accept_gifts: bool = True
     status_emoji: str | None = None
     status_text: str | None = None
     notify_likes: bool = True
@@ -190,6 +253,8 @@ class UserSettingsUpdate(BaseModel):
     show_online: bool | None = None
     private_account: bool | None = None
     who_can_message: Literal["everyone", "following", "nobody"] | None = None
+    accept_usernames: bool | None = None
+    accept_gifts: bool | None = None
     status_emoji: Annotated[str | None, Field(max_length=8)] = None
     status_text: Annotated[str | None, Field(max_length=40)] = None
     notify_likes: bool | None = None
@@ -241,6 +306,25 @@ class AuthResponse(BaseModel):
     access_expires_at: datetime
 
 
+class EmailChallengeOut(BaseModel):
+    challenge_id: uuid.UUID
+    purpose: Literal["register", "login"]
+    masked_email: str
+    expires_in: int
+    resend_after: int
+    delivery: Literal["sent", "failed"]
+    requires_email_code: Literal[True] = True
+
+
+class EmailCodeVerifyRequest(BaseModel):
+    challenge_id: uuid.UUID
+    code: Annotated[str, Field(pattern=r"^\d{6}$")]
+
+
+class EmailChallengeResendRequest(BaseModel):
+    challenge_id: uuid.UUID
+
+
 class DetailResponse(BaseModel):
     detail: str
 
@@ -248,11 +332,14 @@ class DetailResponse(BaseModel):
 class ProfileUpdate(BaseModel):
     username: Username | None = None
     display_name: Annotated[str | None, Field(min_length=1, max_length=80)] = None
-    bio: Annotated[str | None, Field(max_length=280)] = None
+    # Premium doubles this; the endpoint refuses the difference for everybody else.
+    bio: Annotated[str | None, Field(max_length=MAX_BIO_LENGTH_PREMIUM)] = None
     location: Annotated[str | None, Field(max_length=80)] = None
     avatar_url: Annotated[str | None, Field(max_length=500)] = None
     cover_url: Annotated[str | None, Field(max_length=500)] = None
-    related_usernames: Annotated[list[str] | None, Field(max_length=12)] = None
+    # A profile may show as many handles as an account may hold, so the two caps match: capping the
+    # display lower than the collection would silently drop handles somebody paid for.
+    related_usernames: Annotated[list[str] | None, Field(max_length=MAX_OWNED_USERNAMES)] = None
     # Which of the owner's communities the profile shows; every slug has to be theirs.
     featured_community_slugs: Annotated[list[CommunitySlug] | None, Field(max_length=3)] = None
     interests: Annotated[list[str] | None, Field(max_length=12)] = None
@@ -379,14 +466,19 @@ class FollowRequestOut(ApiModel):
     created_at: datetime
 
 
+# What a free account may attach, and what Premium raises it to. The schema validates against the
+# premium ceiling because a model cannot read a subscription; `_check_post_size` refuses the
+# difference by name.
 MAX_POST_IMAGES = 4
+MAX_POST_IMAGES_PREMIUM = 10
+MAX_POST_LENGTH_PREMIUM = 4000
 
 
 class PostCreate(BaseModel):
-    content: Annotated[str, Field(min_length=1, max_length=4000)]
+    content: Annotated[str, Field(min_length=1, max_length=MAX_POST_LENGTH_PREMIUM)]
     image_url: Annotated[str | None, Field(max_length=500)] = None
     # Several pictures arrive as a list; the first one also fills `image_url`.
-    image_urls: Annotated[list[str] | None, Field(max_length=MAX_POST_IMAGES)] = None
+    image_urls: Annotated[list[str] | None, Field(max_length=MAX_POST_IMAGES_PREMIUM)] = None
     # One clip. Pictures and a clip are exclusive in the composer, but the field is independent
     # so an older client that sends both is not refused.
     video_url: Annotated[str | None, Field(max_length=500)] = None
@@ -405,6 +497,9 @@ class PostCreate(BaseModel):
     ) = None
     link_url: Annotated[str | None, Field(max_length=500)] = None
     link_title: Annotated[str | None, Field(max_length=120)] = None
+    # Write now, publish later — a Premium author's own queue. A moment in the past is the same as
+    # no moment at all: the post goes out immediately rather than being refused on a rounding error.
+    publish_at: datetime | None = None
 
     @field_validator("link_url")
     @classmethod
@@ -501,6 +596,10 @@ class FeedPost(ApiModel):
     edited_at: datetime | None = None
     # The one post an author keeps at the top of their profile.
     is_pinned: bool = False
+    # Hidden by staff. Only its author and staff ever receive it, and both see why: a notice
+    # about a decision nobody can read the grounds for is indistinguishable from a bug.
+    hidden_at: datetime | None = None
+    hidden_reason: str | None = None
     # Whether the reader has switched off notifications about this post.
     is_muted: bool = False
     # Stars this post earned, and whether this reader is among the people who sent them.
@@ -521,12 +620,28 @@ class FeedPost(ApiModel):
     community_title: str | None = None
     community_avatar_url: str | None = None
     community_verified: bool = False
+    # Set while a post is still waiting for its moment. Only its author ever receives one of
+    # these, and the card says when it goes out instead of pretending it is already published.
+    publish_at: datetime | None = None
+    scheduled: bool = False
+
+
+class PostSchedule(BaseModel):
+    """
+    Moving a queued post, or sending it out now.
+
+    Its own body rather than a field on `PostEdit`, because rewriting a post and changing when it
+    goes out are different decisions — and an edit that forgot to repeat the moment would publish
+    something early.
+    """
+
+    publish_at: datetime | None = None
 
 
 class PostEdit(BaseModel):
     """A rewrite of one's own post: the text, the link card, and the 18+ mark."""
 
-    content: Annotated[str, Field(min_length=1, max_length=4000)]
+    content: Annotated[str, Field(min_length=1, max_length=MAX_POST_LENGTH_PREMIUM)]
     sensitive: bool | None = None
     link_url: Annotated[str | None, Field(max_length=500)] = None
     link_title: Annotated[str | None, Field(max_length=120)] = None
@@ -568,8 +683,8 @@ class PostDraftBody(BaseModel):
     be empty and the poll may have one option written so far.
     """
 
-    content: Annotated[str, Field(max_length=4000)] = ""
-    image_urls: Annotated[list[str] | None, Field(max_length=MAX_POST_IMAGES)] = None
+    content: Annotated[str, Field(max_length=MAX_POST_LENGTH_PREMIUM)] = ""
+    image_urls: Annotated[list[str] | None, Field(max_length=MAX_POST_IMAGES_PREMIUM)] = None
     video_url: Annotated[str | None, Field(max_length=500)] = None
     file_url: Annotated[str | None, Field(max_length=500)] = None
     file_name: Annotated[str | None, Field(max_length=160)] = None
@@ -663,7 +778,9 @@ class PostCommentEdit(BaseModel):
 
 
 class ProfileStoryCreate(BaseModel):
-    title: Annotated[str, Field(min_length=1, max_length=120)]
+    # A caption is optional: a photo with nothing written on it is still a story, and the
+    # reference publishes plenty of them.
+    title: Annotated[str, Field(max_length=120)] = ""
     media_url: Annotated[str, Field(min_length=1, max_length=500)]
     # Publish into a channel the author owns instead of onto their own profile.
     community_slug: CommunitySlug | None = None
@@ -673,12 +790,7 @@ class ProfileStoryCreate(BaseModel):
     @field_validator("title")
     @classmethod
     def normalize_title(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError(
-                "Название истории не может быть пустым"
-            )
-        return normalized
+        return value.strip()
 
     @field_validator("media_url")
     @classmethod
@@ -702,6 +814,46 @@ class ProfileStoryOut(ApiModel):
     created_at: datetime
     expires_at: datetime | None
     highlight: bool
+    # How many people opened it, and whether this reader is one of them. The count is the
+    # author's own number: nobody else is told who watched what.
+    views_count: int = 0
+    seen: bool = False
+    is_mine: bool = False
+
+
+class StoryCompact(ApiModel):
+    """Just enough of a story for the card a chat bubble draws around it."""
+
+    id: uuid.UUID
+    author: UserCompact
+    title: str
+    media_url: str
+    created_at: datetime
+    expires_at: datetime | None = None
+    # False once the window has closed. The bubble stays where it was sent and says so, rather
+    # than pretending the story is still there.
+    active: bool = True
+
+
+class StoryShare(BaseModel):
+    """Send one story into conversations, with an optional line of one's own."""
+
+    chat_ids: Annotated[list[uuid.UUID], Field(min_length=1, max_length=20)]
+    text: Annotated[str, Field(max_length=2000)] = ""
+
+
+class StoryFeedEntry(ApiModel):
+    """One author's live stories, grouped the way the rail shows them."""
+
+    author: UserCompact
+    stories: list[ProfileStoryOut]
+    has_unseen: bool = False
+    is_me: bool = False
+
+
+class StoryViewerOut(ApiModel):
+    user: UserCompact
+    at: datetime
 
 
 class ProfileReplyParentPost(ApiModel):
@@ -750,6 +902,12 @@ class ChatMessage(ApiModel):
     content: str
     # An attached image; the text beside it reads as its caption.
     media_url: str | None = None
+    # Whether that attachment is a picture or a clip. Absent reads as a picture.
+    media_kind: Literal["image", "video"] | None = None
+    # An attached document, described before it is downloaded.
+    file_url: str | None = None
+    file_name: str | None = None
+    file_size: int | None = None
     created_at: datetime
     is_mine: bool
     # Two ticks: everyone else in the chat has read past this message of mine.
@@ -761,6 +919,8 @@ class ChatMessage(ApiModel):
     reply_to: MessageQuote | None = None
     reactions: list[MessageReactionOut] = []
     gift: GiftCompact | None = None
+    # A story someone shared into the chat, drawn as its own card.
+    story: StoryCompact | None = None
     # A gift dropped into a group waits for the first member who presses the button.
     gift_claimable: bool = False
     gift_claimed_by: UserCompact | None = None
@@ -811,6 +971,30 @@ class ChatSummary(ApiModel):
     # only explains why the composer is gone.
     peer_blocked: bool = False
     blocked_by_peer: bool = False
+    # Groups only: whether anybody with the link may join, and the link itself. The code is shown
+    # to members alone — an invite link handed to everyone is not an invite.
+    is_public: bool = False
+    invite_code: str | None = None
+    # Who may bring somebody in. A private group answers "only its owner".
+    can_invite: bool = False
+    is_owner: bool = False
+
+
+class GroupAccessUpdate(BaseModel):
+    """Open a group to its link, or close it again."""
+
+    is_public: bool
+
+
+class GroupInvitePreview(ApiModel):
+    """What somebody following an invite link is shown before they walk in."""
+
+    chat_id: uuid.UUID
+    title: str
+    avatar_url: str | None = None
+    members_count: int
+    owner: UserCompact | None = None
+    is_member: bool = False
 
 
 class ChatStateUpdate(BaseModel):
@@ -839,6 +1023,8 @@ class GroupCreate(BaseModel):
     title: Annotated[str, Field(min_length=1, max_length=100)]
     members: Annotated[list[str], Field(min_length=1, max_length=200)]
     avatar_url: Annotated[str | None, Field(max_length=300)] = None
+    # A public group gets a link anybody may walk in through; a private one is invitation-only.
+    is_public: bool = False
 
     @field_validator("title")
     @classmethod
@@ -867,6 +1053,24 @@ class ChatLink(BaseModel):
     created_at: datetime
 
 
+class ChatAttachment(ApiModel):
+    """
+    One thing shared in a conversation, as the panel's «Медиа» and «Файлы» shelves list it.
+
+    Derived from the messages themselves rather than stored twice: an attachment belongs to the
+    message that carried it, and a second copy of that fact is a second thing to keep in step.
+    """
+
+    kind: Literal["image", "video", "file"]
+    url: str
+    # Only a document has a name and a size worth showing before it is fetched.
+    name: str | None = None
+    size: int | None = None
+    message_id: uuid.UUID
+    sender_name: str
+    created_at: datetime
+
+
 class ChatMemberOut(ApiModel):
     user: UserCompact
     joined_at: datetime
@@ -877,6 +1081,10 @@ class ChatInfo(ApiModel):
     chat: ChatSummary
     members: list[ChatMemberOut]
     links: list[ChatLink]
+    # Pictures and clips, newest first, for the panel's «Медиа» shelf.
+    media: list[ChatAttachment] = Field(default_factory=list)
+    # Documents, newest first, for «Файлы».
+    files: list[ChatAttachment] = Field(default_factory=list)
     # Gifts are collectibles, not attachments, so they get their own shelf in the panel.
     gifts: list[GiftCompact]
     messages_count: int
@@ -886,10 +1094,346 @@ class WalletOut(BaseModel):
     balance: int
     currency: Literal["STARS"] = "STARS"
     updated_at: datetime
+    # Whether stars may be taken out at all right now. The wallet reads this to say so up front
+    # rather than opening a form whose only possible answer is a refusal.
+    payouts_enabled: bool = True
 
 
 class StarTopUpRequest(BaseModel):
     amount: Annotated[int, Field(ge=10, le=100_000)]
+
+
+class StarPackageOut(ApiModel):
+    """One row of the shop: what the buyer gets here, and what it costs each way."""
+
+    slug: str
+    stars: int
+    price_xtr: int
+    # Site stars per Telegram Star, so a bigger pack can visibly be the better deal.
+    per_xtr: int
+    # How much better than the smallest pack, in percent. Zero on the base pack.
+    bonus_percent: int
+    # The same pack priced in fiat, which is what a crypto payment is quoted from. One star is one
+    # unit — 5 ★ is 5 ₴ — so the two rails cost about the same and neither is the cheap way in.
+    price_fiat: float = 0
+    fiat_currency: str = "uah"
+
+
+class CryptoStatusOut(ApiModel):
+    """Whether the crypto rail is switched on, and the terms it runs on."""
+
+    enabled: bool
+    price_currency: str
+    min_payout_stars: int
+
+
+class CryptoCoinOut(ApiModel):
+    """
+    One coin a top-up can be paid in, for one specific amount.
+
+    `available` is per amount on purpose: the provider's minimum differs by two orders of magnitude
+    between chains, so USDT-BSC can settle a 5 ₴ pack while USDT-TRON needs about eleven dollars.
+    Offering a coin that cannot pay the chosen pack is worse than not offering it, and saying why is
+    better than greying it out silently.
+    """
+
+    currency: str
+    asset: str
+    network: str
+    available: bool
+    estimated_amount: float | None = None
+    min_amount: float | None = None
+    unavailable_reason: str | None = None
+
+
+class CryptoInvoiceCreate(BaseModel):
+    """Which pack, and which coin plus network to pay it with."""
+
+    package: Annotated[str, Field(min_length=1, max_length=32)]
+    currency: Annotated[str, Field(min_length=2, max_length=24)]
+
+    @field_validator("currency")
+    @classmethod
+    def normalise(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class CryptoInvoiceOut(ApiModel):
+    """A crypto top-up as its buyer watches it settle."""
+
+    id: uuid.UUID
+    package_slug: str
+    stars: int
+    price_amount: float
+    price_currency: str
+    # What to send, where, and on which network. `payin_extra_id` is a memo some chains require —
+    # sending without it loses the payment, so it is never hidden when present.
+    pay_currency: str
+    asset_label: str
+    network_label: str
+    pay_amount: float
+    pay_address: str
+    payin_extra_id: str | None = None
+    status: Literal["pending", "paid", "expired", "cancelled", "underpaid", "failed"]
+    # The provider's own word, verbatim, so support can read what it actually said.
+    provider_status: str
+    actually_paid: float = 0
+    provider_note: str | None = None
+    created_at: datetime
+    expires_at: datetime | None = None
+    credited_at: datetime | None = None
+    # A pending invoice can be abandoned; a settled one cannot.
+    cancellable: bool = False
+
+
+class StarPurchaseCreate(BaseModel):
+    package: Annotated[str, Field(min_length=1, max_length=32)]
+
+
+MIN_REFUND_REASON = 10
+
+
+class StarRefundRequest(BaseModel):
+    """A refund has to say what went wrong; an empty reason is not a request."""
+
+    reason: Annotated[str, Field(min_length=MIN_REFUND_REASON, max_length=500)]
+
+    @field_validator("reason")
+    @classmethod
+    def reason_says_something(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if len(cleaned) < MIN_REFUND_REASON:
+            raise ValueError("Опишите причину — хотя бы одно предложение")
+        return cleaned
+
+
+class StarRefundOut(ApiModel):
+    id: uuid.UUID
+    purchase_id: uuid.UUID
+    status: Literal["pending", "approved", "declined", "failed"]
+    reason: str
+    admin_note: str | None = None
+    requested_at: datetime
+    decided_at: datetime | None = None
+
+
+class StarPurchaseOut(ApiModel):
+    id: uuid.UUID
+    package_slug: str
+    stars: int
+    price_xtr: int
+    # `paid_out` is a charge handed back to its buyer to carry out a withdrawal — see StarPayout.
+    status: Literal["pending", "paid", "cancelled", "expired", "refunded", "paid_out"]
+    # The deep link that opens the bot with this order already selected.
+    bot_url: str
+    created_at: datetime
+    paid_at: datetime | None = None
+    # The charge, for the receipt. Telegram's own id for the payment.
+    telegram_charge_id: str | None = None
+    # Whether a refund can be asked for right now, and why not when it cannot.
+    refundable: bool = False
+    refund_blocked_reason: str | None = None
+    refund: StarRefundOut | None = None
+
+
+# What Telegram allows in a handle. Ours are validated by `Username`; theirs only has to be
+# readable enough for an admin to open the chat and send the Stars.
+TELEGRAM_HANDLE_MIN = 4
+TELEGRAM_HANDLE_MAX = 32
+
+
+class StarPayoutCreate(BaseModel):
+    """
+    How many site stars to take out, and where they should arrive.
+
+    The amount is checked twice over: the range here, and the step against the live exchange rate
+    in the endpoint — a payout that is not a whole number of Telegram Stars cannot be sent.
+
+    Two destinations, and the required fields differ by which one is chosen. `method="telegram"`
+    needs a handle (or a previous purchase through the bot, which teaches us the id). `method="crypto"`
+    needs an address and a coin, and the endpoint validates both against the provider before the
+    stars are withheld — an address with a bad checksum is a typo, and discovering that after an
+    admin has sent the money is too late.
+    """
+
+    stars: Annotated[int, Field(ge=20, le=1_000_000)]
+    method: Literal["telegram", "crypto"] = "telegram"
+    # Only needed when the site has never seen this account pay through the bot. Then an admin
+    # sends the Stars by hand, and this is the only thing that tells them to whom.
+    telegram_username: Annotated[str | None, Field(max_length=64)] = None
+    # Crypto destination. `currency` is the provider's own ticker, which encodes the network —
+    # `usdttrc20` and `usdtbsc` are the same asset on different chains and are not interchangeable.
+    crypto_currency: Annotated[str | None, Field(max_length=24)] = None
+    crypto_address: Annotated[str | None, Field(max_length=200)] = None
+    # A memo/tag, for the chains that need one beside the address.
+    crypto_extra_id: Annotated[str | None, Field(max_length=120)] = None
+
+    @field_validator("telegram_username")
+    @classmethod
+    def looks_like_a_telegram_handle(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().lstrip("@")
+        if not cleaned:
+            return None
+        allowed = all(
+            character.isascii() and (character.isalnum() or character == "_")
+            for character in cleaned
+        )
+        if not allowed or not TELEGRAM_HANDLE_MIN <= len(cleaned) <= TELEGRAM_HANDLE_MAX:
+            raise ValueError("Юзернейм в Telegram — латиница, цифры и подчёркивание")
+        return cleaned
+
+    @field_validator("crypto_currency")
+    @classmethod
+    def normalise_currency(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip().lower()
+        return cleaned or None
+
+    @field_validator("crypto_address", "crypto_extra_id")
+    @classmethod
+    def trim(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def destination_is_complete(self) -> StarPayoutCreate:
+        """A crypto payout without an address is not a destination, it is a lost transfer."""
+        if self.method == "crypto":
+            if not self.crypto_currency:
+                raise ValueError("Выберите монету и сеть для вывода")
+            if not self.crypto_address:
+                raise ValueError("Укажите адрес кошелька")
+        return self
+
+
+class CryptoPayoutDetailsOut(ApiModel):
+    """Where a crypto payout goes, and how it was quoted when it was asked for."""
+
+    currency: str
+    asset_label: str
+    network_label: str
+    address: str
+    extra_id: str | None = None
+    fiat_amount: float
+    fiat_currency: str
+    quoted_amount: float
+    quoted_at: datetime
+    tx_hash: str | None = None
+
+
+class StarPayoutOut(ApiModel):
+    """One payout as its owner sees it."""
+
+    id: uuid.UUID
+    stars: int
+    price_xtr: int
+    status: Literal["pending", "approved", "paid", "declined", "failed", "cancelled"]
+    # Which rail. Derived from whether crypto details exist, so it can never disagree with them.
+    method: Literal["telegram", "crypto"] = "telegram"
+    telegram_user_id: int | None = None
+    telegram_username: str | None = None
+    crypto: CryptoPayoutDetailsOut | None = None
+    admin_note: str | None = None
+    requested_at: datetime
+    decided_at: datetime | None = None
+    paid_at: datetime | None = None
+    # Only while nobody has decided yet: withdrawing the request puts the stars straight back.
+    cancellable: bool = False
+
+
+class AdminCryptoPaidIn(BaseModel):
+    """An admin confirming they have sent a crypto payout, with the chain's own receipt."""
+
+    tx_hash: Annotated[str | None, Field(max_length=160)] = None
+    note: Annotated[str | None, Field(max_length=240)] = None
+
+    @field_validator("tx_hash", "note")
+    @classmethod
+    def trim(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
+class BotPayoutOut(ApiModel):
+    """An approved payout as the bot announces it to the admins who have to send it."""
+
+    id: uuid.UUID
+    stars: int
+    price_xtr: int
+    telegram_user_id: int | None
+    telegram_username: str | None
+    username: str
+    display_name: str
+    decided_at: datetime | None
+    # A charge of exactly this size that this account paid us and nobody has handed back yet.
+    # Refunding it returns the same number of Telegram Stars to the same person, which is the only
+    # way the Bot API can actually move Stars towards somebody — so when this is filled, the bot
+    # carries the payout out by itself and no human has to send anything.
+    auto_purchase_id: uuid.UUID | None = None
+    auto_charge_id: str | None = None
+
+
+class BotPayoutSettle(BaseModel):
+    """An admin's report from Telegram: the Stars went out, or they did not."""
+
+    admin_telegram_id: Annotated[int, Field(ge=1)]
+    note: Annotated[str, Field(max_length=240)] = ""
+    # Set when the bot settled the payout by handing back this charge. The purchase is then spent
+    # and can never be refunded again.
+    purchase_id: uuid.UUID | None = None
+
+
+class BotRefundOut(ApiModel):
+    """A refund request as the bot needs it to ask an admin and to call Telegram."""
+
+    id: uuid.UUID
+    purchase_id: uuid.UUID
+    stars: int
+    price_xtr: int
+    reason: str
+    buyer_username: str
+    buyer_display_name: str
+    telegram_user_id: int | None
+    telegram_charge_id: str | None
+    requested_at: datetime
+
+
+class BotRefundDecision(BaseModel):
+    """An admin's answer, taken in Telegram and reported here."""
+
+    approved: bool
+    admin_telegram_id: Annotated[int, Field(ge=1)]
+    note: Annotated[str, Field(max_length=240)] = ""
+
+
+class BotRefundApplied(ApiModel):
+    """What the bot needs after an approval: whose payment to hand back, and which one."""
+
+    status: Literal["approved", "declined"]
+    stars: int
+    price_xtr: int
+    telegram_user_id: int | None
+    telegram_charge_id: str | None
+
+
+class BotOrderOut(ApiModel):
+    """What the bot is told about an order before it sends the invoice."""
+
+    payload: str
+    stars: int
+    price_xtr: int
+    status: str
+    buyer_username: str
+    buyer_display_name: str
+
+
+class BotPaymentReport(BaseModel):
+    """The bot's report of a completed Telegram Stars charge."""
+
+    telegram_user_id: Annotated[int, Field(ge=1)]
+    telegram_charge_id: Annotated[str, Field(min_length=3, max_length=128)]
+    amount_xtr: Annotated[int, Field(ge=1, le=1_000_000)]
 
 
 class StarLedgerOut(ApiModel):
@@ -1051,6 +1595,10 @@ class CommunityCompact(ApiModel):
     title: str
     avatar_url: str | None = None
     members_count: int
+    # The channel's own tick, granted by staff. `owner_verified` is kept beside it because a
+    # verified person running a plain channel is worth saying — but it is not a tick on the channel,
+    # and drawing one there contradicted the channel's own page the moment it was opened.
+    is_verified: bool = False
     owner_verified: bool = False
 
 
@@ -1148,6 +1696,9 @@ class CommunityOut(ApiModel):
     is_paid: bool = False
     monthly_price: int = 0
     created_at: datetime
+    # Extra handles pointing at this channel, its own address first. One namespace with people's
+    # accounts, so `@gram` is either a person or a channel — never both.
+    usernames: list[str] = Field(default_factory=list)
 
 
 class CommunityVerification(BaseModel):
@@ -1317,6 +1868,46 @@ class UsernameAssetOut(ApiModel):
     is_primary_handle: bool = False
     # The owner is keeping this handle and refuses offers on it.
     offers_disabled: bool = False
+    # Set when the handle points at a channel rather than at a person's account.
+    community_slug: str | None = None
+    community_title: str | None = None
+    # True when it is that channel's own address, which is why it cannot be sold from under it.
+    is_community_primary: bool = False
+    # When it went on sale, so a market can sort by what is newest.
+    listed_at: datetime | None = None
+    # The market's own numbers: the best standing bid, and this reader's own bid if they made one.
+    top_offer_stars: int | None = None
+    my_offer_stars: int | None = None
+
+
+class UsernameOfferCreate(BaseModel):
+    """A bid. The floor keeps a market from filling with one-star offers."""
+
+    amount: Annotated[int, Field(ge=10, le=1_000_000)]
+
+
+class UsernameOfferOut(ApiModel):
+    id: uuid.UUID
+    asset_id: uuid.UUID
+    username: str
+    bidder: UserCompact
+    amount_stars: int
+    status: Literal["pending", "accepted", "declined", "withdrawn", "cancelled"]
+    created_at: datetime
+    responded_at: datetime | None = None
+    is_mine: bool = False
+
+
+class UsernameTransfer(BaseModel):
+    """Hand a handle to somebody without a price, the way a gift is handed over."""
+
+    to_username: UsernameInput
+
+
+class CommunityUsernameAttach(BaseModel):
+    """Point one of my handles at one of my channels."""
+
+    username: UsernameInput
 
 
 class UsernameHistoryOut(ApiModel):

@@ -37,7 +37,7 @@ export function AuthPending({
           {action}
           <Link className={styles.ghostButton} href="/login">
             <ArrowLeft size={19} />
-            Вернуться ко входу
+            Back to sign in
           </Link>
         </div>
       </section>

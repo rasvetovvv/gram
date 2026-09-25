@@ -6,11 +6,16 @@ requires-python = ">=3.14"
 dependencies = [
   "asyncpg>=0.30.0,<1",
   "fastapi>=0.116.1,<1",
+  # Runtime, not just tests: `app.nowpayments` prices crypto top-ups against a live provider,
+  # and `app.main` imports it on startup — the image cannot boot without it.
+  "httpx>=0.28.1,<1",
+  "msgpack>=1.1,<2",
   "pillow>=11.3,<13",
   "pwdlib[argon2]>=0.3,<1",
   "pydantic>=2.11.7,<3",
   "pyjwt>=2.10,<3",
   "python-multipart>=0.0.20,<1",
+  "redis>=6,<7",
   "sqlalchemy[asyncio]>=2.0.43,<3",
   "uvicorn[standard]>=0.35.0,<1",
 ]
@@ -18,7 +23,6 @@ dependencies = [
 [dependency-groups]
 dev = [
   "aiosqlite>=0.21.0,<1",
-  "httpx>=0.28.1,<1",
   "pytest>=8.4.1,<10",
   "pytest-asyncio>=1.1.0,<2",
   "pytest-cov>=6.2.1,<8",

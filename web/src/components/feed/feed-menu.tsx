@@ -65,17 +65,17 @@ export function FeedMenu() {
       // Everything cached belonged to the account that was active a moment ago.
       queryClient.clear();
       await queryClient.invalidateQueries();
-      notify(`Вы в аккаунте @${session.user.username}`, { variant: "success" });
+      notify(`You're now signed in as @${session.user.username}`, { variant: "success" });
       router.replace("/");
     },
     onError: (error: Error) =>
-      notify("Не удалось переключиться", { variant: "error", detail: error.message })
+      notify("Couldn't switch accounts", { variant: "error", detail: error.message })
   });
 
   return (
     <DropdownMenu.Root onOpenChange={(open) => !open && setMore(false)}>
       <DropdownMenu.Trigger asChild>
-        <button className="icon-button" aria-label="Меню" title="Аккаунты, избранное и настройки">
+        <button className="icon-button" aria-label="Menu" title="Accounts, saved and settings">
           <Menu size={20} />
         </button>
       </DropdownMenu.Trigger>
@@ -117,39 +117,39 @@ export function FeedMenu() {
             }}
           >
             <Plus size={20} className="flex-none" />
-            Добавить аккаунт
+            Add account
           </DropdownMenu.Item>
 
           <DropdownMenu.Separator className={RULE} />
 
           <DropdownMenu.Item className={ROW} onSelect={() => router.push("/saved")}>
             <Bookmark size={20} className="flex-none" />
-            Избранное
+            Saved
           </DropdownMenu.Item>
           <DropdownMenu.Item className={ROW} onSelect={() => router.push("/chats?filter=archived")}>
             <Archive size={20} className="flex-none" />
-            Архив
+            Archive
           </DropdownMenu.Item>
           <DropdownMenu.Item
             className={ROW}
             onSelect={() => router.push(me ? `/u/${me.username}?tab=stories` : "/")}
           >
             <Sparkles size={20} className="flex-none" />
-            Мои истории
+            My stories
           </DropdownMenu.Item>
           <DropdownMenu.Item className={ROW} onSelect={() => router.push("/contacts")}>
             <UsersRound size={20} className="flex-none" />
-            Контакты
+            Contacts
           </DropdownMenu.Item>
 
           <DropdownMenu.Separator className={RULE} />
 
           <DropdownMenu.Item className={ROW} onSelect={() => router.push("/settings/site")}>
             <Palette size={20} className="flex-none" />
-            Настройки сайта
+            Site settings
           </DropdownMenu.Item>
 
-          {/* "Ещё" opens in place rather than navigating, the way the reference expands it. */}
+          {/* "More" opens in place rather than navigating, the way the reference expands it. */}
           <DropdownMenu.Item
             className={ROW}
             onSelect={(event) => {
@@ -161,18 +161,18 @@ export function FeedMenu() {
               size={20}
               className={`flex-none transition-transform ${more ? "rotate-90" : ""}`}
             />
-            Ещё
+            More
           </DropdownMenu.Item>
 
           {more ? (
             <>
               <DropdownMenu.Item className={ROW} onSelect={() => router.push("/stars")}>
                 <Star size={20} className="flex-none" />
-                Звёзды
+                Stars
               </DropdownMenu.Item>
               <DropdownMenu.Item className={ROW} onSelect={() => router.push("/communities")}>
                 <Users size={20} className="flex-none" />
-                Сообщества
+                Communities
               </DropdownMenu.Item>
               <DropdownMenu.Item className={ROW} onSelect={() => openPremium()}>
                 <Crown size={20} className="flex-none text-[var(--premium)]" />
@@ -188,7 +188,7 @@ export function FeedMenu() {
                 }}
               >
                 <LogOut size={20} className="flex-none" />
-                Выйти
+                Sign out
               </DropdownMenu.Item>
             </>
           ) : null}

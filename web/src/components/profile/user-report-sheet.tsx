@@ -21,22 +21,22 @@ export function UserReportSheet({
     mutationFn: ({ reason, comment }: { reason: PostReportReason; comment: string }) =>
       api.reportUser(profile.username, reason, comment),
     onSuccess: () => {
-      notify("Жалоба отправлена", {
+      notify("Report submitted", {
         variant: "success",
-        detail: `Мы посмотрим на @${profile.username}`
+        detail: `We'll take a look at @${profile.username}`
       });
       onOpenChange(false);
     },
     onError: (error: Error) =>
-      notify("Не удалось отправить", { variant: "error", detail: error.message })
+      notify("Couldn't submit", { variant: "error", detail: error.message })
   });
 
   return (
     <ReportSheet
       open={open}
       onOpenChange={onOpenChange}
-      subject={`Аккаунт @${profile.username}`}
-      note="Он не узнает, кто пожаловался. Блокировка — отдельное действие в том же меню."
+      subject={`Account @${profile.username}`}
+      note="They won't know who reported them. Blocking is a separate action in the same menu."
       pending={send.isPending}
       onSend={(reason, comment) => send.mutate({ reason, comment })}
     />

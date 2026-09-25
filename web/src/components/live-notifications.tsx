@@ -19,13 +19,13 @@ const POLL_MS = 10_000;
 
 /** Short phrases for the kinds whose action is fixed; anything else keeps the server text. */
 const PHRASES: Partial<Record<Notification["kind"], string>> = {
-  follow: "подписался(ась) на вас",
-  follow_request: "хочет подписаться на вас",
-  like: "поставил(а) лайк",
-  comment: "прокомментировал(а) вашу публикацию",
-  subscription: "оформил(а) платную подписку",
-  community: "активность в сообществе",
-  stars: "перевёл(а) звёзды"
+  follow: "followed you",
+  follow_request: "wants to follow you",
+  like: "liked your post",
+  comment: "commented on your post",
+  subscription: "started a paid subscription",
+  community: "activity in a community",
+  stars: "sent you stars"
 };
 
 /** Which badge sits on the avatar; unmapped kinds fall back to the bell. */
@@ -39,28 +39,28 @@ const BADGES: Partial<Record<Notification["kind"], ToastKind>> = {
 };
 
 /**
- * The server writes a message notice as "Имя: текст". The name is shown separately and in
+ * The server writes a message notice as "Name: text". The name is shown separately and in
  * bold, so the text is split off and quoted rather than repeated inside the sentence.
  */
 function splitMessage(item: Notification) {
   const split = item.text.indexOf(": ");
   const named = split > 0 && split < 60;
   return {
-    name: item.actor?.display_name ?? (named ? item.text.slice(0, split) : "Кто-то"),
+    name: item.actor?.display_name ?? (named ? item.text.slice(0, split) : "Someone"),
     quote: named ? item.text.slice(split + 2) : item.text
   };
 }
 
 /**
- * Server text reads "Имя сделал(а) то-то". The name is shown separately, so it is stripped
+ * Server text reads "Name did something". The name is shown separately, so it is stripped
  * from the sentence rather than printed twice.
  */
 function describe(item: Notification, chats: Chat[]) {
   const name = item.actor?.display_name;
   if (item.kind === "message") {
     const chat = chats.find((entry) => entry.id === item.entity_id);
-    // Naming the group answers "where", which a bare "написал вам" cannot.
-    const where = chat?.is_group ? `написал(а) в «${chat.title ?? "группе"}»` : "написал(а) вам";
+    // Naming the group answers "where", which a bare "messaged you" cannot.
+    const where = chat?.is_group ? `posted in "${chat.title ?? "a group"}"` : "messaged you";
     const { name: author, quote } = splitMessage(item);
     return { title: author, body: where, quote };
   }

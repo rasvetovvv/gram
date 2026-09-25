@@ -15,7 +15,7 @@ export function GiftArtCredit({ className = "" }: { className?: string }) {
       className={`mb-0 px-1 text-[11px] leading-4 text-[var(--faint)] ${className}`}
       data-testid="gift-art-credit"
     >
-      Оформление подарков — коллекционные подарки Telegram. Данные и изображения:{" "}
+      Gift artwork — Telegram collectible gifts. Data and images:{" "}
       <a
         href="https://api.changes.tg"
         target="_blank"
@@ -24,8 +24,8 @@ export function GiftArtCredit({ className = "" }: { className?: string }) {
       >
         api.changes.tg
       </a>{" "}
-      — thanks to @GiftChanges for this API. GRAM не связан с Telegram; права на изображения
-      принадлежат их владельцам.
+      — thanks to @GiftChanges for this API. GRAM is not affiliated with Telegram; image rights
+      belong to their respective owners.
     </p>
   );
 }

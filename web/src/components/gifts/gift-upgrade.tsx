@@ -78,7 +78,8 @@ export function GiftUpgradeStage({
   gift,
   size,
   phase,
-  celebrate = false
+  celebrate = false,
+  bare = false
 }: {
   gift: Upgradable;
   size: number;
@@ -89,6 +90,8 @@ export function GiftUpgradeStage({
    * card again each time somebody scrolled the provenance list is not a celebration.
    */
   celebrate?: boolean;
+  /** The surface already draws the gift's backdrop, so the sticker arrives without its own. */
+  bare?: boolean;
 }) {
   const reduceMotion = useReducedMotion();
   const rolling = phase === "rolling";
@@ -129,6 +132,7 @@ export function GiftUpgradeStage({
           size={size}
           rounded="rounded-[26px]"
           animate="always"
+          bare={bare}
         />
       </motion.span>
       {/* A ring that tightens while the server rolls, so the wait reads as a roll, not a hang. */}
@@ -175,6 +179,7 @@ export function GiftUpgrade({
   canUpgrade,
   pending,
   justUpgraded = false,
+  bare = false,
   onUpgrade
 }: {
   gift: Upgradable;
@@ -183,6 +188,8 @@ export function GiftUpgrade({
   pending: boolean;
   /** True once this session's upgrade succeeded, which is what plays the reveal. */
   justUpgraded?: boolean;
+  /** The surface behind already carries the gift's backdrop. */
+  bare?: boolean;
   onUpgrade: () => void;
 }) {
   const upgraded = gift.upgraded !== false;
@@ -190,7 +197,13 @@ export function GiftUpgrade({
   const price = gift.upgrade_price_stars ?? 25;
   return (
     <div className="relative flex flex-col items-center">
-      <GiftUpgradeStage gift={gift} size={size} phase={phase} celebrate={justUpgraded} />
+      <GiftUpgradeStage
+        gift={gift}
+        size={size}
+        phase={phase}
+        celebrate={justUpgraded}
+        bare={bare}
+      />
       {canUpgrade && !upgraded ? (
         <button
           type="button"
@@ -200,7 +213,7 @@ export function GiftUpgrade({
           style={{ background: "var(--primary)" }}
         >
           <Sparkles size={16} />
-          {pending ? "Улучшаем…" : "Улучшить"}
+          {pending ? "Upgrading…" : "Upgrade"}
           <span className="inline-flex items-center gap-0.5 rounded-full bg-black/25 px-2 py-0.5 text-[13px]">
             {price}
             <Star size={11} fill="currentColor" />
@@ -208,7 +221,7 @@ export function GiftUpgrade({
         </button>
       ) : null}
       {!upgraded && !canUpgrade ? (
-        <p className="relative mb-0 mt-3 text-[13px] text-white/70">Обычный подарок — без модели</p>
+        <p className="relative mb-0 mt-3 text-[13px] text-white/70">Regular gift — no model</p>
       ) : null}
     </div>
   );

@@ -21,11 +21,13 @@ import { api } from "@/lib/api";
 import type { Chat, Message } from "@/lib/types";
 import { nameColor } from "@/lib/profile-color";
 import { presenceShort } from "@/lib/presence";
+import { plural } from "@/lib/utils";
 import { UserAvatar } from "../user-avatar";
 import { PremiumMark } from "../premium-mark";
 import { AdminMark } from "../admin-mark";
 import { VerifiedMark } from "../verified-mark";
 import { useToast } from "../ui/toast";
+import { useSocialEvents, type SocialEvent } from "../use-social-socket";
 import { ChatAppearanceSheet, ChatWallpaperSheet } from "./chat-appearance-sheet";
 import { ChatReportSheet } from "./report-sheets";
 import { ChatGiftSheet } from "./chat-gift-sheet";
@@ -33,15 +35,26 @@ import { ChatInfoPanel } from "./chat-info-panel";
 import { ChatList } from "./chat-list";
 import { ChatMenu } from "./chat-menu";
 import { ForwardPicker } from "./forward-picker";
-import { MessageBubble } from "./message-bubble";
-import { MessageComposer } from "./message-composer";
-import { useChatSocket } from "./use-chat-socket";
+import { MessageThread } from "./message-thread";
+import { MessageComposer, type ComposerHandle } from "./message-composer";
+import { useChatSocket, mergeMessage } from "./use-chat-socket";
+import { useVisualViewportHeight } from "./use-visual-viewport";
 
 export function ChatView() {
   const router = useRouter();
   const params = useSearchParams();
   const queryClient = useQueryClient();
   const { notify } = useToast();
+  /**
+   * Keeps the conversation's height in step with the keyboard on iOS, and follows the thread down
+   * when it opens.
+   *
+   * The callback is indirected through a ref because `jumpToBottom` is defined further down, after
+   * the state it closes over — and a keyboard appearing while you are reading the newest message
+   * must not leave that message hidden behind it.
+   */
+  const onViewportResize = useRef<(() => void) | null>(null);
+  useVisualViewportHeight(useCallback(() => onViewportResize.current?.(), []));
   const { data: chats = [], isLoading } = useQuery({
     queryKey: ["chats"],
     queryFn: api.chats,
@@ -73,21 +86,54 @@ export function ChatView() {
     queryFn: () => api.messages(activeId!),
     enabled: Boolean(activeId),
     // The socket carries new messages; the poll is only the net under a dropped connection.
-    refetchInterval: 20_000,
+    refetchInterval: 45_000,
     refetchIntervalInBackground: false
   });
-  useChatSocket(activeId);
+  const { typing, notifyTyping, markRead } = useChatSocket(activeId);
+  // Needed to author an optimistic bubble before the server has answered.
+  const { data: me } = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
+  const reduceMotion = useReducedMotion();
+
+  /**
+   * The shared social socket, for conversations that are *not* on screen.
+   *
+   * A conversation's own socket only exists while it is open, so a message arriving in another chat
+   * moved nothing until the fifteen-second poll came round — the list was the one place in the app
+   * that still felt like it needed reloading. The API now names the members of a chat when it moves
+   * and sends them a thin frame; this turns that into a refetch of the list.
+   */
+  const onChatActivity = useCallback(
+    (event: SocialEvent) => {
+      if (event.type !== "chat_activity") return;
+      queryClient.invalidateQueries({ queryKey: ["chats"] });
+    },
+    [queryClient]
+  );
+  useSocialEvents(onChatActivity);
 
   // Fetching the window is what clears the badge on the server, so the list is refreshed as
   // soon as that has happened instead of waiting out its own interval.
+  //
+  // A message the poll brought in — the socket having been down when it was sent — was never
+  // marked read by anything, because only opening the thread does that. Saying so here covers
+  // exactly that case, and costs one request per batch of arrivals rather than one per message.
   const seenCount = useRef(0);
   useEffect(() => {
     if (!activeId || !messages.length || seenCount.current === messages.length) return;
     seenCount.current = messages.length;
     queryClient.invalidateQueries({ queryKey: ["chats"] });
-  }, [activeId, messages.length, queryClient]);
+    if (typeof document !== "undefined" && !document.hidden) markRead();
+  }, [activeId, markRead, messages.length, queryClient]);
 
-  const [draft, setDraft] = useState("");
+  /**
+   * The composer owns its own text and this is the handle onto it.
+   *
+   * It used to live here as `useState`, which meant every keystroke re-rendered this screen —
+   * its header, the chat menu and the ten sheets mounted below — and typing visibly lagged
+   * behind the keyboard. The field keeps its text to itself now; the screen only ever tells it
+   * to seed, clear or focus.
+   */
+  const composer = useRef<ComposerHandle>(null);
   /**
    * One composer serves three jobs: new message, reply, and editing an existing one.
    *
@@ -103,19 +149,27 @@ export function ChatView() {
   const replyTo = context.reply;
   const editing = context.edit;
 
-  function setReplyTo(message: Message | null) {
-    setDraftContext({ chatId: activeId, reply: message, edit: null });
-  }
+  // Wrapped in `useCallback` because the memoised thread compares these by identity: a handler
+  // rebuilt on every keystroke would re-render a hundred bubbles and undo the memo entirely.
+  const setReplyTo = useCallback(
+    (message: Message | null) => {
+      setDraftContext({ chatId: activeId, reply: message, edit: null });
+    },
+    [activeId]
+  );
 
-  function beginEdit(message: Message) {
-    setDraftContext({ chatId: activeId, reply: null, edit: message });
-    setDraft(message.content);
-  }
+  const beginEdit = useCallback(
+    (message: Message) => {
+      setDraftContext({ chatId: activeId, reply: null, edit: message });
+      composer.current?.setText(message.content);
+    },
+    [activeId]
+  );
 
-  function cancelDraftContext() {
+  const cancelDraftContext = useCallback(() => {
     setDraftContext({ chatId: activeId, reply: null, edit: null });
-    setDraft("");
-  }
+    composer.current?.clear();
+  }, [activeId]);
 
   /**
    * A picked image waits with its own chat id, so switching conversations discards it by
@@ -125,6 +179,8 @@ export function ChatView() {
     chatId?: string;
     file: File;
     preview: string;
+    /** Which of the three the upload is, so the composer previews it correctly. */
+    kind: "image" | "video" | "file";
   } | null>(null);
   const attachment = pendingFile?.chatId === activeId ? pendingFile : null;
 
@@ -134,27 +190,80 @@ export function ChatView() {
   }
 
   const send = useMutation({
-    mutationFn: () =>
+    /* The text arrives as the mutation's variable rather than from state up here — that is the
+       whole point of the composer owning its field. */
+    mutationFn: (text: string) =>
       editing
-        ? api.editMessage(activeId!, editing.id, draft.trim())
+        ? api.editMessage(activeId!, editing.id, text.trim())
         : attachment
-          ? api.sendMessageMedia(activeId!, attachment.file, draft.trim(), replyTo?.id)
-          : api.sendMessage(activeId!, draft.trim(), replyTo?.id),
-    onSuccess: async () => {
+          ? api.sendMessageMedia(activeId!, attachment.file, text.trim(), replyTo?.id)
+          : api.sendMessage(activeId!, text.trim(), replyTo?.id),
+    /**
+     * A sent message appears in the thread immediately, before the server answers.
+     *
+     * The round trip plus a refetch is a visible gap on a slow connection, and a gap after
+     * pressing send is what makes people press it twice or reload the page. The temporary
+     * bubble is the same shape as a real one, marked pending so the tick can wait; the
+     * server's row replaces it when the refetch lands, and a failure restores the cache.
+     *
+     * Only a plain text send is optimistic: an edit rewrites an existing row and an upload has
+     * no id or url until the server has stored the file.
+     */
+    onMutate: async (text: string) => {
+      const key = ["messages", activeId] as const;
+      if (editing || attachment || !me || !activeId) return { previous: undefined, key: null };
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData<Message[]>(key);
+      const clientKey = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const optimistic: Message = {
+        id: clientKey,
+        client_key: clientKey,
+        pending: true,
+        chat_id: activeId,
+        sender_id: me.id,
+        sender: me,
+        content: text.trim(),
+        created_at: new Date().toISOString(),
+        is_mine: true,
+        read: false,
+        status: "sent",
+        reply_to: replyTo
+          ? {
+              id: replyTo.id,
+              sender_name: replyTo.sender?.display_name ?? "",
+              content: replyTo.content
+            }
+          : null
+      };
+      queryClient.setQueryData<Message[]>(key, (current = []) => [...current, optimistic]);
+      return { previous, key };
+    },
+    onSuccess: async (sent, _text, context) => {
       const wasEditing = Boolean(editing);
       cancelDraftContext();
       clearAttachment();
+      /* Fold the server's row over the pending one before refetching, so the bubble is real
+         immediately and the list never redraws it under a new key. */
+      if (context?.key && sent && typeof sent === "object" && "id" in sent) {
+        queryClient.setQueryData<Message[]>(context.key, (current) =>
+          current ? mergeMessage(current, sent as Message) : current
+        );
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["messages", activeId] }),
         queryClient.invalidateQueries({ queryKey: ["chats"] })
       ]);
-      if (wasEditing) notify("Сообщение изменено", { variant: "success" });
+      if (wasEditing) notify("Message edited", { variant: "success" });
     },
-    onError: (error: Error) =>
-      notify(editing ? "Не удалось изменить" : "Сообщение не отправлено", {
+    onError: (error: Error, _text, context) => {
+      if (context?.key && context.previous) {
+        queryClient.setQueryData(context.key, context.previous);
+      }
+      notify(editing ? "Couldn't edit" : "Message not sent", {
         variant: "error",
         detail: error.message
-      })
+      });
+    }
   });
 
   const [giftOpen, setGiftOpen] = useState(false);
@@ -210,11 +319,33 @@ export function ChatView() {
       ...patch
     }));
 
-  function togglePicked(id: string) {
-    setUi({
-      picked: ui.picked.includes(id) ? ui.picked.filter((item) => item !== id) : [...ui.picked, id]
+  const togglePicked = useCallback((id: string) => {
+    setChatUi((current) => {
+      const picked = current.picked.includes(id)
+        ? current.picked.filter((item) => item !== id)
+        : [...current.picked, id];
+      return { ...current, chatId: activeId, picked };
     });
-  }
+  }, [activeId]);
+
+  /** Selection is checked once per row, so the list gets a set rather than an array. */
+  const pickedSet = useMemo(() => new Set(ui.picked), [ui.picked]);
+
+  // The thread's own handlers, stable for the same reason as the draft ones above.
+  const startForward = useCallback(
+    (item: Message) => setUi({ selecting: true, picked: [item.id], forwarding: true }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeId]
+  );
+  const startSelect = useCallback(
+    (item: Message) => setUi({ selecting: true, picked: [item.id] }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeId]
+  );
+  const startReport = useCallback(
+    (item: Message) => setReport({ open: true, messageId: item.id }),
+    []
+  );
 
   const clearChat = useMutation({
     mutationFn: () => api.deleteChat(activeId!),
@@ -222,10 +353,10 @@ export function ChatView() {
       setUi({ selecting: false, picked: [] });
       await queryClient.invalidateQueries({ queryKey: ["chats"] });
       await queryClient.invalidateQueries({ queryKey: ["messages", activeId] });
-      notify("Чат очищен", { variant: "success", detail: "У собеседника история осталась" });
+      notify("Chat cleared", { variant: "success", detail: "The history stays on the other side" });
     },
     onError: (error: Error) =>
-      notify("Не удалось очистить", { variant: "error", detail: error.message })
+      notify("Couldn't clear", { variant: "error", detail: error.message })
   });
 
   const deletePicked = useMutation({
@@ -244,10 +375,10 @@ export function ChatView() {
         queryClient.invalidateQueries({ queryKey: ["messages", activeId] }),
         queryClient.invalidateQueries({ queryKey: ["chats"] })
       ]);
-      notify(count === 1 ? "Сообщение удалено" : `Удалено: ${count}`, { variant: "success" });
+      notify(count === 1 ? "Message deleted" : `Deleted: ${count}`, { variant: "success" });
     },
     onError: (error: Error) =>
-      notify("Не удалось удалить", { variant: "error", detail: error.message })
+      notify("Couldn't delete", { variant: "error", detail: error.message })
   });
 
   async function copyPicked() {
@@ -258,11 +389,11 @@ export function ChatView() {
     try {
       await navigator.clipboard.writeText(text);
       setUi({ selecting: false, picked: [] });
-      notify("Скопировано", { variant: "success" });
+      notify("Copied", { variant: "success" });
     } catch {
-      notify("Не удалось скопировать", {
+      notify("Couldn't copy", {
         variant: "error",
-        detail: "Браузер не дал доступ к буферу обмена"
+        detail: "The browser denied clipboard access"
       });
     }
   }
@@ -289,6 +420,12 @@ export function ChatView() {
   }>({ atBottom: true, unseen: 0 });
   const { atBottom, unseen } =
     scrollState.chatId === activeId ? scrollState : { atBottom: true, unseen: 0 };
+  /* Mirrored into a ref so the viewport-resize callback can read it without being rebuilt on every
+     scroll — a keyboard opening mid-flick must see the position as of that moment. */
+  const atBottomRef = useRef(true);
+  useEffect(() => {
+    atBottomRef.current = atBottom;
+  }, [atBottom]);
   const lastCount = useRef<{ chatId?: string; count: number }>({ count: 0 });
 
   // Both callbacks stamp the chat they belong to, or a scroll in a new conversation would be
@@ -309,15 +446,49 @@ export function ChatView() {
     [activeId]
   );
 
+  /**
+   * When the keyboard opens under a reader who was at the newest message, follow it down.
+   *
+   * Without this the viewport shrinks and the last bubble ends up above the fold — the message you
+   * are replying to disappears the moment you tap the field. Only when already at the bottom: a
+   * reader scrolled up into history stays where they are.
+   */
+  useEffect(() => {
+    onViewportResize.current = () => {
+      if (atBottomRef.current) jumpToBottom(false);
+    };
+  }, [jumpToBottom]);
+
+  /**
+   * While the chats screen is open, the document itself must not scroll.
+   *
+   * The shell is a scrolling column (`min-height: 100vh` on the body and the frame) and this screen
+   * is a fixed-height pane. On a phone `100vh` overshoots the visible area, so the thread sat at the
+   * top of a taller box with black below it, and the page could be dragged around under the
+   * keyboard. The flag lets `globals.css` pin `html`/`body` for exactly as long as this screen is
+   * mounted — the list included, since it is the same pane — and every other screen scrolls as
+   * before.
+   */
+  useEffect(() => {
+    document.documentElement.dataset.chatOpen = "true";
+    return () => {
+      delete document.documentElement.dataset.chatOpen;
+    };
+  }, []);
+
   const onScroll = useCallback(() => {
     const node = scroller.current;
     if (!node) return;
     const bottom = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
-    setScrollState((current) => ({
-      chatId: activeId,
-      atBottom: bottom,
-      unseen: bottom || current.chatId !== activeId ? 0 : current.unseen
-    }));
+    setScrollState((current) => {
+      const unseen = bottom || current.chatId !== activeId ? 0 : current.unseen;
+      // Scroll fires on every frame, and this used to set state each time — re-rendering the
+      // screen dozens of times per flick. Nothing here changes on most of those frames.
+      if (current.chatId === activeId && current.atBottom === bottom && current.unseen === unseen) {
+        return current;
+      }
+      return { chatId: activeId, atBottom: bottom, unseen };
+    });
   }, [activeId]);
 
   useEffect(() => {
@@ -341,27 +512,58 @@ export function ChatView() {
     }));
   }, [activeId, messages, atBottom, jumpToBottom]);
 
+  /*
+   * What the line under the title says, most urgent thing first.
+   *
+   * Typing wins over everything except a staff decision, because it is the only line here that is
+   * true for a second and a half: presence, member counts and block states are all still true a
+   * minute later, so making the reader wait for the next poll to see them costs nothing.
+   */
+  const typingLabel = !typing
+    ? null
+    : activeChat?.is_group
+      ? `${typing.displayName} is typing…`
+      : "typing…";
   const subtitle = !activeChat
     ? ""
-    : activeChat.is_group
-      ? `${activeChat.members_count ?? 0} участника`
-      : activeChat.kind === "saved"
-        ? "только для вас"
-        : // A closed conversation is the first thing worth knowing about it.
-          activeChat.peer_blocked
-          ? "заблокирован"
-          : activeChat.blocked_by_peer
-            ? "вы заблокированы"
-            : activeChat.is_typing
-              ? "печатает…"
-              : activeChat.participant?.is_official
-                ? (activeChat.participant.role_title ?? "служебные уведомления").toLowerCase()
-                : // Presence, worded once in `lib/presence` and reused by the profile.
-                  presenceShort(activeChat.participant ?? { is_online: false }) ||
-                  `@${activeChat.participant?.username ?? ""}`;
+    : // Staff decisions outrank the rest: a blocked account is why nothing else here works.
+      activeChat.participant?.is_banned
+      ? "blocked by administration"
+      : (typingLabel ??
+        (activeChat.is_group
+          ? `${activeChat.members_count ?? 0} ${plural(activeChat.members_count ?? 0, "member", "members", "members")}`
+          : activeChat.kind === "saved"
+            ? "for your eyes only"
+            : // A closed conversation is the next thing worth knowing about it.
+              activeChat.peer_blocked
+              ? "blocked"
+              : activeChat.blocked_by_peer
+                ? "you are blocked"
+                : activeChat.participant?.is_official
+                  ? (activeChat.participant.role_title ?? "service notifications").toLowerCase()
+                  : // Presence, worded once in `lib/presence` and reused by the profile.
+                    presenceShort(activeChat.participant ?? { is_online: false }) ||
+                    `@${activeChat.participant?.username ?? ""}`));
 
   return (
-    <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden" data-active-chat={Boolean(activeChat)}>
+    <div
+      /*
+       * A pane fixed to the *visible* part of the screen, not to the document.
+       *
+       * `--chat-vh` is the visual viewport's height and `--chat-offset` is how far Safari has
+       * scrolled the layout viewport to reveal a focused field. Sizing by the first alone left the
+       * pane the right height in the wrong place: the keyboard pushed the document up, the pane went
+       * with it, and its bottom edge — the composer — ended up at the top of the screen with the
+       * page background below. `position: fixed` plus that offset keeps it exactly over what the
+       * person can see, whatever the keyboard does.
+       */
+      className="chat-shell flex min-h-0 flex-col overflow-hidden"
+      /* Both flags are read by `globals.css`. `data-chat-shell` covers the list *and* an open
+         conversation — the whole screen is a fixed-height pane either way. `data-active-chat` is
+         narrower: it also hides the dock and the compose button, which the list still needs. */
+      data-chat-shell="true"
+      data-active-chat={Boolean(activeChat)}
+    >
       <div className="flex min-h-0 flex-1 flex-col">
         <section className={`${activeChat ? "hidden" : "flex"} min-h-0 flex-1 flex-col overflow-y-auto`}>
           <ChatList chats={chats} isLoading={isLoading} activeId={activeId} />
@@ -372,7 +574,7 @@ export function ChatView() {
             {/* Wallpaper sits behind the whole conversation, as in the reference. */}
             <div className="chat-wallpaper" aria-hidden />
 
-            <header className="relative z-30 flex-none px-2.5 pb-2 pt-[max(1rem,env(safe-area-inset-top))]">
+            <header className="relative z-30 flex-none px-2 pb-1.5 pt-[max(0.5rem,env(safe-area-inset-top))] sm:px-2.5 sm:pb-2 sm:pt-[max(1rem,env(safe-area-inset-top))]">
               {ui.selecting ? (
                 /* Selection replaces the header, as in the reference: clear on one side,
                    the running count in the middle, and a way out on the other. */
@@ -383,33 +585,33 @@ export function ChatView() {
                     disabled={clearChat.isPending}
                     className="h-9 flex-none rounded-full px-3 text-[15px] text-[var(--danger)] transition active:bg-white/10 disabled:opacity-50"
                   >
-                    Очистить чат
+                    Clear chat
                   </button>
                   <span className="min-w-0 flex-1 text-center text-[15px] font-semibold">
-                    {ui.picked.length} выбрано
+                    {ui.picked.length} selected
                   </span>
                   <button
                     type="button"
                     onClick={() => setUi({ selecting: false, picked: [] })}
                     className="h-9 flex-none rounded-full px-3 text-[15px] transition active:bg-white/10"
                   >
-                    Отмена
+                    Cancel
                   </button>
                 </div>
               ) : (
               <div className="chat-topbar">
-                <button className="icon-button !size-10" onClick={() => router.push("/chats")} aria-label="К списку чатов"><ArrowLeft size={22} /></button>
+                <button className="icon-button !size-10" onClick={() => router.push("/chats")} aria-label="Back to chat list"><ArrowLeft size={22} /></button>
                 {/* The whole title block is the way into the info panel, as in the reference. */}
                 <button
                   type="button"
                   onClick={() => setUi({ info: true })}
-                  aria-label={activeChat.is_group ? "О группе" : "О чате"}
+                  aria-label={activeChat.is_group ? "About the group" : "About the chat"}
                   className="flex min-w-0 flex-1 items-center gap-3 border-0 bg-transparent p-0 pr-1 text-left transition active:opacity-70"
                 >
                   {activeChat.is_group || !activeChat.participant ? (
                     <UserAvatar
                       src={activeChat.avatar_url}
-                      name={activeChat.title ?? "Чат"}
+                      name={activeChat.title ?? "Chat"}
                       size={42}
                       radius={activeChat.kind === "saved" ? "50%" : "12px"}
                     />
@@ -443,7 +645,7 @@ export function ChatView() {
                     <span className="block truncate text-[13px] text-[var(--muted)]">{subtitle}</span>
                   </span>
                 </button>
-                <button className="icon-button !size-10" aria-label="Поиск по чату" onClick={() => setUi({ searchOpen: !ui.searchOpen })}><Search size={20} /></button>
+                <button className="icon-button !size-10" aria-label="Search the chat" onClick={() => setUi({ searchOpen: !ui.searchOpen })}><Search size={20} /></button>
                 <ChatMenu
                   chat={activeChat}
                   onSearch={() => setUi({ searchOpen: true })}
@@ -465,17 +667,17 @@ export function ChatView() {
                   autoFocus
                   value={ui.search}
                   onChange={(event) => setUi({ search: event.target.value })}
-                  placeholder="Поиск по сообщениям"
-                  aria-label="Поиск по сообщениям"
+                  placeholder="Search messages"
+                  aria-label="Search messages"
                   className="min-w-0 flex-1 border-0 bg-transparent text-sm outline-none placeholder:text-[var(--dim)]"
                 />
                 <span className="flex-none text-xs text-[var(--dim)]">
-                  {ui.search.trim() ? `${grouped.length} найдено` : null}
+                  {ui.search.trim() ? `${grouped.length} found` : null}
                 </span>
                 <button
                   type="button"
                   className="icon-button !size-8"
-                  aria-label="Закрыть поиск"
+                  aria-label="Close search"
                   onClick={() => {
                     setUi({ searchOpen: false, search: "" });
                   }}
@@ -500,37 +702,54 @@ export function ChatView() {
             <div
               ref={scroller}
               onScroll={onScroll}
-              className="relative z-10 min-h-0 flex-1 overflow-y-auto overflow-x-clip overscroll-contain px-2.5 pb-2"
+              /* `touch-pan-y` so a horizontal drag is not stolen from a swipeable child, and the
+                 padding is tighter on a phone where the wallpaper margin is wasted width. */
+              className="relative z-10 min-h-0 flex-1 touch-pan-y overflow-y-auto overflow-x-clip overscroll-contain px-1.5 pb-1.5 sm:px-2.5 sm:pb-2"
             >
               <div className="mx-auto flex min-h-full max-w-[600px] flex-col gap-1">
                 {/* An auto margin rather than `justify-end`: with justify-end a thread taller
                     than the viewport is clipped at the top and cannot be scrolled back to. */}
                 <div aria-hidden className="mt-auto" />
-                <AnimatePresence initial={false} mode="popLayout">
-                  {grouped.map((message, index) => (
-                    <Fragment key={message.id}>
-                      {/* A separator opens each new day, the way the reference dates its thread. */}
-                      {startsNewDay(grouped[index - 1], message) ? (
-                        <div className="flex justify-center py-2.5">
-                          <span className="chat-date-pill">{dayLabel(message.created_at)}</span>
-                        </div>
+                <MessageThread
+                  messages={grouped}
+                  chatId={activeChat.id}
+                  group={activeChat.is_group}
+                  selecting={ui.selecting}
+                  picked={pickedSet}
+                  onReply={setReplyTo}
+                  onEdit={beginEdit}
+                  onForward={startForward}
+                  onSelect={startSelect}
+                  onReport={startReport}
+                  onToggleSelect={togglePicked}
+                />
+                {/* The bubble that is about to arrive. At the foot of the thread rather than only in
+                    the header, because that is where the reader is already looking. */}
+                <AnimatePresence initial={false}>
+                  {typing ? (
+                    <motion.div
+                      key="typing"
+                      initial={reduceMotion ? undefined : { opacity: 0, y: 6, scale: 0.96 }}
+                      animate={reduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
+                      exit={reduceMotion ? undefined : { opacity: 0, scale: 0.96 }}
+                      transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                      className="flex items-center gap-2 px-0.5 py-[3px]"
+                    >
+                      {activeChat.is_group ? (
+                        <span className="order-first flex size-8 flex-none items-start">
+                          <UserAvatar src={null} name={typing.displayName} size={32} />
+                        </span>
                       ) : null}
-                      <MessageBubble
-                        message={message}
-                        chatId={activeChat.id}
-                        onReply={setReplyTo}
-                        onEdit={beginEdit}
-                        onForward={(item) =>
-                          setUi({ selecting: true, picked: [item.id], forwarding: true })
-                        }
-                        onSelect={(item) => setUi({ selecting: true, picked: [item.id] })}
-                        onReport={(item) => setReport({ open: true, messageId: item.id })}
-                        selectable={ui.selecting && !message.service}
-                        selected={ui.picked.includes(message.id)}
-                        onToggleSelect={() => togglePicked(message.id)}
-                      />
-                    </Fragment>
-                  ))}
+                      <span className="typing-bubble" aria-live="polite">
+                        <span aria-hidden />
+                        <span aria-hidden />
+                        <span aria-hidden />
+                        <span className="sr-only">
+                          {activeChat.is_group ? `${typing.displayName} is typing` : "typing"}
+                        </span>
+                      </span>
+                    </motion.div>
+                  ) : null}
                 </AnimatePresence>
                 <div data-message-end />
               </div>
@@ -545,11 +764,11 @@ export function ChatView() {
                 </span>
                 <span className="min-w-0 flex-1">
                   <strong className="block text-[0.72rem] uppercase tracking-[.06em] text-[var(--faint)]">
-                    {editing ? "Изменение сообщения" : `Ответ ${replyTo?.is_mine ? "себе" : (activeChat.participant?.display_name ?? "в группу")}`}
+                    {editing ? "Editing message" : `Reply to ${replyTo?.is_mine ? "yourself" : (activeChat.participant?.display_name ?? "the group")}`}
                   </strong>
                   <span className="block truncate text-[var(--muted)]">{(editing ?? replyTo)?.content}</span>
                 </span>
-                <button type="button" className="icon-button !size-7" aria-label="Отменить" onClick={cancelDraftContext}>
+                <button type="button" className="icon-button !size-7" aria-label="Cancel" onClick={cancelDraftContext}>
                   <X size={15} />
                 </button>
               </div>
@@ -562,45 +781,71 @@ export function ChatView() {
               <div className="relative z-20 flex flex-none items-center justify-around gap-2 border-t border-[var(--line)] bg-[var(--surface)] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2">
                 <SelectionAction
                   icon={Trash2}
-                  label="Удалить"
+                  label="Delete"
                   danger
                   disabled={!ui.picked.length || deletePicked.isPending}
                   onClick={() => deletePicked.mutate()}
                 />
                 <SelectionAction
                   icon={Copy}
-                  label="Копировать"
+                  label="Copy"
                   disabled={!ui.picked.length}
                   onClick={copyPicked}
                 />
                 <SelectionAction
                   icon={CornerUpRight}
-                  label="Переслать"
+                  label="Forward"
                   disabled={!ui.picked.length}
                   onClick={() => setUi({ forwarding: true })}
                 />
+              </div>
+            ) : activeChat.participant?.is_banned ? (
+              /* Writing to a blocked account is refused by the server, so the composer says so
+                 instead of collecting a message that cannot be delivered. */
+              <div className="flex flex-none items-center justify-center gap-2 border-t border-[var(--line-structural)] bg-[var(--surface)] px-4 py-3.5 text-center text-[14px] text-[var(--muted)]">
+                <Ban size={16} className="shrink-0 text-[var(--danger)]" />
+                The account is blocked by administration — messaging is unavailable
               </div>
             ) : activeChat.peer_blocked || activeChat.blocked_by_peer ? (
               <BlockedBar chat={activeChat} />
             ) : (
               <MessageComposer
-                value={draft}
-                onChange={setDraft}
-                onSubmit={() => {
-                  if (draft.trim() || attachment) send.mutate();
+                ref={composer}
+                onSubmit={(text) => {
+                  if (!text.trim() && !attachment) return;
+                  // The field empties the moment the bubble appears. Waiting for the server is
+                  // what left typed text sitting in a field that looked like it had failed.
+                  if (!editing && !attachment) composer.current?.clear();
+                  send.mutate(text);
                 }}
                 onPickFile={(file) => {
                   clearAttachment();
                   setPendingFile({
                     chatId: activeId,
                     file,
-                    preview: URL.createObjectURL(file)
+                    preview: URL.createObjectURL(file),
+                    /* Decided from the upload's declared type, the same way the API decides how to
+                       store it — so the preview matches what will actually be sent. */
+                    kind: file.type.startsWith("video/")
+                      ? "video"
+                      : file.type.startsWith("image/")
+                        ? "image"
+                        : "file"
                   });
                 }}
-                attachment={attachment ? { name: attachment.file.name, preview: attachment.preview } : null}
+                attachment={
+                  attachment
+                    ? {
+                        name: attachment.file.name,
+                        preview: attachment.preview,
+                        kind: attachment.kind
+                      }
+                    : null
+                }
                 onClearAttachment={clearAttachment}
                 editing={Boolean(editing)}
                 pending={send.isPending}
+                onTyping={notifyTyping}
               />
             )}
             <ChatGiftSheet chat={activeChat} open={giftOpen} onOpenChange={setGiftOpen} />
@@ -609,10 +854,10 @@ export function ChatView() {
               messageId={report.messageId}
               subject={
                 report.messageId
-                  ? "Сообщение в чате"
+                  ? "Message in chat"
                   : activeChat.is_group
-                    ? `Группа «${activeChat.title ?? "без названия"}»`
-                    : `Переписка с @${activeChat.participant?.username ?? ""}`
+                    ? `Group «${activeChat.title ?? "untitled"}»`
+                    : `Conversation with @${activeChat.participant?.username ?? ""}`
               }
               open={report.open}
               onOpenChange={(next) => setReport((current) => ({ ...current, open: next }))}
@@ -665,10 +910,10 @@ function BlockedBar({ chat }: { chat: Chat }) {
         queryClient.invalidateQueries({ queryKey: ["chat-info", chat.id] }),
         queryClient.invalidateQueries({ queryKey: ["profile", peer] })
       ]);
-      notify(result.detail, { variant: "success", detail: "Переписка снова открыта" });
+      notify(result.detail, { variant: "success", detail: "The conversation is open again" });
     },
     onError: (error: Error) =>
-      notify("Не удалось разблокировать", { variant: "error", detail: error.message })
+      notify("Couldn't unblock", { variant: "error", detail: error.message })
   });
 
   return (
@@ -677,7 +922,7 @@ function BlockedBar({ chat }: { chat: Chat }) {
         <>
           <p className="m-0 mb-2 flex items-center justify-center gap-1.5 text-[13px] text-[var(--muted)]">
             <Ban size={14} className="text-[var(--danger)]" />
-            Вы заблокировали {chat.participant?.display_name ?? "этого пользователя"}
+            You blocked {chat.participant?.display_name ?? "this user"}
           </p>
           <button
             type="button"
@@ -686,13 +931,13 @@ function BlockedBar({ chat }: { chat: Chat }) {
             className="min-h-11 w-full rounded-[14px] text-[15px] font-bold text-[var(--danger)] transition active:scale-[0.99] disabled:opacity-50"
             style={{ background: "rgba(239,68,68,.14)" }}
           >
-            {unblock.isPending ? "Разблокируем…" : "Разблокировать"}
+            {unblock.isPending ? "Unblocking…" : "Unblock"}
           </button>
         </>
       ) : (
         <p className="m-0 flex min-h-11 items-center justify-center gap-1.5 text-center text-[13px] text-[var(--muted)]">
           <Ban size={14} className="flex-none" />
-          Вы не можете писать этому пользователю
+          You can&apos;t message this user
         </p>
       )}
     </div>
@@ -754,7 +999,7 @@ function JumpToBottom({
           animate={reduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
           exit={reduceMotion ? undefined : { opacity: 0, y: 12, scale: 0.9 }}
           transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-          aria-label={unseen ? `Вниз, ${unseen} новых` : "Вниз"}
+          aria-label={unseen ? `Down, ${unseen} new` : "Down"}
           className="absolute bottom-[calc(4.75rem+env(safe-area-inset-bottom))] right-3 z-30 grid size-11 place-items-center rounded-full bg-[var(--surface-raised)] text-[var(--ink)] shadow-[0_6px_20px_rgba(0,0,0,.45)]"
         >
           <ArrowDown size={20} />
@@ -792,10 +1037,10 @@ function PinnedBar({
     mutationFn: () => api.pinMessage(chatId, message.id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["messages", chatId] });
-      notify("Сообщение откреплено", { variant: "success" });
+      notify("Message unpinned", { variant: "success" });
     },
     onError: (error: Error) =>
-      notify("Не удалось открепить", { variant: "error", detail: error.message })
+      notify("Couldn't unpin", { variant: "error", detail: error.message })
   });
   return (
     <div className="chat-pinned-bar">
@@ -807,7 +1052,7 @@ function PinnedBar({
         className="min-w-0 flex-1 border-0 bg-transparent p-0 text-left"
       >
         <span className="block text-[14px] leading-tight text-[var(--primary-strong)]">
-          Закреплённое сообщение
+          Pinned message
         </span>
         <span className="block truncate text-[14px] leading-tight text-[var(--muted)]">
           {message.content}
@@ -818,31 +1063,10 @@ function PinnedBar({
         onClick={() => unpin.mutate()}
         disabled={unpin.isPending}
         className="icon-button !size-8 flex-none"
-        aria-label="Открепить"
+        aria-label="Unpin"
       >
         <X size={18} />
       </button>
     </div>
   );
-}
-
-function startsNewDay(previous: Message | undefined, current: Message) {
-  if (!previous) return true;
-  return new Date(previous.created_at).toDateString() !== new Date(current.created_at).toDateString();
-}
-
-/** Today and yesterday are named; anything older gets its date, as in the reference. */
-function dayLabel(iso: string) {
-  const date = new Date(iso);
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  if (date.toDateString() === today.toDateString()) return "Сегодня";
-  if (date.toDateString() === yesterday.toDateString()) return "Вчера";
-  const sameYear = date.getFullYear() === today.getFullYear();
-  return new Intl.DateTimeFormat("ru-RU", {
-    day: "numeric",
-    month: "long",
-    ...(sameYear ? {} : { year: "numeric" })
-  }).format(date);
 }

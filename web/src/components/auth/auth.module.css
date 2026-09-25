@@ -335,14 +335,12 @@
 .noticeError { background: rgba(255, 102, 127, 0.1); color: #ffabb7; }
 .noticeSuccess { background: rgba(73, 205, 128, 0.1); color: #8ce4ad; }
 
-.authFooter {
-  position: absolute;
-  z-index: 2;
-  right: 24px;
-  bottom: 20px;
-  left: 24px;
-  text-align: center;
-}
+/* The footer used to be pinned with `position: absolute; bottom: 20px` for the retired
+   `.authViewport` shell. Left in the sheet it floated over the flow of `.plainViewport`
+   and covered the "Create account" line plus the account switcher underneath — the link
+   rendered but nothing could click it. The flow rule further down (`.authFooter { display:
+   grid; … }`) is the live one, and `.plainStage { flex: 1 }` already pushes the footer to
+   the bottom edge, so the stale pin is removed rather than re-tuned. */
 
 .onboardingTopline {
   display: flex;
@@ -591,7 +589,6 @@
   }
 
   .form { margin-top: 27px; }
-  .authFooter { display: none; }
 
   .onboardingForm {
     grid-template-columns: minmax(0, 1fr);
@@ -784,6 +781,30 @@
   text-decoration: none;
 }
 
+.termsConsent {
+  display: grid;
+  grid-template-columns: 19px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  color: #8b8f98;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.termsConsent input {
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  accent-color: var(--auth-violet);
+}
+
+.termsConsent a {
+  color: #ffffff;
+  text-decoration: underline;
+  text-decoration-color: #55545f;
+  text-underline-offset: 2px;
+}
+
 .plainSwitch {
   margin: clamp(20px, 4vh, 30px) 0 0;
   color: #8b8f98;
@@ -799,11 +820,36 @@
 
 .plainSwitch a:hover { text-decoration: underline; }
 
-.copyright {
+.authFooter {
+  display: grid;
   flex: none;
-  padding: 18px 20px calc(18px + env(safe-area-inset-bottom));
+  gap: 8px;
+  padding: 16px 20px calc(16px + env(safe-area-inset-bottom));
+  text-align: center;
+}
+
+.authFooter nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 14px;
+}
+
+.authFooter nav a {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  color: #777781;
+  font-size: 0.78rem;
+  text-decoration: none;
+}
+
+.authFooter nav a:hover { color: #ffffff; }
+
+.copyright {
+  margin: 0;
   color: #6f6f78;
-  font-size: 0.95rem;
+  font-size: 0.82rem;
   text-align: center;
 }
 
@@ -886,10 +932,28 @@
   flex: none;
   width: min(100% - 40px, 460px);
   margin-inline: auto;
-  gap: clamp(18px, 4vh, 30px);
+  gap: clamp(12px, 2.8vh, 22px);
   padding-bottom: calc(24px + env(safe-area-inset-bottom));
   justify-items: center;
 }
+
+.introLegal {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 16px;
+}
+
+.introLegal a {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  color: #71717a;
+  font-size: 0.78rem;
+  text-decoration: none;
+}
+
+.introLegal a:hover { color: #ffffff; }
 
 .introDots {
   display: flex;

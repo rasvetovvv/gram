@@ -2,6 +2,7 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, MessagesSquare, ShieldCheck, Sparkles } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -13,7 +14,7 @@ export const INTRO_KEY = "gram.intro.seen";
 
 /**
  * The three-slide first run from `authref/`: icon tile, title, one paragraph, dots and a
- * violet action that reads "Далее" until the last slide.
+ * violet action that reads "Next" until the last slide.
  *
  * The middle slide describes what GRAM actually does — rotating refresh sessions you can
  * revoke — rather than borrowing the reference's claim of an in-house encrypted protocol.
@@ -22,20 +23,20 @@ const SLIDES = [
   {
     key: "welcome",
     icon: Sparkles,
-    title: "Добро пожаловать в GRAM",
-    text: "Публикации, истории, сообщения и подарки — вся социальная жизнь в одном лёгком приложении."
+    title: "Welcome to GRAM",
+    text: "Posts, stories, messages, and gifts — your whole social life in one lightweight app."
   },
   {
     key: "sessions",
     icon: ShieldCheck,
-    title: "Сессии под вашим контролем",
-    text: "Вход держится на коротком токене и обновляемой сессии. Каждое устройство видно в настройках, и любое можно отключить."
+    title: "Sessions under your control",
+    text: "Your sign-in relies on a short-lived token and a refreshable session. Every device shows up in settings, and you can disconnect any of them."
   },
   {
     key: "ready",
     icon: MessagesSquare,
-    title: "Всё готово",
-    text: "Создайте аккаунт за минуту и присоединяйтесь к сообществу."
+    title: "You're all set",
+    text: "Create an account in a minute and join the community."
   }
 ] as const;
 
@@ -62,7 +63,7 @@ export function WelcomeCarousel() {
       <header className={styles.introHeader}>
         <AuthBrand compact />
         <button type="button" className={styles.introSkip} onClick={() => leave("/login")}>
-          Пропустить
+          Skip
         </button>
       </header>
 
@@ -87,7 +88,7 @@ export function WelcomeCarousel() {
       </div>
 
       <div className={styles.introFooter}>
-        <div className={styles.introDots} role="tablist" aria-label="Слайды">
+        <div className={styles.introDots} role="tablist" aria-label="Slides">
           {SLIDES.map((item, position) => (
             <button
               key={item.key}
@@ -104,12 +105,17 @@ export function WelcomeCarousel() {
           className={styles.introButton}
           onClick={() => (last ? leave("/register") : setIndex((current) => current + 1))}
         >
-          {last ? "Начать" : "Далее"}
+          {last ? "Get started" : "Next"}
           {last ? null : <ArrowRight size={19} />}
         </button>
         <button type="button" className={styles.introSkip} onClick={() => leave("/login")}>
-          У меня уже есть аккаунт
+          I already have an account
         </button>
+        <nav className={styles.introLegal} aria-label="Terms and privacy">
+          <Link href="/terms">Terms</Link>
+          <Link href="/privacy">Privacy</Link>
+          <Link href="/help">Help</Link>
+        </nav>
       </div>
     </main>
   );
