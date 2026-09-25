@@ -8,11 +8,13 @@ import {
   Ban,
   HandCoins,
   Check,
+  Crown,
   Eye,
   EyeOff,
   Gem,
   Gift,
   History,
+  Link as LinkIcon,
   Pin,
   PinOff,
   Send,
@@ -34,6 +36,7 @@ import { plural, relativeTime } from "@/lib/utils";
 import { BottomSheet } from "../ui/bottom-sheet";
 import { UserAvatar } from "../user-avatar";
 import { GiftImage, giftArtProps } from "./gift-image";
+import { GiftBackdrop } from "./gift-art";
 import { GiftArtCredit } from "./gift-art-credit";
 import { GiftMarketPanel } from "./gift-market-panel";
 import { GiftPurchaseSheet } from "./gift-purchase-sheet";
@@ -61,20 +64,20 @@ const transferSchema = z.object({
     .string()
     .trim()
     .toLowerCase()
-    .regex(/^[a-z][a-z0-9_]{3,31}$/, "Введите корректный @юзернейм"),
+    .regex(/^[a-z][a-z0-9_]{3,31}$/, "Enter a valid @username"),
 });
 const offerSchema = z.object({
   stars_amount: z.coerce
     .number()
     .int()
-    .min(1, "Минимум 1 звезда")
+    .min(1, "At least 1 star")
     .max(10_000_000),
 });
 const labels: Record<GiftType["rarity"], string> = {
-  rare: "Редкий",
-  epic: "Эпический",
-  legendary: "Легендарный",
-  mythic: "Мифический",
+  rare: "Rare",
+  epic: "Epic",
+  legendary: "Legendary",
+  mythic: "Mythic",
 };
 
 export function GiftGallery({ recipient, inSheet = false }: { recipient?: string; inSheet?: boolean } = {}) {
@@ -102,16 +105,16 @@ export function GiftGallery({ recipient, inSheet = false }: { recipient?: string
       {inSheet ? null : (
         <>
           <div className="mobile-topbar">
-            <span className="wordmark">ПОДАРКИ</span>
+            <span className="wordmark">GIFTS</span>
             <Gift size={20} className="text-[var(--stars)]" />
           </div>
           <section className="relative overflow-hidden px-4 pb-7 pt-8 sm:px-6 sm:pt-11">
             <div className="relative flex items-end justify-between gap-5">
               <div>
-                <h1 className="channel-title max-w-[560px]">Коллекционные подарки</h1>
+                <h1 className="channel-title max-w-[560px]">Collectible gifts</h1>
                 <p className="mt-4 max-w-[65ch] text-sm leading-6 text-[var(--muted)]">
-                  Подарки можно приобрести, передать и разместить в профиле. Выпуск,
-                  владелец и история каждой операции сохраняются в аккаунте.
+                  Gifts can be bought, transferred and displayed on your profile. The issue,
+                  owner and history of every operation are kept in your account.
                 </p>
               </div>
               <Link
@@ -129,13 +132,13 @@ export function GiftGallery({ recipient, inSheet = false }: { recipient?: string
       <div className="px-3 pb-3 sm:px-5">
         <div className="segmented-control">
           <button data-active={scope === "all"} onClick={() => setScope("all")}>
-            Все подарки
+            All gifts
           </button>
           <button
             data-active={scope === "mine"}
             onClick={() => setScope("mine")}
           >
-            Моя коллекция
+            My collection
           </button>
         </div>
         {/*
@@ -149,7 +152,7 @@ export function GiftGallery({ recipient, inSheet = false }: { recipient?: string
           onClick={() => setBuyOpen(true)}
         >
           <ShoppingBag size={18} />
-          {recipient ? `Купить подарок для @${recipient}` : "Купить подарок себе или другому"}
+          {recipient ? `Buy a gift for @${recipient}` : "Buy a gift for yourself or someone else"}
         </button>
       </div>
       <GiftPurchaseSheet recipient={recipient} open={buyOpen} onOpenChange={setBuyOpen} />
@@ -166,13 +169,13 @@ export function GiftGallery({ recipient, inSheet = false }: { recipient?: string
               )}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="mb-0 text-[0.68rem] font-extrabold uppercase tracking-[.1em] text-[var(--faint)]">Отправка подарка</p>
+              <p className="mb-0 text-[0.68rem] font-extrabold uppercase tracking-[.1em] text-[var(--faint)]">Sending a gift</p>
               <strong className="block truncate text-sm">
-                {recipientQuery.isLoading ? "Загрузка получателя…" : recipientQuery.isError ? `@${recipient}` : `${recipientQuery.data?.display_name} · @${recipientQuery.data?.username}`}
+                {recipientQuery.isLoading ? "Loading recipient…" : recipientQuery.isError ? `@${recipient}` : `${recipientQuery.data?.display_name} · @${recipientQuery.data?.username}`}
               </strong>
-              <span className="text-xs text-[var(--muted)]">Выберите предмет из своей коллекции — получатель уже подставлен.</span>
+              <span className="text-xs text-[var(--muted)]">Choose an item from your collection — the recipient is already filled in.</span>
             </div>
-            <Link href={`/u/${recipient}`} className="quiet-button !min-h-10 !px-3 text-xs">Профиль</Link>
+            <Link href={`/u/${recipient}`} className="quiet-button !min-h-10 !px-3 text-xs">Profile</Link>
           </div>
         </section>
       ) : null}
@@ -181,10 +184,10 @@ export function GiftGallery({ recipient, inSheet = false }: { recipient?: string
         <div className="flex items-center justify-between border-y border-[var(--line)] px-4 py-3.5 text-xs sm:px-6">
           <span className="flex items-center gap-2 text-[var(--muted)]">
             <ShieldCheck size={16} className="text-[var(--online)]" />
-            Подтверждённые операции
+            Verified operations
           </span>
           <span className="font-bold text-[var(--stars)]">
-            {visible.length} {plural(visible.length, "предмет", "предмета", "предметов")}
+            {visible.length} {plural(visible.length, "item", "items", "items")}
           </span>
         </div>
       )}
@@ -201,7 +204,9 @@ export function GiftGallery({ recipient, inSheet = false }: { recipient?: string
           ))}
         </div>
       ) : visible.length ? (
-        <div className="grid grid-cols-3 gap-2 p-3 sm:grid-cols-4 sm:gap-3 sm:p-5">
+        /* Keyed by the shelf being shown, so "All gifts" ⇄ "My collection" fades rather than
+           redrawing a grid of artwork in place. */
+        <div key={scope} className="panel-enter grid grid-cols-3 gap-2 p-3 sm:grid-cols-4 sm:gap-3 sm:p-5">
           {visible.map((gift, index) => (
             <GiftCard
               key={gift.id}
@@ -215,9 +220,9 @@ export function GiftGallery({ recipient, inSheet = false }: { recipient?: string
       ) : (
         <div className="empty-state">
           <Gift className="mx-auto mb-3 text-[var(--stars)]" />
-          <p className="font-bold text-white">Коллекция пока пуста</p>
+          <p className="font-bold text-white">Your collection is empty for now</p>
           <button className="quiet-button mt-3" onClick={() => setScope("all")}>
-            Посмотреть каталог
+            Browse the catalogue
           </button>
         </div>
       )}
@@ -231,11 +236,11 @@ export function GiftGallery({ recipient, inSheet = false }: { recipient?: string
           </span>
           <div>
             <h2 className="m-0 text-base font-bold">
-              История предмета не стирается
+              An item&apos;s history is never erased
             </h2>
             <p className="mb-0 mt-1 max-w-[65ch] text-sm leading-6 text-[var(--muted)]">
-              Выпуск, приобретение, предложения и передачи фиксируются
-              отдельными событиями и доступны владельцу.
+              Issue, purchase, offers and transfers are recorded as
+              separate events and available to the owner.
             </p>
           </div>
         </div>
@@ -267,7 +272,7 @@ export function GiftCard({
     <>
       <motion.button
         onClick={() => setOpen(true)}
-        aria-label={`Открыть подарок ${gift.name} #${gift.serial_number}`}
+        aria-label={`Open gift ${gift.name} #${gift.serial_number}`}
         className="group min-w-0 border-0 bg-transparent p-0 text-left"
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -296,11 +301,11 @@ export function GiftCard({
           ) : null}
           {gift.upgraded === false ? (
             <span className="absolute bottom-1.5 left-1.5 rounded-full bg-black/55 px-1.5 py-0.5 text-[0.55rem] font-bold text-white">
-              {mine ? "Улучшить" : "Обычный"}
+              {mine ? "Upgrade" : "Standard"}
             </span>
           ) : mine ? (
             <span className="absolute bottom-1.5 left-1.5 rounded-full bg-black/55 px-1.5 py-0.5 text-[0.55rem] font-bold text-white">
-              Ваш
+              Yours
             </span>
           ) : null}
         </span>
@@ -395,7 +400,7 @@ export function GiftDetailTrigger({
         onClick={() => setOpen(true)}
         className={className}
         style={style}
-        aria-label={label ?? `Открыть подарок ${gift.name} #${gift.serial_number}`}
+        aria-label={label ?? `Open gift ${gift.name} #${gift.serial_number}`}
       >
         {children}
       </button>
@@ -468,7 +473,7 @@ function GiftDialog({
       await queryClient.invalidateQueries({
         queryKey: ["gift-offers", gift.id],
       });
-      setFeedback("Предложение отправлено владельцу");
+      setFeedback("Offer sent to the owner");
       offerForm.reset();
     },
   });
@@ -484,7 +489,7 @@ function GiftDialog({
         queryClient.invalidateQueries({ queryKey: ["notifications"] }),
       ]);
       if (variables.action === "accept") close();
-      else setFeedback("Предложение отклонено");
+      else setFeedback("Offer declined");
     },
   });
   const showcase = useMutation({
@@ -497,8 +502,8 @@ function GiftDialog({
       ]);
       setFeedback(
         slot === "featured"
-          ? "Подарок установлен в шапку"
-          : "Подарок установлен рядом с именем",
+          ? "Gift set in your header"
+          : "Gift set next to your name",
       );
     },
   });
@@ -518,7 +523,7 @@ function GiftDialog({
         queryClient.invalidateQueries({ queryKey: ["profile", me] }),
       ]);
       // The rolled model is the news, so it is what the notice says.
-      setFeedback(`Выпала модель «${updated.model ?? updated.model_name}»`);
+      setFeedback(`Rolled model "${updated.model ?? updated.model_name}"`);
     },
     onError: (error: Error) => setFeedback(error.message),
   });
@@ -533,8 +538,8 @@ function GiftDialog({
       ]);
       setFeedback(
         updated.is_listed
-          ? `Выставлен на маркет за ${updated.sale_price_stars} ★`
-          : "Снят с продажи",
+          ? `Listed on the market for ${updated.sale_price_stars} ★`
+          : "Removed from sale",
       );
     },
   });
@@ -548,7 +553,7 @@ function GiftDialog({
         queryClient.invalidateQueries({ queryKey: ["gifts"] }),
         queryClient.invalidateQueries({ queryKey: ["gift", gift.id] }),
       ]);
-      setFeedback(slot === "featured" ? "Убран из шапки" : "Убран из имени");
+      setFeedback(slot === "featured" ? "Removed from header" : "Removed from name");
     },
   });
   const offersClosed = useMutation({
@@ -561,8 +566,8 @@ function GiftDialog({
       ]);
       setFeedback(
         updated.offers_disabled
-          ? "Больше никто не предложит цену за этот подарок"
-          : "Предложения снова открыты",
+          ? "No one can offer a price for this gift anymore"
+          : "Offers are open again",
       );
     },
     onError: (error: Error) => setFeedback(error.message),
@@ -577,7 +582,7 @@ function GiftDialog({
         queryClient.invalidateQueries({ queryKey: ["profile", me] }),
       ]);
       setFeedback(
-        updated.hidden_in_profile ? "Подарок скрыт из профиля" : "Подарок снова в профиле",
+        updated.hidden_in_profile ? "Gift hidden from profile" : "Gift back on your profile",
       );
     },
   });
@@ -590,7 +595,7 @@ function GiftDialog({
         queryClient.invalidateQueries({ queryKey: ["profile", me] }),
       ]);
       setFeedback(
-        updated.is_pinned ? "Закреплён в начале коллекции" : "Откреплён",
+        updated.is_pinned ? "Pinned to the top of the collection" : "Unpinned",
       );
     },
   });
@@ -609,20 +614,40 @@ function GiftDialog({
     },
   });
 
+  /** Where a collectible lives, so it can be sent to somebody who does not own it. */
+  const permalink =
+    typeof window === "undefined" ? `/gift/${gift.id}` : `${window.location.origin}/gift/${gift.id}`;
+  async function copyLink() {
+    await navigator.clipboard.writeText(permalink);
+    setFeedback("Gift link copied");
+  }
+  /** The header's buttons lead to the sections that need a recipient or a price. */
+  function jumpTo(id: string) {
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   return (
     <BottomSheet
       open={open}
       onOpenChange={(next) => (next ? null : close())}
       title={`${gift.name} #${gift.serial_number}`}
-      description="Свойства, владелец и история коллекционного подарка."
+      description="Properties, owner and history of the collectible gift."
       className="!px-0"
     >
       <div className="-mx-4">
-        <div
-          className="relative flex min-h-[300px] flex-col items-center justify-center overflow-hidden p-8 text-center"
-          style={{
-            background: `radial-gradient(120% 90% at 50% 0%, ${gift.accent ?? "#2a2530"} 0%, ${gift.backdrop_edge ?? "#0b0b0e"} 100%)`,
-          }}
+        {/*
+          One surface, not two. The panel used to paint a gradient of its own and then draw the
+          gift's tile inside it, so a collectible read as a card sitting on a card. The backdrop
+          *is* the header now — its ramp and its tiled symbol run edge to edge — and the sticker
+          arrives bare on top of it, the way the reference composes it.
+        */}
+        <GiftBackdrop
+          design={gift.design_slug ?? gift.slug.replace(/-\d+$/, "")}
+          pattern={gift.upgraded === false ? null : (gift.symbol ?? gift.pattern ?? null)}
+          accent={gift.accent}
+          backdropEdge={gift.backdrop_edge}
+          patternColor={gift.pattern_color}
+          className="flex min-h-[300px] flex-col items-center justify-center p-8 text-center"
         >
           <GiftUpgrade
             gift={gift}
@@ -630,6 +655,7 @@ function GiftDialog({
             canUpgrade={mine}
             pending={upgrade.isPending}
             justUpgraded={upgrade.isSuccess}
+            bare
             onUpgrade={() => upgrade.mutate()}
           />
           <h2 className="relative mb-0 mt-4 text-2xl font-extrabold">
@@ -643,26 +669,49 @@ function GiftDialog({
               «{gift.message}»
               <span className="mt-1 block text-[12px] text-white/60">
                 {gift.sender_hidden
-                  ? "Отправитель скрыл имя"
+                  ? "The sender hid their name"
                   : gift.sender
-                    ? `от ${gift.sender.display_name}`
+                    ? `from ${gift.sender.display_name}`
                     : null}
               </span>
             </p>
           ) : null}
-          <Dialog.Close
-            className="icon-button absolute right-4 top-4 bg-black/40 text-white"
-            aria-label="Закрыть"
-          >
-            <X size={20} />
-          </Dialog.Close>
-        </div>
+          {/* The owner's three moves, on the backdrop where the reference puts them. */}
+          {mine ? (
+            <div className="relative mt-5 grid w-full max-w-[420px] grid-cols-3 gap-2">
+              <HeroAction icon={<Send size={16} />} label="transfer" onClick={() => jumpTo("gift-transfer")} />
+              <HeroAction
+                icon={<Crown size={16} />}
+                label={gift.showcased_as === "name" ? "remove" : "wear"}
+                onClick={() =>
+                  gift.showcased_as === "name" ? unpin.mutate("name") : showcase.mutate("name")
+                }
+                pending={showcase.isPending || unpin.isPending}
+              />
+              <HeroAction icon={<Tag size={16} />} label="sell" onClick={() => jumpTo("gift-sale")} />
+            </div>
+          ) : null}
+          <div className="absolute right-4 top-4 flex items-center gap-2">
+            {/* A collectible has an address of its own, so it can be sent to somebody to look at. */}
+            <button
+              type="button"
+              onClick={() => copyLink()}
+              aria-label="Copy gift link"
+              className="icon-button bg-black/40 text-white hover:bg-black/60"
+            >
+              <LinkIcon size={18} />
+            </button>
+            <Dialog.Close className="icon-button bg-black/40 text-white" aria-label="Close">
+              <X size={20} />
+            </Dialog.Close>
+          </div>
+        </GiftBackdrop>
         <div className="p-4">
           <div className="overflow-hidden rounded-[20px] bg-[#17171d] shadow-[inset_0_0_0_1px_var(--line)]">
-            <DetailRow label="Тип">
-              <strong>Коллекционный</strong>
+            <DetailRow label="Type">
+              <strong>Collectible</strong>
             </DetailRow>
-            <DetailRow label="Владелец">
+            <DetailRow label="Owner">
                 {gift.owner_username ? (
                   <Link
                     href={`/u/${gift.owner_username}`}
@@ -671,23 +720,23 @@ function GiftDialog({
                     @{gift.owner_username}
                   </Link>
                 ) : (
-                  <span className="text-[var(--muted)]">Загрузка…</span>
+                  <span className="text-[var(--muted)]">Loading…</span>
                 )}
               </DetailRow>
               {/*
                 Who gave it, and not only when they left a note. A gift is a gift because
-                somebody chose it: reading the row said "коллекционный предмет" and nothing
+                somebody chose it: reading the row said "collectible item" and nothing
                 about the person. Opening one I gave says so, even if I hid my name from its
                 owner — I am not hiding it from myself.
               */}
               {gift.sender || gift.sender_hidden || gift.sent_by_me ? (
-                <DetailRow label="Подарил">
+                <DetailRow label="Gifted by">
                   {gift.sent_by_me ? (
                     <span className="flex items-center gap-1.5">
-                      <strong>Вы</strong>
+                      <strong>You</strong>
                       {gift.sender_hidden ? (
                         <span className="text-[12px] text-[var(--muted)]">
-                          (имя скрыто от владельца)
+                          (name hidden from the owner)
                         </span>
                       ) : null}
                     </span>
@@ -699,11 +748,11 @@ function GiftDialog({
                       @{gift.sender.username}
                     </Link>
                   ) : (
-                    <span className="text-[var(--muted)]">Имя скрыто</span>
+                    <span className="text-[var(--muted)]">Name hidden</span>
                   )}
                 </DetailRow>
               ) : null}
-              <DetailRow label="Модель">
+              <DetailRow label="Model">
                 <strong>{gift.model ?? "Original"}</strong>
                 <Rarity
                   value={traitNumber(
@@ -713,7 +762,7 @@ function GiftDialog({
                   )}
                 />
               </DetailRow>
-              <DetailRow label="Символ">
+              <DetailRow label="Symbol">
                 <strong>{gift.symbol ?? "GRAM"}</strong>
                 <Rarity
                   value={traitNumber(
@@ -723,7 +772,7 @@ function GiftDialog({
                   )}
                 />
               </DetailRow>
-              <DetailRow label="Фон">
+              <DetailRow label="Background">
                 <strong>
                   {gift.backdrop ?? gift.background ?? "Midnight"}
                 </strong>
@@ -735,13 +784,13 @@ function GiftDialog({
                   )}
                 />
               </DetailRow>
-              <DetailRow label="Выпуск">
+              <DetailRow label="Issue">
                 <strong>
                   #{gift.serial_number}
-                  {gift.edition_size ?? gift.supply ? ` из ${gift.edition_size ?? gift.supply}` : ""}
+                  {gift.edition_size ?? gift.supply ? ` of ${gift.edition_size ?? gift.supply}` : ""}
                 </strong>
               </DetailRow>
-              <DetailRow label="Ценность">
+              <DetailRow label="Value">
                 <strong className="text-[var(--stars)]">
                   ★ {gift.value_stars ?? 0}
                 </strong>
@@ -754,7 +803,7 @@ function GiftDialog({
             ) : null}
             <section className="mt-5">
               <div className="mb-3 flex items-center justify-between">
-                <h3 className="m-0 text-base font-bold">История владения</h3>
+                <h3 className="m-0 text-base font-bold">Ownership history</h3>
                 {gift.provenance_hash ? (
                   <span
                     className="max-w-32 truncate text-[0.65rem] text-[var(--faint)]"
@@ -779,12 +828,12 @@ function GiftDialog({
                       <div className="min-w-0 flex-1">
                         <p className="m-0 text-sm font-semibold">
                           {event.event === "transferred"
-                            ? "Передача владельцу"
+                            ? "Transfer to owner"
                             : event.event === "purchased"
-                              ? "Покупка"
+                              ? "Purchase"
                               : event.event === "featured"
-                                ? "Закрепление в профиле"
-                                : "Выпуск предмета"}
+                                ? "Pinned to profile"
+                                : "Item issued"}
                         </p>
                         <p className="mb-0 mt-1 truncate text-xs text-[var(--muted)]">
                           {event.to_user
@@ -798,7 +847,7 @@ function GiftDialog({
                 )}
                 {!provenance.isLoading && !provenance.data?.length ? (
                   <p className="text-sm text-[var(--muted)]">
-                    История начнётся с выпуска предмета.
+                    The history begins when the item is issued.
                   </p>
                 ) : null}
               </div>
@@ -806,11 +855,11 @@ function GiftDialog({
             {mine ? (
               <section className="mt-5 rounded-[22px] bg-[#17171d] p-4">
                 <h3 className="m-0 text-base font-bold">
-                  Разместить в профиле
+                  Display on profile
                 </h3>
                 <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
-                  Можно выбрать отдельное место в шапке и компактный знак возле
-                  имени.
+                  You can choose a dedicated spot in the header and a compact mark next to
+                  your name.
                 </p>
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   {gift.showcased_as === "featured" ? (
@@ -819,7 +868,7 @@ function GiftDialog({
                       onClick={() => unpin.mutate("featured")}
                       disabled={unpin.isPending}
                     >
-                      <X size={17} />Убрать из шапки
+                      <X size={17} />Remove from header
                     </button>
                   ) : (
                     <button
@@ -827,7 +876,7 @@ function GiftDialog({
                       onClick={() => showcase.mutate("featured")}
                       disabled={showcase.isPending || gift.hidden_in_profile}
                     >
-                      <Sparkles size={17} />В шапку
+                      <Sparkles size={17} />To header
                     </button>
                   )}
                   {gift.showcased_as === "name" ? (
@@ -836,7 +885,7 @@ function GiftDialog({
                       onClick={() => unpin.mutate("name")}
                       disabled={unpin.isPending}
                     >
-                      <X size={17} />Убрать из имени
+                      <X size={17} />Remove from name
                     </button>
                   ) : (
                     <button
@@ -844,7 +893,7 @@ function GiftDialog({
                       onClick={() => showcase.mutate("name")}
                       disabled={showcase.isPending || gift.hidden_in_profile}
                     >
-                      <Gem size={17} />В имя
+                      <Gem size={17} />To name
                     </button>
                   )}
                 </div>
@@ -858,7 +907,7 @@ function GiftDialog({
                   disabled={pin.isPending}
                 >
                   {gift.is_pinned ? <PinOff size={17} /> : <Pin size={17} />}
-                  {gift.is_pinned ? "Открепить из коллекции" : "Закрепить в коллекции"}
+                  {gift.is_pinned ? "Unpin from collection" : "Pin to collection"}
                 </button>
                 {/*
                   Hiding is curation, not disposal: the item stays owned, keeps its provenance
@@ -870,7 +919,7 @@ function GiftDialog({
                   disabled={visibility.isPending}
                 >
                   {gift.hidden_in_profile ? <Eye size={17} /> : <EyeOff size={17} />}
-                  {gift.hidden_in_profile ? "Показать в профиле" : "Скрыть из профиля"}
+                  {gift.hidden_in_profile ? "Show on profile" : "Hide from profile"}
                 </button>
                 {/*
                   Declining offers one at a time tells a buyer to try again. Saying once that
@@ -883,28 +932,28 @@ function GiftDialog({
                 >
                   {gift.offers_disabled ? <HandCoins size={17} /> : <Ban size={17} />}
                   {gift.offers_disabled
-                    ? "Разрешить предложения цены"
-                    : "Не предлагать мне цену"}
+                    ? "Allow price offers"
+                    : "Don't offer me a price"}
                 </button>
                 {gift.offers_disabled ? (
                   <p className="mb-0 mt-2 text-xs text-[var(--muted)]">
-                    Новые предложения по этому подарку отклоняются автоматически. Выставить его
-                    на маркет по своей цене это не мешает.
+                    New offers on this gift are declined automatically. This doesn&apos;t stop you
+                    from listing it on the market at your own price.
                   </p>
                 ) : null}
                 {gift.hidden_in_profile ? (
                   <p className="mb-0 mt-2 text-xs text-[var(--muted)]">
-                    Виден только вам. Историю владения и продажу это не затрагивает.
+                    Visible only to you. This doesn&apos;t affect ownership history or selling.
                   </p>
                 ) : null}
               </section>
             ) : null}
             {mine ? (
-              <section className="mt-4 rounded-[22px] bg-[#17171d] p-4">
+              <section id="gift-sale" className="mt-4 rounded-[22px] bg-[#17171d] p-4">
                 <div className="flex items-center justify-between gap-2">
                   <h3 className="m-0 flex items-center gap-1.5 text-base font-bold">
                     <Tag size={17} className="text-[var(--stars)]" />
-                    Продать на маркете
+                    Sell on the market
                   </h3>
                   {gift.is_listed ? (
                     <span className="flex items-center gap-1 rounded-full bg-[var(--stars)] px-2.5 py-1 text-xs font-extrabold text-black">
@@ -914,7 +963,7 @@ function GiftDialog({
                   ) : null}
                 </div>
                 <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
-                  Цена видна всем: любой купит предмет одним нажатием, без ожидания ответа.
+                  The price is visible to everyone: anyone can buy the item in one tap, with no waiting for a reply.
                 </p>
                 {gift.is_listed ? (
                   <button
@@ -922,7 +971,7 @@ function GiftDialog({
                     onClick={() => listing.mutate(null)}
                     disabled={listing.isPending}
                   >
-                    {listing.isPending ? "Убираем…" : "Снять с продажи"}
+                    {listing.isPending ? "Removing…" : "Remove from sale"}
                   </button>
                 ) : (
                   <div className="mt-3 flex gap-2">
@@ -933,7 +982,7 @@ function GiftDialog({
                         min={1}
                         value={askPrice}
                         onChange={(event) => setAskPrice(event.target.value)}
-                        aria-label="Цена в звёздах"
+                        aria-label="Price in stars"
                         className="min-w-0 flex-1 bg-transparent outline-none"
                       />
                     </label>
@@ -942,7 +991,7 @@ function GiftDialog({
                       onClick={() => listing.mutate(Math.max(1, Number(askPrice) || 0))}
                       disabled={listing.isPending || !Number(askPrice)}
                     >
-                      {listing.isPending ? "…" : "Выставить"}
+                      {listing.isPending ? "…" : "List"}
                     </button>
                   </div>
                 )}
@@ -954,10 +1003,10 @@ function GiftDialog({
               <section className="mt-5 rounded-[22px] bg-[#17171d] p-4">
                 <h3 className="m-0 flex items-center gap-1.5 text-base font-bold">
                   <ShoppingBag size={17} className="text-[var(--stars)]" />
-                  Продаётся сейчас
+                  On sale now
                 </h3>
                 <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
-                  Владелец назвал цену — предмет перейдёт вам сразу после оплаты.
+                  The owner named a price — the item transfers to you right after payment.
                 </p>
                 <button
                   className="gold-button mt-3 w-full"
@@ -965,7 +1014,7 @@ function GiftDialog({
                   disabled={buyNow.isPending}
                 >
                   <Star size={17} fill="currentColor" />
-                  {buyNow.isPending ? "Покупаем…" : `Купить за ${gift.sale_price_stars} ★`}
+                  {buyNow.isPending ? "Buying…" : `Buy for ${gift.sale_price_stars} ★`}
                 </button>
                 {buyNow.error ? (
                   <p className="mb-0 mt-2 text-xs text-[var(--danger)]">{buyNow.error.message}</p>
@@ -977,7 +1026,7 @@ function GiftDialog({
                 {/* Offers only mattered once the owner could act on them from here. */}
                 {offers.data?.some((item) => item.status === "pending") ? (
                   <div className="mb-4">
-                    <h3 className="m-0 text-base font-bold">Предложения</h3>
+                    <h3 className="m-0 text-base font-bold">Offers</h3>
                     <ul className="m-0 mt-2.5 grid list-none gap-2 p-0">
                       {offers.data
                         .filter((item) => item.status === "pending")
@@ -1006,7 +1055,7 @@ function GiftDialog({
                             <button
                               type="button"
                               className="grid size-9 flex-none place-items-center rounded-full border-0 bg-[var(--online)] text-black disabled:opacity-50"
-                              aria-label={`Принять ${item.amount_stars} ★ от @${item.buyer.username}`}
+                              aria-label={`Accept ${item.amount_stars} ★ from @${item.buyer.username}`}
                               disabled={resolveOffer.isPending}
                               onClick={() => resolveOffer.mutate({ id: item.id, action: "accept" })}
                             >
@@ -1015,7 +1064,7 @@ function GiftDialog({
                             <button
                               type="button"
                               className="grid size-9 flex-none place-items-center rounded-full border-0 bg-[#2b2024] text-[var(--danger)] disabled:opacity-50"
-                              aria-label={`Отклонить предложение @${item.buyer.username}`}
+                              aria-label={`Decline offer from @${item.buyer.username}`}
                               disabled={resolveOffer.isPending}
                               onClick={() => resolveOffer.mutate({ id: item.id, action: "decline" })}
                             >
@@ -1032,30 +1081,30 @@ function GiftDialog({
                     <div className="mt-4 h-px bg-[var(--line)]" />
                   </div>
                 ) : null}
-                <div className="flex items-center justify-between">
-                  <h3 className="m-0 text-base font-bold">Передать подарок</h3>
+                <div id="gift-transfer" className="flex items-center justify-between">
+                  <h3 className="m-0 text-base font-bold">Transfer gift</h3>
                   {offers.data?.length ? (
                     <span className="text-xs text-[var(--muted)]">
-                      {offers.data.length} предложений
+                      {offers.data.length} offers
                     </span>
                   ) : null}
                 </div>
                 {confirmTransfer ? (
                   <div className="mt-3 rounded-[18px] bg-[#2b2024] p-4">
                     <p className="m-0 text-sm leading-5">
-                      Передать{" "}
+                      Transfer{" "}
                       <strong>
                         {gift.name} #{gift.serial_number}
                       </strong>{" "}
-                      пользователю <strong>@{target}</strong>? Отменить
-                      завершённую передачу нельзя.
+                      to <strong>@{target}</strong>? A completed
+                      transfer can&apos;t be undone.
                     </p>
                     <div className="mt-3 flex gap-2">
                       <button
                         className="quiet-button flex-1"
                         onClick={() => setConfirmTransfer(false)}
                       >
-                        Назад
+                        Back
                       </button>
                       <button
                         className="signal-button flex-1"
@@ -1064,7 +1113,7 @@ function GiftDialog({
                         )}
                         disabled={transfer.isPending}
                       >
-                        {transfer.isPending ? "Передаём…" : "Подтвердить"}
+                        {transfer.isPending ? "Transferring…" : "Confirm"}
                       </button>
                     </div>
                   </div>
@@ -1086,7 +1135,7 @@ function GiftDialog({
                       </label>
                       <button
                         className="signal-button !size-12 !p-0"
-                        aria-label="Продолжить передачу"
+                        aria-label="Continue transfer"
                       >
                         <Send size={18} />
                       </button>
@@ -1100,10 +1149,10 @@ function GiftDialog({
               </section>
             ) : (
               <section className="mt-5 rounded-[22px] bg-[#17171d] p-4">
-                <h3 className="m-0 text-base font-bold">Предложить цену</h3>
+                <h3 className="m-0 text-base font-bold">Make an offer</h3>
                 <p className="mb-0 mt-1 text-sm text-[var(--muted)]">
-                  Звёзды резервируются только после принятия предложения
-                  владельцем.
+                  Stars are reserved only after the owner accepts the
+                  offer.
                 </p>
                 <form
                   className="mt-3 flex gap-2"
@@ -1124,7 +1173,7 @@ function GiftDialog({
                     />
                   </label>
                   <button className="gold-button" disabled={offer.isPending}>
-                    {offer.isPending ? "Отправляем…" : "Предложить"}
+                    {offer.isPending ? "Sending…" : "Offer"}
                   </button>
                 </form>
                 <p className="mb-0 mt-2 min-h-5 text-xs text-[var(--danger)]">
@@ -1141,7 +1190,7 @@ function GiftDialog({
             </p>
             <button className="quiet-button mt-2 w-full" onClick={close}>
               <Check size={17} />
-              Готово
+              Done
             </button>
           </div>
         </div>
@@ -1171,5 +1220,35 @@ function Rarity({ value }: { value?: number }) {
     <span className="rounded-full bg-[#1d3441] px-2 py-0.5 text-[0.65rem] font-bold text-[var(--link)]">
       {value}%
     </span>
+  );
+}
+
+/**
+ * One of the owner's three moves, drawn on the collectible's own backdrop.
+ *
+ * Translucent black rather than a colour: the backdrop is whatever this gift rolled, and a
+ * button with its own palette would fight it on every second item.
+ */
+function HeroAction({
+  icon,
+  label,
+  onClick,
+  pending = false
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  pending?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={pending}
+      className="grid min-h-[52px] place-items-center gap-0.5 rounded-[16px] border-0 bg-black/30 px-2 text-[13px] font-semibold text-white/90 backdrop-blur-sm transition hover:bg-black/45 active:scale-[0.97] disabled:opacity-60"
+    >
+      <span className="grid place-items-center">{icon}</span>
+      {label}
+    </button>
   );
 }

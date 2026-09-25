@@ -18,13 +18,13 @@ export function HashtagView({ tag }: { tag: string }) {
   return (
     <>
       <header className="sticky top-0 z-40 flex min-h-[56px] items-center gap-3 border-b border-[var(--line)] bg-[rgba(6,6,8,.92)] px-3 backdrop-blur-xl sm:px-5">
-        <button onClick={() => router.back()} className="icon-button" aria-label="Назад">
+        <button onClick={() => router.back()} className="icon-button" aria-label="Back">
           <ArrowLeft size={21} />
         </button>
         <div className="min-w-0 flex-1">
           <strong className="block truncate text-sm">#{tag}</strong>
           <span className="block truncate text-xs text-[var(--muted)]">
-            {total ? `${compactNumber(total)} постов` : "Тема"}
+            {total ? `${compactNumber(total)} posts` : "Topic"}
           </span>
         </div>
         <span className="grid size-9 flex-none place-items-center rounded-full bg-[#17171d] text-[var(--primary-strong)]">
@@ -41,10 +41,10 @@ export function HashtagView({ tag }: { tag: string }) {
         ) : posts.isError ? (
           <div className="empty-state">
             <RefreshCw className="mx-auto mb-3 text-[var(--danger)]" />
-            <p className="font-bold text-white">Не удалось загрузить тему</p>
+            <p className="font-bold text-white">Couldn&apos;t load this topic</p>
             <p className="text-sm">{posts.error.message}</p>
             <button className="quiet-button mt-3" onClick={() => posts.refetch()}>
-              <RefreshCw size={16} />Повторить
+              <RefreshCw size={16} />Retry
             </button>
           </div>
         ) : posts.data?.length ? (
@@ -52,10 +52,10 @@ export function HashtagView({ tag }: { tag: string }) {
         ) : (
           <div className="empty-state">
             <Hash className="mx-auto mb-3 text-[var(--primary-strong)]" />
-            <p className="font-bold text-white">Пока нет постов с #{tag}</p>
-            <p className="text-sm">Опубликуйте запись с этим хэштегом — она появится здесь.</p>
+            <p className="font-bold text-white">No posts with #{tag} yet</p>
+            <p className="text-sm">Post something with this hashtag and it&apos;ll show up here.</p>
             <Link href="/discover" className="quiet-button mt-3">
-              К поиску
+              Go to search
             </Link>
           </div>
         )}

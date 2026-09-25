@@ -2,17 +2,26 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, useReducedMotion } from "framer-motion";
-import { Check, CheckCheck, CornerUpRight, Gift, Pin, Sparkles } from "lucide-react";
+import { Check, CheckCheck, Clock, CornerUpRight, Gift, Pin, Sparkles } from "lucide-react";
+import Link from "next/link";
+import { memo } from "react";
 import { api } from "@/lib/api";
-import type { GiftSummary, Message } from "@/lib/types";
+import { nameColor } from "@/lib/profile-color";
+import type { GiftSummary, Message, User } from "@/lib/types";
+import { AdminMark } from "../admin-mark";
 import { GiftDetailTrigger, type RichGift } from "../gifts/gift-gallery";
 import { GiftImage, giftArtProps } from "../gifts/gift-image";
+import { PremiumMark } from "../premium-mark";
+import { MessageStoryCard } from "../stories/message-story-card";
 import { useToast } from "../ui/toast";
+import { UserAvatar } from "../user-avatar";
+import { VerifiedMark } from "../verified-mark";
 import {
   MessageActionsButton,
   MessageContextMenu,
   useMessageActions,
 } from "./message-actions";
+import { MessageFile, MessageMedia } from "./message-attachments";
 import { MessageText } from "./message-text";
 import { ReactionChips, useReaction } from "./message-reactions";
 
@@ -39,7 +48,7 @@ function GiftMessageCard({ gift, mine }: { gift: GiftSummary; mine: boolean }) {
     <GiftDetailTrigger
       gift={gift as RichGift}
       className="block w-[244px] max-w-full border-0 bg-transparent p-0 text-left transition active:scale-[0.98]"
-      label={`Показать подарок ${gift.name} #${gift.serial_number}`}
+      label={`View gift ${gift.name} #${gift.serial_number}`}
     >
       <span
         className="block overflow-hidden rounded-[14px]"
@@ -56,7 +65,10 @@ function GiftMessageCard({ gift, mine }: { gift: GiftSummary; mine: boolean }) {
             } 78%)`
           }}
         >
-          <GiftImage {...giftArtProps(gift)} size={216} rounded="rounded-none" animate="always" />
+          {/* `hover` rather than `always`: a thread with a dozen gift cards was running a dozen
+              Lottie players at once, which is what made scrolling stutter. Pointing at a card —
+              or tapping it on a phone — still brings it to life. */}
+          <GiftImage {...giftArtProps(gift)} size={216} rounded="rounded-none" animate="hover" />
           {/* The rolled rarity, over the artwork's own darkest corner. */}
           <span
             className="absolute left-2 top-2 rounded-full px-2 py-[3px] text-[10px] font-extrabold uppercase tracking-[0.08em]"
@@ -67,7 +79,7 @@ function GiftMessageCard({ gift, mine }: { gift: GiftSummary; mine: boolean }) {
           {plain ? (
             <span className="absolute bottom-2 flex items-center gap-1 rounded-full bg-black/65 px-2.5 py-1 text-[11px] font-extrabold text-white">
               <Sparkles size={11} className="text-[var(--stars)]" />
-              {mine ? "Обычный подарок" : "Можно улучшить"}
+              {mine ? "Standard gift" : "Can be upgraded"}
             </span>
           ) : null}
         </span>
@@ -80,7 +92,7 @@ function GiftMessageCard({ gift, mine }: { gift: GiftSummary; mine: boolean }) {
           <span
             className={`mt-0.5 block text-[12px] ${mine ? "text-white/70" : "text-[var(--dim)]"}`}
           >
-            Подарок · #{gift.serial_number}
+            Gift · #{gift.serial_number}
           </span>
           {gift.message ? (
             <span
@@ -120,10 +132,10 @@ function ClaimableGiftCard({
         queryClient.invalidateQueries({ queryKey: ["gifts"] }),
         queryClient.invalidateQueries({ queryKey: ["chat-info", chatId] })
       ]);
-      notify(`Подарок «${claimed.gift?.name ?? ""}» ваш`, { variant: "success" });
+      notify(`The "${claimed.gift?.name ?? ""}" gift is yours`, { variant: "success" });
     },
     onError: (error: Error) =>
-      notify("Не удалось забрать", { variant: "error", detail: error.message })
+      notify("Couldn't claim", { variant: "error", detail: error.message })
   });
 
   const taken = message.gift_claimed_by;
@@ -137,13 +149,13 @@ function ClaimableGiftCard({
           }`}
         >
           <Gift size={13} />
-          Забрал(а) {taken.display_name}
+          Claimed by {taken.display_name}
         </span>
       ) : mine ? (
         <span
           className="mt-2 block rounded-[12px] bg-white/15 px-2.5 py-1.5 text-center text-[12px] text-white/85"
         >
-          Ждёт, кто заберёт
+          Waiting to be claimed
         </span>
       ) : (
         <button
@@ -153,9 +165,50 @@ function ClaimableGiftCard({
           className="mt-2 w-full rounded-[12px] px-2.5 py-2 text-[13px] font-semibold text-white transition active:scale-95 disabled:opacity-60"
           style={{ background: "var(--chat-accent, var(--primary))" }}
         >
-          {claim.isPending ? "Забираем…" : "Забрать подарок"}
+          {claim.isPending ? "Claiming…" : "Claim gift"}
         </button>
       )}
+    </span>
+  );
+}
+
+/** One formatter for every bubble: building one per row per render is pure waste. */
+const TIME_FORMAT = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit" });
+
+/**
+ * Who wrote this, above their words — the line a group needs and a direct chat does not.
+ *
+ * Everything here is a link to the author: in a group the name is often the only thing that
+ * identifies a stranger, and having to leave for the member list to find out who they are is what
+ * made a busy group unreadable. The marks travel with the author for the same reason they do in the
+ * feed — a premium star, a staff badge, a tick and the gift worn beside the name all say something
+ * about who is speaking, and a chat is exactly where that is worth knowing.
+ */
+function SenderLine({ author }: { author: User }) {
+  return (
+    <span className="mb-0.5 flex min-w-0 items-center gap-1">
+      {author.is_admin ? <AdminMark size={12} /> : null}
+      <Link
+        href={`/u/${author.username}`}
+        onClick={(event) => event.stopPropagation()}
+        className="min-w-0 truncate text-[13px] font-bold leading-4 hover:underline"
+        style={{ color: nameColor(author.profile_color) }}
+      >
+        {author.display_name}
+      </Link>
+      {author.verified ? <VerifiedMark size={12} /> : null}
+      {author.is_premium ? (
+        <PremiumMark size={11} profileColor={author.profile_color} />
+      ) : null}
+      {author.name_gift ? (
+        <GiftDetailTrigger
+          gift={author.name_gift as RichGift}
+          className="inline-grid size-[16px] shrink-0 place-items-center border-0 bg-transparent p-0 transition-transform duration-150 hover:scale-[1.12] active:scale-95"
+          label={`View gift ${author.name_gift.name}`}
+        >
+          <GiftImage {...giftArtProps(author.name_gift)} size={16} bare />
+        </GiftDetailTrigger>
+      ) : null}
     </span>
   );
 }
@@ -165,7 +218,7 @@ function ClaimableGiftCard({
  * its own component because the action list is a hook, and hooks cannot be called from a
  * `.map()` over a changing number of messages.
  */
-export function MessageBubble({
+function MessageBubbleRow({
   message,
   chatId,
   onReply,
@@ -176,6 +229,9 @@ export function MessageBubble({
   selectable = false,
   selected = false,
   onToggleSelect,
+  showSender = false,
+  showAvatar = false,
+  showGutter = false,
 }: {
   message: Message;
   chatId: string;
@@ -187,7 +243,20 @@ export function MessageBubble({
   /** Selection mode swaps the action list for a checkbox, as the reference does. */
   selectable?: boolean;
   selected?: boolean;
-  onToggleSelect?: () => void;
+  /** Takes the id so the prop stays stable across renders and `memo` can do its job. */
+  onToggleSelect?: (id: string) => void;
+  /** Group chats name the author over the first bubble of each run. */
+  showSender?: boolean;
+  /** And put their picture beside that first bubble. */
+  showAvatar?: boolean;
+  /**
+   * Keep the picture's width free even where no picture is drawn.
+   *
+   * Every bubble in a run needs this, not just the one with the avatar: without it the second
+   * message of a run started where the avatar does and the first started 40px further in, so a
+   * person's own messages did not line up with each other.
+   */
+  showGutter?: boolean;
 }) {
   const actions = useMessageActions({
     message,
@@ -200,12 +269,11 @@ export function MessageBubble({
   });
   const reaction = useReaction(chatId, message.id);
   const reduceMotion = useReducedMotion();
-  const time = new Intl.DateTimeFormat("ru-RU", {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(message.created_at));
+  const time = TIME_FORMAT.format(new Date(message.created_at));
 
   // Entrances rise from the sender's side; exits fall away, so a delete is visible.
+  // A bubble that started as an optimistic row is already on screen by the time the server's
+  // copy folds in, so its entrance must not play a second time.
   const motionProps = reduceMotion
     ? {}
     : {
@@ -218,7 +286,6 @@ export function MessageBubble({
   if (message.service) {
     return (
       <motion.div
-        layout
         {...motionProps}
         className="flex justify-center py-2.5"
       >
@@ -229,10 +296,9 @@ export function MessageBubble({
 
   return (
     <motion.div
-      layout
       {...motionProps}
       id={`message-${message.id}`}
-      onClick={selectable ? onToggleSelect : undefined}
+      onClick={selectable && onToggleSelect ? () => onToggleSelect(message.id) : undefined}
       className={`flex items-center gap-2 px-0.5 py-[3px] ${
         message.is_mine ? "justify-end" : "justify-start"
       } ${selectable ? "cursor-pointer rounded-[12px]" : ""} ${
@@ -252,14 +318,35 @@ export function MessageBubble({
           {selected ? <Check size={15} /> : null}
         </span>
       ) : null}
+      {/* The gutter is held open for the whole run, so consecutive bubbles from one person line up
+          under the first instead of starting 40px to its left where no picture is drawn. */}
+      {showGutter || showAvatar ? (
+        <span className="order-first flex size-8 flex-none items-start self-start">
+          {showAvatar ? (
+            <Link
+              href={`/u/${message.sender.username}`}
+              onClick={(event) => event.stopPropagation()}
+              aria-label={`${message.sender.display_name}'s profile`}
+              className="transition-transform duration-150 hover:scale-105 active:scale-95"
+            >
+              <UserAvatar
+                src={message.sender.avatar_url}
+                name={message.sender.display_name}
+                size={32}
+              />
+            </Link>
+          ) : null}
+        </span>
+      ) : null}
       <div
         className={`flex max-w-[86%] min-w-0 flex-col ${message.is_mine ? "items-end" : "items-start"}`}
       >
         <div
           className={`group flex min-w-0 max-w-full items-center gap-1 ${message.is_mine ? "flex-row" : "flex-row-reverse"}`}
         >
-          {/* Actions sit outside the bubble so they never cover the text. */}
-          {selectable ? null : (
+          {/* Actions sit outside the bubble so they never cover the text. A row the server has
+              not acknowledged has no id anyone can act on, so it offers nothing yet. */}
+          {selectable || message.pending ? null : (
             <MessageActionsButton
               actions={actions}
               alignEnd={message.is_mine}
@@ -269,7 +356,7 @@ export function MessageBubble({
           <MessageContextMenu
             actions={actions}
             onReact={(emoji) => reaction.mutate(emoji)}
-            disabled={selectable}
+            disabled={selectable || Boolean(message.pending)}
           >
             <div
               className={`min-w-0 max-w-full rounded-[15px] px-2 pb-[5px] pt-1 text-[16px] leading-6 ${
@@ -278,6 +365,7 @@ export function MessageBubble({
                   : "rounded-bl-[5px] rounded-tl-[5px] bg-[var(--bubble-in)] text-[var(--ink)]"
               }`}
             >
+              {showSender ? <SenderLine author={message.sender} /> : null}
               {message.forwarded_from ? (
                 <span
                   className={`mb-1 flex items-center gap-1 text-[12px] font-semibold ${
@@ -285,7 +373,7 @@ export function MessageBubble({
                   }`}
                 >
                   <CornerUpRight size={12} />
-                  Переслано от {message.forwarded_from.display_name}
+                  Forwarded from {message.forwarded_from.display_name}
                 </span>
               ) : null}
               {message.reply_to ? (
@@ -299,24 +387,22 @@ export function MessageBubble({
                 </span>
               ) : null}
               {message.media_url ? (
-                /* A picture is the message, so it bleeds to the bubble's edges: the negative
-                   margins cancel the bubble's own padding without changing its width. The
-                   caption below keeps that padding. Opening the original in a tab beats a
-                   half-built viewer that cannot zoom. */
-                <a
-                  href={message.media_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="-mx-2 -mt-1 mb-1 block overflow-hidden rounded-[13px]"
-                  aria-label="Открыть изображение"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element -- served from the API's own /media, not the Next image pipeline */}
-                  <img
-                    src={message.media_url}
-                    alt={message.content || "Изображение"}
-                    className="block max-h-[340px] w-[260px] max-w-full object-cover"
-                  />
-                </a>
+                <MessageMedia
+                  url={message.media_url}
+                  kind={message.media_kind === "video" ? "video" : "image"}
+                  caption={message.content}
+                />
+              ) : null}
+              {message.file_url ? (
+                <MessageFile
+                  url={message.file_url}
+                  name={message.file_name ?? "File"}
+                  size={message.file_size}
+                  mine={message.is_mine}
+                />
+              ) : null}
+              {message.story ? (
+                <MessageStoryCard story={message.story} mine={message.is_mine} />
               ) : null}
               {message.gift ? (
                 message.gift_claimable || message.gift_claimed_by ? (
@@ -326,29 +412,51 @@ export function MessageBubble({
                 )
               ) : message.content ? (
                 <MessageText text={message.content} mine={message.is_mine} />
-              ) : null}
+              ) : message.story || message.media_url || message.file_url ? null : (
+                /* Nothing left to draw: a shared story whose author took it down leaves the
+                   bubble where it was, and an empty rectangle would read as a bug. */
+                <span className={`text-[14px] italic ${message.is_mine ? "text-white/65" : "text-[var(--dim)]"}`}>
+                  Message unavailable
+                </span>
+              )}
               <span
                 className={`mt-0.5 flex items-center justify-end gap-1 text-[11px] leading-none ${
                   message.is_mine ? "text-white/70" : "text-[var(--muted)]"
                 }`}
               >
                 {message.pinned ? <Pin size={11} /> : null}
-                {message.edited_at ? "изменено · " : null}
+                {message.edited_at ? "edited · " : null}
                 {time}
-                {/* One tick on send, two once everyone else has read past it. */}
+                {/* A clock while the server has not answered, one tick once it has, two once
+                    everyone else has read past it. */}
                 {message.is_mine ? (
-                  message.read ? (
-                    <CheckCheck size={13} aria-label="Прочитано" />
+                  message.pending ? (
+                    <Clock size={12} aria-label="Sending" className="opacity-80" />
+                  ) : message.read ? (
+                    <CheckCheck size={13} aria-label="Read" />
                   ) : (
-                    <Check size={13} aria-label="Отправлено" />
+                    <Check size={13} aria-label="Sent" />
                   )
                 ) : null}
               </span>
             </div>
           </MessageContextMenu>
         </div>
-        <ReactionChips message={message} chatId={chatId} />
+        {/* Mounted only when there is something to show: the chips carry a mutation of their
+            own, and a hundred bubbles with no reactions were paying for a hundred of them. */}
+        {message.reactions?.length ? <ReactionChips message={message} chatId={chatId} /> : null}
       </div>
     </motion.div>
   );
 }
+
+
+/**
+ * Memoised on purpose.
+ *
+ * A thread of a hundred bubbles re-rendered on every keystroke in the composer, and each row
+ * carries three mutations, a reaction hook, a context menu and — for a gift — a Lottie player.
+ * The parent now passes stable callbacks, so this bails out unless the message itself, its
+ * selection state or the chat changed.
+ */
+export const MessageBubble = memo(MessageBubbleRow);

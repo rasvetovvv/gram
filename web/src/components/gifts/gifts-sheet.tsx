@@ -24,8 +24,8 @@ export function GiftsSheet() {
       onOpenChange={(next) => {
         if (!next) closeGifts();
       }}
-      title="Коллекционные подарки"
-      description="Каталог, ваша коллекция и предложения по подаркам."
+      title="Collectible gifts"
+      description="Catalog, your collection, and gift suggestions."
       headerRight={
         <Link
           href="/stars"

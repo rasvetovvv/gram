@@ -12,6 +12,21 @@ export type ProfileBadge = {
   visible_in_profile?: boolean;
 };
 
+/** One badge as its owner sees it in the picker: earned or not, and how far off. */
+export type BadgeOffer = {
+  badge: ProfileBadge;
+  earned: boolean;
+  chosen: boolean;
+  progress?: number | null;
+  target?: number | null;
+};
+
+export type MyBadges = {
+  limit: number;
+  slots: string[];
+  badges: BadgeOffer[];
+};
+
 export type User = {
   id: string;
   username: string;
@@ -33,6 +48,15 @@ export type User = {
   following_count: number;
   posts_count?: number;
   related_usernames?: string[];
+  /**
+   * Every personal handle the account holds, and the ceiling on that collection.
+   *
+   * `related_usernames` is what the profile *shows*; this is what it *could* show. The edit sheet
+   * needs both — the first to pre-select, the second to offer — and it needs the cap from here
+   * rather than a constant of its own, or the picker and the server disagree about the limit.
+   */
+  owned_usernames?: string[];
+  max_usernames?: number;
   badges?: ProfileBadge[];
   note?: string | null;
   can_edit_note?: boolean;
@@ -67,7 +91,13 @@ export type User = {
   profile_color?: string;
   streak_days?: number;
   is_official?: boolean;
-  /** Presence the owner allows others to see; when hidden the UI says "недавно". */
+  /** Moderation, visible wherever the account appears. The history stays; it is labelled. */
+  is_banned?: boolean;
+  banned_at?: string | null;
+  ban_reason?: string | null;
+  reports_count?: number;
+  heavily_reported?: boolean;
+  /** Presence the owner allows others to see; when hidden the UI says "recently". */
   presence_hidden?: boolean;
   status_emoji?: string | null;
   status_text?: string | null;
@@ -216,7 +246,10 @@ export type Post = {
   like_count?: number;
   is_bookmarked?: boolean;
   is_reposted?: boolean;
-  /** Set once the author has rewritten it, which is what draws «ред.» after the date. */
+  /** Hidden by staff: only the author and admins receive it, and both are told why. */
+  hidden_at?: string | null;
+  hidden_reason?: string | null;
+  /** Set once the author has rewritten it, which is what draws «edited» after the date. */
   edited_at?: string | null;
   /** The one post an author keeps at the top of their profile. */
   is_pinned?: boolean;
@@ -235,6 +268,9 @@ export type Post = {
   community_title?: string | null;
   community_avatar_url?: string | null;
   community_verified?: boolean;
+  /** When a queued post goes out. Only its own author ever receives one of these. */
+  publish_at?: string | null;
+  scheduled?: boolean;
 };
 
 export type ChatKind = "direct" | "group" | "secret" | "saved";
@@ -252,6 +288,11 @@ export type Chat = {
   last_message_detail?: Message | null;
   updated_at: string;
   unread_count: number;
+  /**
+   * Never sent by the API: typing is live, and a list fetched every fifteen seconds cannot carry it.
+   * The conversation's own socket does — see `useChatSocket` — and this stays only because a chat
+   * summary built on the client may still set it.
+   */
   is_typing?: boolean;
   pinned?: boolean;
   archived?: boolean;
@@ -263,6 +304,23 @@ export type Chat = {
   peer_blocked?: boolean;
   /** They blocked me: writing is refused, and the chat says so instead of failing silently. */
   blocked_by_peer?: boolean;
+  /** Groups: anybody with the link may join. */
+  is_public?: boolean;
+  /** The link itself, handed only to members. */
+  invite_code?: string | null;
+  /** Whether this reader may bring somebody in — a private group answers "only the owner". */
+  can_invite?: boolean;
+  is_owner?: boolean;
+};
+
+/** What a group's invite link shows before anybody walks in. */
+export type GroupInvitePreview = {
+  chat_id: string;
+  title: string;
+  avatar_url?: string | null;
+  members_count: number;
+  owner?: User | null;
+  is_member?: boolean;
 };
 
 export type ChatMemberEntry = {
@@ -278,10 +336,25 @@ export type ChatLink = {
   created_at: string;
 };
 
+export type ChatAttachment = {
+  kind: "image" | "video" | "file";
+  url: string;
+  /** Only a document carries a name and a size worth showing before it is fetched. */
+  name?: string | null;
+  size?: number | null;
+  message_id: string;
+  sender_name: string;
+  created_at: string;
+};
+
 export type ChatInfo = {
   chat: Chat;
   members: ChatMemberEntry[];
   links: ChatLink[];
+  /** Pictures and clips shared here, newest first. */
+  media: ChatAttachment[];
+  /** Documents shared here, newest first. */
+  files: ChatAttachment[];
   gifts: GiftSummary[];
   messages_count: number;
 };
@@ -315,8 +388,14 @@ export type Message = {
   /** The author, so a group preview can name who spoke. */
   sender: User;
   content: string;
-  /** An attached picture; `content` reads as its caption. */
+  /** An attached picture or clip; `content` reads as its caption. */
   media_url?: string | null;
+  /** Which of the two it is. Absent reads as a picture, which is what older rows hold. */
+  media_kind?: "image" | "video" | null;
+  /** An attached document, described before anyone downloads it. */
+  file_url?: string | null;
+  file_name?: string | null;
+  file_size?: number | null;
   created_at: string;
   is_mine: boolean;
   /** Two ticks: everyone else in the chat has read past this message of mine. */
@@ -329,12 +408,25 @@ export type Message = {
   reactions?: MessageReaction[];
   /** Present when the message announces a gift; rendered as a card. */
   gift?: GiftSummary | null;
+  /** Present when somebody shared a story here; rendered as its own card. */
+  story?: MessageStory | null;
   /** A gift dropped into a group waits for the first member who presses the button. */
   gift_claimable?: boolean;
   gift_claimed_by?: User | null;
   reply_to?: MessageQuote | null;
   /** Set on a forwarded copy: whose words these originally were. */
   forwarded_from?: User | null;
+  /**
+   * The key this row is drawn under, when it started life as an optimistic bubble.
+   *
+   * A message sent optimistically gets a temporary id, and the server's row carries a different
+   * one. Keying the list off the id alone would make the swap an unmount and a remount — the
+   * bubble would blink out and animate back in. The client key is carried across the swap so
+   * the row keeps its identity, and its entrance plays exactly once.
+   */
+  client_key?: string;
+  /** True while the server has not yet acknowledged this row: the tick waits, actions wait. */
+  pending?: boolean;
 };
 
 export type UsernameAsset = {
@@ -353,6 +445,28 @@ export type UsernameAsset = {
   is_owned_by_me?: boolean;
   /** The owner is keeping this handle and refuses offers on it. */
   offers_disabled?: boolean;
+  /** Set when the handle points at a channel rather than at a person. */
+  community_slug?: string | null;
+  community_title?: string | null;
+  /** That channel's own address — which is why it cannot be sold from under it. */
+  is_community_primary?: boolean;
+  listed_at?: string | null;
+  /** The best standing bid, and this reader's own if they made one. */
+  top_offer_stars?: number | null;
+  my_offer_stars?: number | null;
+};
+
+/** A bid on a handle. The stars are held from the moment it is made. */
+export type UsernameOffer = {
+  id: string;
+  asset_id: string;
+  username: string;
+  bidder: User;
+  amount_stars: number;
+  status: "pending" | "accepted" | "declined" | "withdrawn" | "cancelled";
+  created_at: string;
+  responded_at?: string | null;
+  is_mine?: boolean;
 };
 
 export type Gift = {
@@ -382,7 +496,7 @@ export type Gift = {
   owner?: User;
   backdrop?: string;
   traits?: Record<string, string | number>;
-  showcased_as?: "featured" | "name" | null;
+  showcased_as?: "featured" | "cover2" | "cover3" | "cover4" | "name" | null;
   provenance?: GiftProvenanceEvent[];
   /** Drawing keys: the object, the pattern behind it, and the outer backdrop colour. */
   art?: string;
@@ -506,6 +620,10 @@ export type AccountSettings = {
   show_online: boolean;
   private_account: boolean;
   who_can_message: MessagePrivacy;
+  /** Whether anybody may hand this account a collectible handle without being asked. */
+  accept_usernames: boolean;
+  /** Whether anybody may send this account a gift. */
+  accept_gifts: boolean;
   status_emoji: string | null;
   status_text: string | null;
   notify_likes: boolean;
@@ -536,6 +654,18 @@ export type AuthSession = {
   user: User;
   access_expires_at: string;
 };
+
+export type EmailAuthChallenge = {
+  challenge_id: string;
+  purpose: "register" | "login";
+  masked_email: string;
+  expires_in: number;
+  resend_after: number;
+  delivery: "sent" | "failed";
+  requires_email_code: true;
+};
+
+export type AuthStart = AuthSession | EmailAuthChallenge;
 
 export type RegisterInput = {
   email: string;
@@ -584,6 +714,9 @@ export type CommunityCompact = {
   title: string;
   avatar_url: string | null;
   members_count: number;
+  /** The channel's own staff-granted tick — what its page draws. */
+  is_verified?: boolean;
+  /** Whether the person who runs it is verified. Not a tick on the channel. */
   owner_verified: boolean;
 };
 
@@ -602,13 +735,44 @@ export type ProfileStory = {
   created_at: string;
   expires_at?: string | null;
   highlight: boolean;
+  /** The author's own number: nobody else is told who watched. */
+  views_count?: number;
+  seen?: boolean;
+  is_mine?: boolean;
 };
 
 export type ProfileStoryCreate = {
-  title: string;
+  title?: string;
   media_url: string;
   highlight?: boolean;
   expires_at?: string | null;
+  /** Publish into a channel the author owns instead of onto their own profile. */
+  community_slug?: string | null;
+};
+
+/** One author's live stories, the way the feed rail groups them. */
+export type StoryFeedEntry = {
+  author: User;
+  stories: ProfileStory[];
+  has_unseen: boolean;
+  is_me: boolean;
+};
+
+export type StoryViewer = {
+  user: User;
+  at: string;
+};
+
+/** A story shared into a chat: the bubble draws this card and opens the original. */
+export type MessageStory = {
+  id: string;
+  author: User;
+  title: string;
+  media_url: string;
+  created_at: string;
+  expires_at?: string | null;
+  /** False once the window closed — the card stays and says the story is gone. */
+  active: boolean;
 };
 
 export type ProfileReply = {
@@ -695,10 +859,57 @@ export type UsernameHistoryEvent = {
 
 export type ToggleResult = { active: boolean; count: number };
 
+/** One row of the star shop: what you get here, and what Telegram charges for it. */
+export type StarPackage = {
+  slug: string;
+  stars: number;
+  price_xtr: number;
+  /** Site stars per Telegram Star, so a bigger pack can visibly be the better deal. */
+  per_xtr: number;
+  bonus_percent: number;
+};
+
+/** An order for stars, paid inside our Telegram bot. */
+export type StarOrder = {
+  id: string;
+  package_slug: string;
+  stars: number;
+  price_xtr: number;
+  status: "pending" | "paid" | "cancelled" | "expired" | "refunded" | "paid_out";
+  /** The deep link that opens the bot with this order already chosen. */
+  bot_url: string;
+  created_at: string;
+  paid_at?: string | null;
+  /** Telegram's own id for the charge — the number a support request is opened with. */
+  telegram_charge_id?: string | null;
+  /** Whether a refund can be asked for right now, and why not when it cannot. */
+  refundable?: boolean;
+  refund_blocked_reason?: string | null;
+  refund?: StarRefund | null;
+};
+
+/** A refund request: the buyer's reason, and what an admin decided about it. */
+export type StarRefund = {
+  id: string;
+  purchase_id: string;
+  status: "pending" | "approved" | "declined" | "failed";
+  reason: string;
+  admin_note?: string | null;
+  requested_at: string;
+  decided_at?: string | null;
+};
+
 export type StarWallet = {
   balance: number;
   currency: "STARS";
   updated_at: string;
+  /**
+   * Whether stars may be taken out right now.
+   *
+   * The Telegram half of a payout is settled by a person, so the way out can be closed. Absent on
+   * older responses, which is read as open.
+   */
+  payouts_enabled?: boolean;
 };
 
 export type StarTransaction = {
@@ -759,6 +970,12 @@ export type Community = {
   location?: string | null;
   website_url?: string | null;
   is_private: boolean;
+  /**
+   * Staff-granted, like a person's tick, and the channel's own — never its owner's. It was missing
+   * from this shape, so a card that wanted the channel's tick had to read `owner.verified` and drew
+   * one on every channel a verified person ran.
+   */
+  is_verified?: boolean;
   members_count: number;
   is_member: boolean;
   is_owner: boolean;
@@ -767,6 +984,8 @@ export type Community = {
   is_paid: boolean;
   monthly_price: number;
   created_at: string;
+  /** Every handle that opens this channel, its own address first. */
+  usernames?: string[];
 };
 
 export type CommunityCreateInput = {
@@ -815,4 +1034,298 @@ export type ApiErrorShape = {
   detail?: string | ApiValidationIssue[];
   message?: string;
   code?: string;
+};
+
+/** Staff tools. Everything here is behind `is_admin` and every write lands in the audit log. */
+export type AdminOverview = {
+  users: number;
+  banned_users: number;
+  admins: number;
+  verified_users: number;
+  open_reports: number;
+  open_legal_reports: number;
+  resolved_reports: number;
+  hidden_posts: number;
+  hidden_comments: number;
+  communities: number;
+  gifts: number;
+  stars_in_circulation: number;
+  actions_today: number;
+  /* The money side: two queues waiting for a person, and what has actually moved. */
+  pending_payouts: number;
+  pending_payout_stars: number;
+  pending_refunds: number;
+  paid_orders: number;
+  xtr_collected: number;
+  xtr_refunded: number;
+  xtr_paid_out: number;
+};
+
+export type VerificationTier = "official" | "creator" | "signal" | "founder";
+
+export type AdminUser = {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url?: string | null;
+  bio?: string;
+  location?: string | null;
+  role_title?: string | null;
+  profile_color?: string;
+  is_verified?: boolean;
+  verification_tier?: VerificationTier | null;
+  is_admin?: boolean;
+  is_premium?: boolean;
+  is_banned?: boolean;
+  banned_at?: string | null;
+  ban_reason?: string | null;
+  banned_by?: User | null;
+  joined_at: string;
+  followers_count?: number;
+  stars_balance?: number;
+  gifts_count?: number;
+  posts_count?: number;
+  usernames_count?: number;
+  reports_count?: number;
+  open_reports_count?: number;
+};
+
+export type ReportTarget = "user" | "post" | "comment" | "message" | "community";
+
+export type Report = {
+  id: string;
+  reporter?: User | null;
+  target_type: ReportTarget;
+  target_id: string;
+  subject?: User | null;
+  reason: string;
+  reason_label: string;
+  text?: string | null;
+  excerpt?: string | null;
+  status: "open" | "resolved" | "dismissed";
+  resolution?: string | null;
+  resolved_by?: User | null;
+  resolved_at?: string | null;
+  created_at: string;
+  /** How many people complained about the same thing, which is what makes it a pattern. */
+  target_reports: number;
+};
+
+export type LegalReportKind =
+  | "copyright"
+  | "trademark"
+  | "privacy"
+  | "illegal_content"
+  | "impersonation"
+  | "abuse"
+  | "fraud_spam"
+  | "account_access"
+  | "technical"
+  | "other";
+
+export type LegalReporterRole =
+  | "rights_holder"
+  | "authorized_agent"
+  | "content_subject"
+  | "platform_user"
+  | "other";
+
+export type LegalReportInput = {
+  kind: LegalReportKind;
+  reporter_role: LegalReporterRole;
+  reporter_name: string;
+  reporter_email: string;
+  country?: string;
+  account_username?: string;
+  content_urls: string[];
+  original_work?: string;
+  details: string;
+  requested_action?: string;
+  electronic_signature?: string;
+  good_faith: boolean;
+  accuracy_confirmed: boolean;
+  consent_to_process: boolean;
+  website?: string;
+};
+
+export type LegalReportReceipt = {
+  reference_code: string;
+  status: "received";
+};
+
+export type LegalReport = {
+  id: string;
+  reference_code: string;
+  kind: LegalReportKind;
+  reporter_role: LegalReporterRole;
+  reporter_name: string;
+  reporter_email: string;
+  country?: string | null;
+  account_username?: string | null;
+  content_urls: string[];
+  original_work?: string | null;
+  details: string;
+  requested_action?: string | null;
+  electronic_signature?: string | null;
+  status: "open" | "resolved" | "dismissed";
+  resolution?: string | null;
+  resolved_by?: User | null;
+  resolved_at?: string | null;
+  created_at: string;
+};
+
+export type AdminAction = {
+  id: string;
+  actor?: User | null;
+  action: string;
+  target_type: string;
+  target_id: string;
+  target_label?: string | null;
+  reason?: string | null;
+  /* Whatever the action recorded beyond its reason — an amount, a status, where it came from. */
+  details?: Record<string, string | number | boolean | null> | null;
+  created_at: string;
+};
+
+/** A withdrawal request, as its owner sees it on /stars. */
+export type StarPayout = {
+  id: string;
+  stars: number;
+  price_xtr: number;
+  status: "pending" | "approved" | "paid" | "declined" | "failed" | "cancelled";
+  telegram_user_id?: number | null;
+  telegram_username?: string | null;
+  admin_note?: string | null;
+  requested_at: string;
+  decided_at?: string | null;
+  paid_at?: string | null;
+  cancellable: boolean;
+};
+
+/** The same request in the panel, with who asked and what they hold now. */
+export type AdminPayout = StarPayout & {
+  user: User;
+  balance: number;
+  decided_by?: User | null;
+  /* Whether the bot can settle it alone by handing a charge of the same size back. */
+  automatic: boolean;
+};
+
+export type AdminStarOrder = {
+  id: string;
+  user: User;
+  package_slug: string;
+  stars: number;
+  price_xtr: number;
+  status: string;
+  telegram_user_id?: number | null;
+  telegram_charge_id?: string | null;
+  created_at: string;
+  paid_at?: string | null;
+  refund_status?: string | null;
+};
+
+export type AdminRefund = {
+  id: string;
+  purchase_id: string;
+  user: User;
+  stars: number;
+  price_xtr: number;
+  balance: number;
+  reason: string;
+  status: string;
+  admin_note?: string | null;
+  telegram_charge_id?: string | null;
+  telegram_user_id?: number | null;
+  /* Why approving right now would fail — checked again at the moment of the decision. */
+  blocked_reason?: string | null;
+  requested_at: string;
+  decided_at?: string | null;
+  telegram_done_at?: string | null;
+};
+
+export type AdminLedgerEntry = {
+  id: string;
+  user: User;
+  counterparty?: User | null;
+  amount: number;
+  balance_after: number;
+  kind: string;
+  description: string;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  created_at: string;
+};
+
+export type AdminCommunity = {
+  id: string;
+  slug: string;
+  title: string;
+  description?: string;
+  category?: string | null;
+  location?: string | null;
+  owner?: User | null;
+  members_count?: number;
+  posts_count?: number;
+  reports_count?: number;
+  created_at: string;
+};
+
+/** One minted collectible as the panel lists it — enough to decide, not the whole card. */
+export type AdminGiftItem = {
+  id: string;
+  slug: string;
+  name: string;
+  serial_number: number;
+  rarity: string;
+  upgraded?: boolean;
+  model_name?: string;
+  accent?: string;
+  design_slug?: string | null;
+  is_listed?: boolean;
+  sale_price_stars?: number | null;
+  transfers_count?: number;
+  received_at: string;
+};
+
+export type AdminUsernameItem = {
+  username: string;
+  status: string;
+  is_primary?: boolean;
+  price?: number | null;
+  history_count?: number;
+};
+
+export type AdminPostItem = {
+  id: string;
+  content: string;
+  created_at: string;
+  hidden_at?: string | null;
+  hidden_reason?: string | null;
+  community_slug?: string | null;
+  likes_count?: number;
+  comments_count?: number;
+  reports_count?: number;
+};
+
+export type AdminInventory = {
+  gifts: AdminGiftItem[];
+  usernames: AdminUsernameItem[];
+  posts: AdminPostItem[];
+};
+
+/** The storefront side of a design: supply, price, whether it is on sale at all. */
+export type AdminDesign = {
+  slug: string;
+  name: string;
+  price_stars: number;
+  edition_size: number;
+  minted: number;
+  remaining: number;
+  limited: boolean;
+  available: boolean;
+  on_market: boolean;
+  models_count?: number;
+  backdrops_count?: number;
+  symbols_count?: number;
 };

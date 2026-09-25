@@ -10,22 +10,23 @@ import { nameColor, nameStyle, profileTheme } from "@/lib/profile-color";
 import { UserAvatar } from "../user-avatar";
 
 const RARITY_LABEL: Record<string, string> = {
-  common: "Обычный",
-  standard: "Обычный",
-  rare: "Редкий",
-  unique: "Уникальный",
-  legendary: "Легендарный",
-  founder: "Легендарный"
+  common: "Common",
+  standard: "Common",
+  rare: "Rare",
+  unique: "Unique",
+  legendary: "Legendary",
+  founder: "Legendary"
 };
 
 const ACTION_TEXT: Record<string, string> = {
-  acquired: "Это имя приобретено у другого пользователя",
-  reserved: "Это имя зарезервировано",
-  profile_username: "Это имя используется как основное",
-  released_handle: "Это имя сохранено за аккаунтом",
-  listed: "Это имя выставлено владельцем",
-  unlisted: "Это имя снято с продажи",
-  registered: "Это имя занято при регистрации"
+  acquired: "This name was acquired from another user",
+  reserved: "This name is reserved",
+  profile_username: "This name is used as the primary one",
+  released_handle: "This name is kept with the account",
+  released: "This name was released by its previous owner",
+  listed: "This name was listed by its owner",
+  unlisted: "This name was removed from sale",
+  registered: "This name was taken at registration"
 };
 
 /** Tapping a handle shows who owns it — usernames are ownership records, not listings. */
@@ -59,7 +60,7 @@ export function UsernameOwnershipDialog({
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[80] bg-black/78 backdrop-blur-sm" />
         <Dialog.Content className="fixed inset-x-3 bottom-3 z-[90] mx-auto max-w-[440px] rounded-[28px] bg-[#17171d] p-6 text-center shadow-[0_28px_90px_rgba(0,0,0,.7)] outline-none sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:w-[440px] sm:-translate-x-1/2 sm:-translate-y-1/2">
-          <Dialog.Close className="icon-button absolute right-4 top-4" aria-label="Закрыть">
+          <Dialog.Close className="icon-button absolute right-4 top-4" aria-label="Close">
             <X size={20} />
           </Dialog.Close>
           <motion.div
@@ -81,7 +82,7 @@ export function UsernameOwnershipDialog({
             ) : asset ? (
               <>
                 <Dialog.Title className="mx-auto mt-5 max-w-[22ch] text-[1.32rem] font-extrabold leading-tight">
-                  @{asset.username} — коллекционное имя пользователя, принадлежащее
+                  @{asset.username} — a collectible username, owned by
                 </Dialog.Title>
                 {asset.owner ? (
                   <a
@@ -92,37 +93,37 @@ export function UsernameOwnershipDialog({
                     <strong className="text-[0.95rem]" style={{ color: nameColor(asset.owner.profile_color) }}>{asset.owner.display_name}</strong>
                   </a>
                 ) : (
-                  <p className="mb-0 mt-4 text-sm text-[var(--muted)]">Имя свободно</p>
+                  <p className="mb-0 mt-4 text-sm text-[var(--muted)]">Name is available</p>
                 )}
                 <Dialog.Description className="mb-0 mt-4 text-[0.92rem] leading-6 text-[var(--muted)]">
-                  {ACTION_TEXT[asset.last_action ?? ""] ?? "Это имя закреплено за аккаунтом"}
+                  {ACTION_TEXT[asset.last_action ?? ""] ?? "This name is assigned to an account"}
                   {asset.last_action_at ? ` ${formatMoment(asset.last_action_at)}` : ""}
                 </Dialog.Description>
                 <span className="mt-3.5 inline-block rounded-full bg-[#27272a] px-3 py-1.5 text-xs font-bold text-[#d6d7de]">
-                  {RARITY_LABEL[asset.rarity] ?? "Обычный"}
+                  {RARITY_LABEL[asset.rarity] ?? "Common"}
                 </span>
                 <button
                   className="mt-5 flex min-h-[52px] w-full items-center justify-center rounded-full border-0 px-5 text-[1.02rem] font-extrabold"
                   style={{ background: theme.soft, color: theme.onAccent }}
-                  onClick={() => copy(`${window.location.origin}/u/${asset.username}`, "Ссылка скопирована")}
+                  onClick={() => copy(`${window.location.origin}/u/${asset.username}`, "Link copied")}
                 >
-                  Скопировать ссылку
+                  Copy link
                 </button>
                 <button
                   className="mt-3 min-h-11 w-full border-0 bg-transparent text-[0.95rem] font-bold text-[var(--muted)]"
-                  onClick={() => copy(`@${asset.username}`, "Юзернейм скопирован")}
+                  onClick={() => copy(`@${asset.username}`, "Username copied")}
                 >
-                  Скопировать @{asset.username}
+                  Copy @{asset.username}
                 </button>
               </>
             ) : (
               <>
-                <Dialog.Title className="mt-5 text-lg font-extrabold">Имя не найдено</Dialog.Title>
+                <Dialog.Title className="mt-5 text-lg font-extrabold">Name not found</Dialog.Title>
                 <Dialog.Description className="mb-0 mt-2 text-sm text-[var(--muted)]">
-                  {lookup.error?.message ?? `@${username} пока не закреплено ни за одним аккаунтом.`}
+                  {lookup.error?.message ?? `@${username} isn't assigned to any account yet.`}
                 </Dialog.Description>
                 <button className="quiet-button mt-4" onClick={() => lookup.refetch()}>
-                  <RefreshCw size={16} />Повторить
+                  <RefreshCw size={16} />Retry
                 </button>
               </>
             )}
@@ -135,7 +136,7 @@ export function UsernameOwnershipDialog({
 }
 
 /**
- * Renders the profile's "а также" list, where each handle opens its ownership card.
+ * Renders the profile's "and also" list, where each handle opens its ownership card.
  * Handles carry the owner's colour scheme, matching how the reference tints them.
  */
 export function RelatedUsernames({ handles, profileColor }: { handles: string[]; profileColor?: string | null }) {
@@ -145,7 +146,7 @@ export function RelatedUsernames({ handles, profileColor }: { handles: string[];
   return (
     <>
       <p className="mb-0 mt-1 text-sm leading-6">
-        <span className="text-[var(--muted)]">а также </span>
+        <span className="text-[var(--muted)]">and also </span>
         {handles.map((handle, index) => {
           const name = handle.replace(/^@+/, "");
           return (
@@ -175,7 +176,7 @@ export function RelatedUsernames({ handles, profileColor }: { handles: string[];
 function formatMoment(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  const day = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric" }).format(date);
-  const time = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(date);
-  return `${day} в ${time}`;
+  const day = new Intl.DateTimeFormat("en-US", { day: "numeric", month: "long", year: "numeric" }).format(date);
+  const time = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit" }).format(date);
+  return `${day} at ${time}`;
 }

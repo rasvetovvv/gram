@@ -10,7 +10,7 @@ import { useToast } from "../ui/toast";
  * A complaint about someone else's post.
  *
  * The reason is stored with the post, not answered by a toast and forgotten: the sheet says
- * «Жалоба отправлена» because a row was written, and sending it twice replaces the reason
+ * "Report sent" because a row was written, and sending it twice replaces the reason
  * rather than counting twice.
  */
 export function PostReportSheet({
@@ -27,19 +27,19 @@ export function PostReportSheet({
     mutationFn: ({ reason, comment }: { reason: PostReportReason; comment: string }) =>
       api.reportPost(post.id, reason, comment),
     onSuccess: () => {
-      notify("Жалоба отправлена", { variant: "success", detail: "Мы посмотрим на эту запись." });
+      notify("Report sent", { variant: "success", detail: "We'll take a look at this post." });
       onOpenChange(false);
     },
     onError: (error: Error) =>
-      notify("Не удалось отправить", { variant: "error", detail: error.message })
+      notify("Couldn't send", { variant: "error", detail: error.message })
   });
 
   return (
     <ReportSheet
       open={open}
       onOpenChange={onOpenChange}
-      subject={`Запись @${post.author.username}`}
-      note="Автор не узнает, кто пожаловался. Запись останется в ленте до решения."
+      subject={`Post by @${post.author.username}`}
+      note="The author won't know who reported. The post stays in the feed until a decision is made."
       pending={send.isPending}
       onSend={(reason, comment) => send.mutate({ reason, comment })}
     />

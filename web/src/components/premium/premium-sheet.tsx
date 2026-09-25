@@ -8,6 +8,7 @@ import {
   CreditCard,
   Crown,
   Download,
+  Flame,
   Gauge,
   Gem,
   ImageIcon,
@@ -29,6 +30,7 @@ import type {
   PremiumPaymentMethod,
 } from "@/lib/types";
 import { BottomSheet } from "../ui/bottom-sheet";
+import { TopUpButton } from "../stars/top-up-button";
 import { useToast } from "../ui/toast";
 
 const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
@@ -44,6 +46,7 @@ const ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   image: ImageIcon,
   upload: Upload,
   download: Download,
+  flame: Flame,
 };
 
 const METHOD_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
@@ -68,6 +71,11 @@ export function PremiumSheet({
     queryFn: api.premiumPlan,
     enabled: open,
   });
+  const data = plan.data;
+  const active = Boolean(data?.entitlement?.active);
+  const balance = data?.stars_balance ?? 0;
+  const priceStars = data?.price_stars ?? 0;
+  const affordable = balance >= priceStars;
   const purchase = useMutation({
     mutationFn: api.purchasePremium,
     onSuccess: async () => {
@@ -78,19 +86,22 @@ export function PremiumSheet({
         queryClient.invalidateQueries({ queryKey: ["stars", "wallet"] }),
         queryClient.invalidateQueries({ queryKey: ["stars", "transactions"] }),
       ]);
-      notify("GRAM Premium оформлен", { variant: "success", detail: "Оформление профиля и лимиты уже активны" });
+      notify(active ? "GRAM Premium extended" : "GRAM Premium purchased", {
+        variant: "success",
+        detail: active
+          ? `${data?.period_days ?? 30} days added to your current term`
+          : "Profile styling and limits are already active",
+      });
     },
     onError: (error: Error) =>
-      notify("Не удалось оформить Premium", { variant: "error", detail: error.message }),
+      notify(active ? "Couldn't extend Premium" : "Couldn't purchase Premium", {
+        variant: "error",
+        detail: error.message,
+      }),
   });
 
-  const data = plan.data;
-  const active = Boolean(data?.entitlement?.active);
-  const balance = data?.stars_balance ?? 0;
-  const priceStars = data?.price_stars ?? 0;
-  const affordable = balance >= priceStars;
   const fiat = data
-    ? `${data.price_fiat} ${data.fiat_currency === "UAH" ? "грн" : data.fiat_currency}`
+    ? `${data.price_fiat} ${data.fiat_currency === "UAH" ? "₴" : data.fiat_currency}`
     : "";
 
   return (
@@ -98,19 +109,19 @@ export function PremiumSheet({
       open={open}
       onOpenChange={onOpenChange}
       title="GRAM Premium"
-      description="Подписка GRAM Premium: оформление профиля, расширенные лимиты и ранний доступ."
+      description="GRAM Premium subscription: profile styling, expanded limits, and early access."
       headerRight={
         <>
           {data ? (
             <span className="rounded-full bg-[#27272a] px-2.5 py-1 text-[0.7rem] font-extrabold">
-              {data.period_days} дней
+              {data.period_days} days
             </span>
           ) : null}
           <button
             type="button"
             onClick={() => onOpenChange(false)}
             className="icon-button !size-9 bg-[#27272a]"
-            aria-label="Закрыть"
+            aria-label="Close"
           >
             <X size={18} />
           </button>
@@ -122,30 +133,39 @@ export function PremiumSheet({
             <button
               className="flex min-h-[52px] w-full items-center justify-center gap-2 rounded-full border-0 bg-[#27272a] px-5 text-[0.95rem] font-extrabold text-[var(--muted)]"
               disabled
-              title="Оплата картой и криптовалютой появится позже"
+              title="Card and cryptocurrency payments are coming later"
             >
-              Оплата картой · {fiat}
+              Pay by card · {fiat}
               <span className="rounded-full bg-[#2e2e37] px-2 py-0.5 text-[0.58rem] uppercase tracking-[.1em] text-[var(--faint)]">
-                скоро
+                soon
               </span>
             </button>
             <button
               className="mt-2.5 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-full border-0 px-5 text-[1rem] font-extrabold disabled:opacity-60"
               style={{
-                background: active ? "#27272a" : "#3a2f0f",
-                color: active ? "var(--muted)" : "var(--stars)",
+                background: active
+                  ? "linear-gradient(135deg,#193a4d,#352350)"
+                  : "#3a2f0f",
+                color: "var(--stars)",
               }}
               onClick={() => purchase.mutate()}
-              disabled={active || purchase.isPending || !affordable}
+              disabled={purchase.isPending || !affordable}
             >
               <Sparkles size={18} />
-              {active
-                ? "Premium активен"
-                : purchase.isPending
-                  ? "Оформляем…"
-                  : `Оплатить звёздами · ${priceStars}`}
-              {!active ? <Star size={16} fill="currentColor" /> : null}
+              {purchase.isPending
+                  ? "Processing…"
+                  : active
+                    ? `Extend by ${data.period_days} days · ${priceStars}`
+                    : `Pay with Stars · ${priceStars}`}
+              <Star size={16} fill="currentColor" />
             </button>
+            {/* Not enough Stars — payment opens on top rather than navigating away. */}
+            {!affordable ? (
+              <TopUpButton
+                label={`Top up · need ${Math.max(priceStars - balance, 0)} ★`}
+                className="mt-2 flex min-h-11 w-full items-center justify-center gap-2 rounded-full border-0 bg-[#27272a] px-4 text-[0.95rem] font-bold text-[var(--ink)]"
+              />
+            ) : null}
             <button
               className="mt-1.5 flex min-h-11 w-full items-center justify-center gap-2 border-0 bg-transparent text-sm font-bold text-[var(--muted)]"
               onClick={() => plan.refetch()}
@@ -155,7 +175,7 @@ export function PremiumSheet({
                 size={15}
                 className={plan.isFetching ? "animate-spin" : undefined}
               />
-              Обновить статус подписки
+              Refresh subscription status
             </button>
             <p
               className="mb-0 mt-1.5 min-h-5 text-center text-xs"
@@ -165,9 +185,9 @@ export function PremiumSheet({
                 <span className="text-[var(--danger)]">
                   {purchase.error.message}
                 </span>
-              ) : !affordable && !active ? (
+              ) : !affordable ? (
                 <span className="text-[var(--muted)]">
-                  На балансе {balance} ★ — нужно ещё {priceStars - balance} ★
+                  You have {balance} ★ — you still need {priceStars - balance} ★
                 </span>
               ) : null}
             </p>
@@ -189,24 +209,34 @@ export function PremiumSheet({
               GRAM Premium
             </h2>
             <p className="mx-auto mb-0 mt-2 max-w-[34ch] text-[0.92rem] leading-6 text-[var(--muted)]">
-              Красивый профиль, расширенные лимиты и ранний доступ к новым
-              функциям.
+              A beautiful profile, expanded limits, and early access to new
+              features.
             </p>
             {data ? (
               <span className="mt-3.5 inline-flex items-baseline gap-1.5 rounded-full bg-[#17171d] px-4 py-2 shadow-[inset_0_0_0_1px_#27272a]">
                 <strong className="text-[1.05rem]">{fiat}</strong>
-                <span className="text-xs text-[var(--muted)]">/ месяц</span>
+                <span className="text-xs text-[var(--muted)]">/ month</span>
               </span>
             ) : null}
             {active && data?.entitlement ? (
-              <p className="mb-0 mt-3 text-sm font-semibold text-[var(--online)]">
-                Активна до{" "}
-                {new Intl.DateTimeFormat("ru-RU", {
-                  day: "numeric",
-                  month: "long",
-                  year: "numeric",
-                }).format(new Date(data.entitlement.expires_at))}
-              </p>
+              <div className="mt-3 rounded-[16px] bg-[#12231a] px-3.5 py-3 text-center shadow-[inset_0_0_0_1px_rgba(65,190,120,.18)]">
+                <p className="m-0 text-sm font-semibold text-[var(--online)]">
+                  Active until{" "}
+                  {new Intl.DateTimeFormat("en-US", {
+                    day: "numeric",
+                    month: "long",
+                    year: "numeric",
+                  }).format(new Date(data.entitlement.expires_at))}
+                </p>
+                {data.entitlement.gifted_by ? (
+                  <p className="mb-0 mt-1 text-xs text-[var(--muted)]">
+                    A gift from @{data.entitlement.gifted_by.username}
+                  </p>
+                ) : null}
+                <p className="mb-0 mt-1 text-xs text-[var(--muted)]">
+                  There&apos;s no auto-renewal — each payment explicitly adds {data.period_days} days.
+                </p>
+              </div>
             ) : null}
           </div>
 
@@ -219,7 +249,7 @@ export function PremiumSheet({
             <div className="empty-state">
               <RefreshCw className="mx-auto mb-3 text-[var(--danger)]" />
               <p className="font-bold text-white">
-                Не удалось загрузить подписку
+                Couldn&apos;t load the subscription
               </p>
               <p className="text-sm">{plan.error.message}</p>
               <button
@@ -227,27 +257,27 @@ export function PremiumSheet({
                 onClick={() => plan.refetch()}
               >
                 <RefreshCw size={16} />
-                Повторить
+                Retry
               </button>
             </div>
           ) : data ? (
             <>
-              <SheetCard title="Что входит в подписку">
+              <SheetCard title="What's included">
                 {data.benefits.map((benefit) => (
                   <BenefitRow key={benefit.slug} benefit={benefit} />
                 ))}
               </SheetCard>
-              <SheetCard title="Лимиты Free / Premium">
+              <SheetCard title="Free / Premium limits">
                 {data.limits.map((limit) => (
                   <LimitRow key={limit.slug} limit={limit} />
                 ))}
               </SheetCard>
               <SheetCard
-                title="Оплата"
+                title="Payment"
                 aside={
                   <span className="flex items-center gap-1.5 rounded-full bg-[#17171d] px-2.5 py-1 text-[0.68rem] font-bold text-[var(--muted)]">
                     <ShieldCheck size={13} className="text-[var(--online)]" />
-                    безопасная оплата
+                    secure payment
                   </span>
                 }
               >
@@ -301,9 +331,13 @@ function BenefitRow({ benefit }: { benefit: PremiumBenefit }) {
           <strong className="text-[0.92rem]">{benefit.title}</strong>
           {benefit.soon ? (
             <span className="rounded-full bg-[#27272a] px-2 py-0.5 text-[0.58rem] font-extrabold uppercase tracking-[.1em] text-[var(--faint)]">
-              скоро
+              soon
             </span>
-          ) : null}
+          ) : (
+            <span className="rounded-full bg-[#12231a] px-2 py-0.5 text-[0.58rem] font-extrabold uppercase tracking-[.1em] text-[var(--online)]">
+              live
+            </span>
+          )}
         </div>
         <p className="mb-0 mt-1 text-[0.84rem] leading-5 text-[var(--muted)]">
           {benefit.description}
@@ -378,17 +412,17 @@ function MethodRow({
             </strong>
             {method.available ? (
               <span className="rounded-full bg-[#12231a] px-2 py-0.5 text-[0.58rem] font-extrabold uppercase tracking-[.1em] text-[var(--online)]">
-                доступно
+                available
               </span>
             ) : (
               <span className="rounded-full bg-[#27272a] px-2 py-0.5 text-[0.58rem] font-extrabold uppercase tracking-[.1em] text-[var(--faint)]">
-                скоро
+                soon
               </span>
             )}
           </div>
           <p className="mb-0 mt-1 text-[0.82rem] leading-5 text-[var(--muted)]">
             {method.available && method.kind === "stars"
-              ? `${method.subtitle} Баланс: ${balance} ★`
+              ? `${method.subtitle} Balance: ${balance} ★`
               : method.subtitle}
           </p>
           {method.badges.length ? (

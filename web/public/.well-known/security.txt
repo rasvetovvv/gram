@@ -1,0 +1,8 @@
+Contact: https://vexory.xyz/report?type=technical
+Contact: https://vexory.xyz/report?type=privacy
+Expires: 2027-08-27T00:00:00Z
+Preferred-Languages: ru, en, uk
+Canonical: https://vexory.xyz/.well-known/security.txt
+Policy: https://vexory.xyz/security
+Acknowledgments: https://vexory.xyz/security
+

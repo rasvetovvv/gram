@@ -41,7 +41,7 @@ export function PostMusicCard({ music }: { music: PostMusic }) {
         href={music.external_url}
         target="_blank"
         rel="noreferrer noopener"
-        aria-label="Открыть в SoundCloud"
+        aria-label="Open in SoundCloud"
         className="grid size-9 shrink-0 place-items-center rounded-full bg-white/10 text-[var(--ink)] transition hover:bg-white/15 active:scale-95"
       >
         <ExternalLink className="size-4" />

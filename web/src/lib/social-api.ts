@@ -9,7 +9,7 @@ import type {
   StarsWallet
 } from "./social-types";
 
-const SOCIAL_API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const SOCIAL_API_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://vexory.xyz";
 
 type ApiErrorBody = { detail?: string; message?: string };
 
@@ -48,7 +48,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = (await response.json().catch(() => ({}))) as ApiErrorBody;
     throw new SocialApiError(
       response.status,
-      body.detail ?? body.message ?? "Не удалось выполнить действие. Попробуйте ещё раз."
+      body.detail ?? body.message ?? "Couldn't complete the action. Please try again."
     );
   }
 
@@ -157,12 +157,15 @@ export const socialApi = {
       sensitive?: boolean;
       file?: { url: string; name: string; size: number } | null;
       link?: { url?: string; title?: string };
+      /* A channel post can wait for its moment too — the same Premium queue as a personal one. */
+      publishAt?: string | null;
     }
   ) =>
     request<CommunityPost>(`/api/communities/${encodeURIComponent(slug)}/posts`, {
       method: "POST",
       body: JSON.stringify({
         content,
+        publish_at: extra?.publishAt || undefined,
         image_url: extra?.imageUrls?.[0],
         image_urls: extra?.imageUrls?.length ? extra.imageUrls : undefined,
         video_url: extra?.videoUrl || undefined,

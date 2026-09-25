@@ -4,14 +4,17 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, isEmailAuthChallenge } from "@/lib/api";
 import { rememberAccount } from "@/lib/accounts";
+import type { AuthSession, EmailAuthChallenge } from "@/lib/types";
 import { useAuthStore } from "@/store/auth";
 
 import { AuthShell } from "./auth-shell";
+import { EmailCodeStep } from "./email-code-step";
 import styles from "./auth.module.css";
 import { FormNotice, PasswordField, SubmitButton, TextField } from "./form-controls";
 
@@ -19,72 +22,97 @@ export const registerSchema = z.object({
   email: z
     .string()
     .trim()
-    .min(5, "Введите почту")
-    .max(254, "Слишком длинный адрес")
-    .email("Проверьте адрес почты"),
+    .min(5, "Enter your email")
+    .max(254, "Address is too long")
+    .email("Check your email address"),
   password: z
     .string()
-    .min(10, "Минимум 10 символов")
-    .max(128, "Пароль слишком длинный")
+    .min(10, "At least 10 characters")
+    .max(128, "Password is too long"),
+  accepted: z.boolean().refine(Boolean, "Accept the terms and privacy policy")
 });
 
 type RegisterValues = z.infer<typeof registerSchema>;
 
 function registerError(error: unknown): string {
   if (error instanceof ApiError && error.status === 409) {
-    return "Эта почта уже занята. Войдите или используйте другую.";
+    return "This email is already taken. Sign in or use a different one.";
   }
-  return error instanceof Error ? error.message : "Не удалось создать аккаунт. Попробуйте ещё раз.";
+  return error instanceof Error ? error.message : "Couldn't create your account. Please try again.";
 }
 
 export function RegisterScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const setUser = useAuthStore((state) => state.setUser);
+  const [challenge, setChallenge] = useState<EmailAuthChallenge | null>(null);
 
   const form = useForm<RegisterValues>({
     resolver: zodResolver(registerSchema),
-    defaultValues: { email: "", password: "" },
+    defaultValues: { email: "", password: "", accepted: false },
     mode: "onBlur"
   });
 
+  function finishRegistration(session: AuthSession) {
+    setUser(session.user);
+    rememberAccount(session.user);
+    queryClient.setQueryData(["auth", "me"], session.user);
+    queryClient.setQueryData(["me"], session.user);
+    router.replace(session.user.onboarding_complete === false ? "/onboarding" : "/");
+  }
+
   const register = useMutation({
     mutationFn: api.register,
-    onSuccess: (session) => {
-      setUser(session.user);
-      rememberAccount(session.user);
-      queryClient.setQueryData(["auth", "me"], session.user);
-      queryClient.setQueryData(["me"], session.user);
-      // A fresh account has no handle or name yet, so onboarding is the only sensible next step.
-      router.replace("/onboarding");
+    onSuccess: (result) => {
+      if (isEmailAuthChallenge(result)) {
+        setChallenge(result);
+        return;
+      }
+      finishRegistration(result);
     }
   });
+
+  if (challenge) {
+    return (
+      <AuthShell>
+        <EmailCodeStep
+          initial={challenge}
+          onVerified={finishRegistration}
+          onBack={() => {
+            setChallenge(null);
+            register.reset();
+            form.setValue("password", "");
+          }}
+        />
+      </AuthShell>
+    );
+  }
 
   return (
     <AuthShell>
       <section aria-labelledby="register-title">
         <h1 className={styles.plainTitle} id="register-title">
-          Регистрация
+          Sign up
         </h1>
-        <p className={styles.plainSubtitle}>Создайте аккаунт, чтобы начать</p>
+        <p className={styles.plainSubtitle}>Create an account to get started</p>
 
         <form
           // `post`, so that if hydration has not finished the browser cannot submit the
           // password as a query string into the URL and the history.
           method="post"
           className={styles.plainForm}
-          onSubmit={form.handleSubmit((values) => register.mutate(values))}
+          onSubmit={form.handleSubmit(({ email, password }) => register.mutate({ email, password }))}
           noValidate
         >
           {register.isError ? (
             <FormNotice kind="error">{registerError(register.error)}</FormNotice>
           ) : null}
           {register.isSuccess ? (
-            <FormNotice kind="success">Аккаунт создан. Осталось выбрать юзернейм…</FormNotice>
+            <FormNotice kind="success">Account created. Just pick a username…</FormNotice>
           ) : null}
 
           <TextField
-            label="Почта"
+            label="Email"
             type="email"
             placeholder="name@example.com"
             autoComplete="email"
@@ -94,25 +122,38 @@ export function RegisterScreen() {
             {...form.register("email")}
           />
           <PasswordField
-            label="Пароль"
+            label="Password"
             placeholder="••••••••••••"
             autoComplete="new-password"
-            hint="Не короче 10 символов."
+            hint="At least 10 characters."
             error={form.formState.errors.password?.message}
             {...form.register("password")}
           />
 
+          <label className={styles.termsConsent}>
+            <input type="checkbox" {...form.register("accepted")} />
+            <span>
+              I accept the <Link href="/terms" target="_blank" rel="noreferrer">Terms of Use</Link> and{" "}
+              <Link href="/privacy" target="_blank" rel="noreferrer">Privacy Policy</Link>.
+            </span>
+          </label>
+          {form.formState.errors.accepted?.message ? (
+            <p className={styles.fieldError} role="alert">
+              {form.formState.errors.accepted.message}
+            </p>
+          ) : null}
+
           <SubmitButton
             className={styles.whiteButton}
             pending={register.isPending}
-            pendingLabel="Создаём…"
+            pendingLabel="Creating…"
           >
-            Создать аккаунт
+            Create account
           </SubmitButton>
         </form>
 
         <p className={styles.plainSwitch}>
-          Уже есть аккаунт? <Link href="/login">Войти</Link>
+          Already have an account? <Link href="/login">Sign in</Link>
         </p>
       </section>
     </AuthShell>

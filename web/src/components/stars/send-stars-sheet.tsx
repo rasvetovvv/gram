@@ -11,21 +11,21 @@ const sendSchema = z.object({
   to_username: z
     .string()
     .trim()
-    .min(3, "Введите юзернейм получателя")
-    .max(33, "Юзернейм слишком длинный")
-    .regex(/^@?[a-zA-Z][a-zA-Z0-9_]*$/, "Латиница, цифры и нижнее подчёркивание"),
+    .min(3, "Enter the recipient's username")
+    .max(33, "Username is too long")
+    .regex(/^@?[a-zA-Z][a-zA-Z0-9_]*$/, "Latin letters, digits and underscores"),
   amount: z
-    .number({ error: "Введите количество звёзд" })
-    .int("Только целое количество")
-    .min(1, "Минимум 1 звезда")
-    .max(1_000_000, "Сумма слишком большая"),
-  message: z.string().trim().max(160, "Не больше 160 символов").optional()
+    .number({ error: "Enter the number of stars" })
+    .int("Whole numbers only")
+    .min(1, "At least 1 star")
+    .max(1_000_000, "Amount is too large"),
+  message: z.string().trim().max(160, "No more than 160 characters").optional()
 });
 
 export type SendStarsForm = z.infer<typeof sendSchema>;
 
 function formatNumber(value: number) {
-  return new Intl.NumberFormat("ru-RU").format(value);
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 type FormProps = {
@@ -52,13 +52,13 @@ export function SendStarsSheet({
     <BottomSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="Отправить звёзды"
-      description="Перевод сразу попадёт получателю и сохранится в истории обоих аккаунтов"
+      title="Send stars"
+      description="The transfer reaches the recipient instantly and is saved in the history of both accounts"
       headerRight={
         <button
           type="button"
           className="icon-button !size-8 text-[var(--muted)]"
-          aria-label="Закрыть"
+          aria-label="Close"
           onClick={() => onOpenChange(false)}
         >
           <X size={18} />
@@ -86,7 +86,7 @@ function TransferForm({
   function submit(values: SendStarsForm) {
     // Checked here as well as server-side so the error lands on the field the user typed in.
     if (balance !== null && values.amount > balance) {
-      form.setError("amount", { type: "validate", message: "Недостаточно звёзд на балансе" });
+      form.setError("amount", { type: "validate", message: "Not enough stars on your balance" });
       return;
     }
     onSubmit(values);
@@ -95,15 +95,15 @@ function TransferForm({
   return (
     <>
       <div className={styles.sheetHeading}>
-        <p>Отправить звёзды</p>
+        <p>Send stars</p>
       </div>
       <p className={styles.rowSubtitle} style={{ whiteSpace: "normal" }}>
-        Перевод сразу попадёт получателю и сохранится в истории обоих аккаунтов.
+        The transfer reaches the recipient instantly and is saved in the history of both accounts.
       </p>
 
       <form className={styles.form} onSubmit={form.handleSubmit(submit)}>
         <label className={styles.field}>
-          <span>Получатель</span>
+          <span>Recipient</span>
           <span className={styles.textInput}>
             <AtSign size={18} />
             <input
@@ -120,7 +120,7 @@ function TransferForm({
         </label>
 
         <label className={styles.field}>
-          <span>Сумма</span>
+          <span>Amount</span>
           <span className={styles.amountInput}>
             <input
               type="number"
@@ -139,12 +139,12 @@ function TransferForm({
 
         <label className={styles.field}>
           <span>
-            Сообщение <i>необязательно</i>
+            Message <i>optional</i>
           </span>
           <textarea
             className={styles.messageInput}
             rows={3}
-            placeholder="За отличный пост"
+            placeholder="For a great post"
             aria-invalid={Boolean(form.formState.errors.message)}
             {...form.register("message")}
           />
@@ -154,7 +154,7 @@ function TransferForm({
         </label>
 
         <div className={styles.sendSummary}>
-          <span>Доступно сейчас</span>
+          <span>Available now</span>
           <strong>{balance !== null ? `${formatNumber(balance)} ★` : "—"}</strong>
         </div>
 
@@ -165,7 +165,7 @@ function TransferForm({
         ) : null}
 
         <button className={styles.actionPrimary} type="submit" disabled={pending}>
-          <Send size={18} /> {pending ? "Отправляем…" : "Отправить звёзды"}
+          <Send size={18} /> {pending ? "Sending…" : "Send stars"}
         </button>
       </form>
     </>

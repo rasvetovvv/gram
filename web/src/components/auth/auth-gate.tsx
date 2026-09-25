@@ -57,12 +57,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       <main className={styles.gateViewport}>
         <section className={styles.gateCard} aria-labelledby="session-error-title">
           <span className={styles.gateIcon}><RotateCcw size={22} /></span>
-          <h1 id="session-error-title">Не удалось проверить сессию</h1>
-          <p>GRAM не получил ответ от сервера. Ваши данные не потеряны — повторите проверку.</p>
+          <h1 id="session-error-title">Couldn&apos;t verify your session</h1>
+          <p>GRAM didn&apos;t get a response from the server. Your data isn&apos;t lost — try checking again.</p>
           <button className={styles.primaryButton} type="button" onClick={() => session.refetch()}>
-            Проверить ещё раз
+            Check again
           </button>
-          <Link className={styles.textLink} href="/login">Вернуться ко входу</Link>
+          <Link className={styles.textLink} href="/login">Back to sign in</Link>
         </section>
       </main>
     );
@@ -72,7 +72,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     <main className={styles.gateViewport} aria-live="polite" aria-busy="true">
       <div className={styles.sessionLoader}>
         <LoaderCircle className={styles.spin} size={24} />
-        <span>Проверяем сессию…</span>
+        <span>Checking your session…</span>
       </div>
     </main>
   );

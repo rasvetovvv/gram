@@ -22,56 +22,56 @@ export const avatarFileSchema = z
   .unknown()
   .superRefine((value, context) => {
     if (typeof File === "undefined" || !(value instanceof File)) {
-      context.addIssue({ code: "custom", message: "Выберите изображение" });
+      context.addIssue({ code: "custom", message: "Choose an image" });
       return;
     }
     if (!AVATAR_TYPES.has(value.type)) {
-      context.addIssue({ code: "custom", message: "Подойдут PNG, JPG или WEBP" });
+      context.addIssue({ code: "custom", message: "PNG, JPG, or WEBP work" });
     }
     if (value.size > MAX_AVATAR_BYTES) {
-      context.addIssue({ code: "custom", message: "Файл должен быть не больше 5 МБ" });
+      context.addIssue({ code: "custom", message: "The file must be no larger than 5 MB" });
     }
   })
   .transform((value) => value as File);
 
 export const onboardingSchema = z.object({
-  display_name: z.string().trim().min(2, "Введите имя — минимум 2 символа").max(80, "Не больше 80 символов"),
+  display_name: z.string().trim().min(2, "Enter a name — at least 2 characters").max(80, "No more than 80 characters"),
   username: z
     .string()
     .trim()
     .toLowerCase()
-    .min(3, "Минимум 3 символа")
-    .max(32, "Не больше 32 символов")
-    .regex(/^[a-z][a-z0-9_]*$/, "Начните с латинской буквы; используйте a–z, 0–9 и _"),
-  interests: z.array(z.string()).max(5, "Выберите не больше пяти тем")
+    .min(3, "At least 3 characters")
+    .max(32, "No more than 32 characters")
+    .regex(/^[a-z][a-z0-9_]*$/, "Start with a Latin letter; use a–z, 0–9, and _"),
+  interests: z.array(z.string()).max(5, "Choose no more than five topics")
 });
 
 type OnboardingValues = z.infer<typeof onboardingSchema>;
 
 const INTERESTS = [
-  "Дизайн",
-  "Технологии",
-  "Музыка",
-  "Кино",
-  "Игры",
-  "Фотография",
-  "Образование",
-  "Бизнес",
-  "Спорт",
-  "Коллекции"
+  "Design",
+  "Technology",
+  "Music",
+  "Film",
+  "Games",
+  "Photography",
+  "Education",
+  "Business",
+  "Sports",
+  "Collections"
 ] as const;
 
 function onboardingError(error: unknown): string {
   if (error instanceof ApiError && error.status === 409) {
-    return "Этот юзернейм уже занят. Выберите другой — остальные данные останутся в форме.";
+    return "This username is already taken. Choose another — the rest of your details will stay in the form.";
   }
   if (error instanceof ApiError && error.status === 413) {
-    return "Аватар оказался больше 5 МБ. Выберите файл меньшего размера.";
+    return "The avatar is larger than 5 MB. Choose a smaller file.";
   }
   if (error instanceof ApiError && error.status === 415) {
-    return "Формат аватара не поддерживается. Выберите PNG, JPG или WEBP.";
+    return "That avatar format isn’t supported. Choose PNG, JPG, or WEBP.";
   }
-  return error instanceof Error ? error.message : "Не удалось сохранить профиль. Попробуйте ещё раз.";
+  return error instanceof Error ? error.message : "Couldn’t save your profile. Please try again.";
 }
 
 export function OnboardingScreen() {
@@ -140,7 +140,7 @@ export function OnboardingScreen() {
     },
     onError: (error) => {
       if (error instanceof ApiError && error.status === 409) {
-        form.setError("username", { type: "server", message: "Юзернейм уже занят" }, { shouldFocus: true });
+        form.setError("username", { type: "server", message: "Username already taken" }, { shouldFocus: true });
       }
     }
   });
@@ -151,7 +151,7 @@ export function OnboardingScreen() {
     if (!result.success) {
       setAvatarFile(null);
       setPreviewUrl(null);
-      setAvatarError(result.error.issues[0]?.message ?? "Не удалось прочитать файл");
+      setAvatarError(result.error.issues[0]?.message ?? "Couldn’t read the file");
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
@@ -176,7 +176,7 @@ export function OnboardingScreen() {
     return (
       <AuthShell>
         <section className={`${styles.authCard} ${styles.onboardingLoading}`} aria-live="polite">
-          <LoaderCircle className={styles.spin} size={24} /> Проверяем аккаунт…
+          <LoaderCircle className={styles.spin} size={24} /> Checking your account…
         </section>
       </AuthShell>
     );
@@ -187,11 +187,11 @@ export function OnboardingScreen() {
       <AuthShell>
         <section className={styles.authCard}>
           <div className={styles.formHeading}>
-            <h1>Не удалось открыть настройку</h1>
-            <p>Проверьте соединение с сервером и повторите попытку.</p>
+            <h1>Couldn’t open setup</h1>
+            <p>Check your connection to the server and try again.</p>
           </div>
           <button className={styles.primaryButton} type="button" onClick={() => session.refetch()}>
-            Попробовать снова
+            Try again
           </button>
         </section>
       </AuthShell>
@@ -206,11 +206,11 @@ export function OnboardingScreen() {
     <AuthShell wide>
       <section className={`${styles.authCard} ${styles.onboardingCard}`} aria-labelledby="onboarding-title">
         <div className={styles.onboardingTopline}>
-          <span>Шаг 2 из 2</span>
+          <span>Step 2 of 2</span>
         </div>
         <div className={styles.formHeading}>
-          <h1 id="onboarding-title">Соберите свою личность</h1>
-          <p>Имя и юзернейм видят другие люди. Аватар и темы можно изменить позже.</p>
+          <h1 id="onboarding-title">Build your identity</h1>
+          <p>Your name and username are visible to others. You can change your avatar and topics later.</p>
         </div>
 
         <form className={styles.onboardingForm} onSubmit={form.handleSubmit((values) => complete.mutate(values))} noValidate>
@@ -219,14 +219,14 @@ export function OnboardingScreen() {
               className={styles.avatarPicker}
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              aria-label={avatarSrc ? "Заменить аватар" : "Загрузить аватар"}
+              aria-label={avatarSrc ? "Replace avatar" : "Upload avatar"}
             >
               <span className={styles.avatarPreview}>
                 {avatarSrc ? (
                   <span
                     className={styles.avatarImage}
                     role="img"
-                    aria-label="Предпросмотр аватара"
+                    aria-label="Avatar preview"
                     style={{ backgroundImage: `url(${JSON.stringify(avatarSrc)})` }}
                   />
                 ) : (
@@ -243,8 +243,8 @@ export function OnboardingScreen() {
               onChange={(event) => chooseAvatar(event.target.files?.[0])}
             />
             <div className={styles.avatarCopy}>
-              <strong>{avatarFile ? avatarFile.name : "Добавьте аватар"}</strong>
-              <span>PNG, JPG или WEBP · до 5 МБ</span>
+              <strong>{avatarFile ? avatarFile.name : "Add an avatar"}</strong>
+              <span>PNG, JPG, or WEBP · up to 5 MB</span>
               {avatarError ? <span className={styles.fieldError} role="alert">{avatarError}</span> : null}
             </div>
           </div>
@@ -252,8 +252,8 @@ export function OnboardingScreen() {
           <div className={styles.identityFields}>
             {complete.isError ? <FormNotice kind="error">{onboardingError(complete.error)}</FormNotice> : null}
             <TextField
-              label="Имя"
-              placeholder="Как к вам обращаться"
+              label="Name"
+              placeholder="What should we call you"
               autoComplete="name"
               maxLength={80}
               error={form.formState.errors.display_name?.message}
@@ -262,13 +262,13 @@ export function OnboardingScreen() {
             <div className={styles.usernameField}>
               <span className={styles.usernamePrefix} aria-hidden="true">@</span>
               <TextField
-                label="Уникальный юзернейм"
+                label="Unique username"
                 placeholder="username"
                 autoComplete="username"
                 autoCapitalize="none"
                 spellCheck={false}
                 maxLength={32}
-                hint="От 3 до 32 символов. Уникальность проверяется при сохранении."
+                hint="3 to 32 characters. Uniqueness is checked when you save."
                 error={form.formState.errors.username?.message}
                 {...form.register("username")}
               />
@@ -276,7 +276,7 @@ export function OnboardingScreen() {
           </div>
 
           <fieldset className={styles.interestsFieldset}>
-            <legend>Что показать в рекомендациях <span>необязательно · до 5</span></legend>
+            <legend>What to show in recommendations <span>optional · up to 5</span></legend>
             <div className={styles.interestList}>
               {INTERESTS.map((interest) => {
                 const selected = selectedInterests.includes(interest);
@@ -301,8 +301,8 @@ export function OnboardingScreen() {
           </fieldset>
 
           <div className={styles.onboardingActions}>
-            <p>Аватар и темы можно пропустить. Имя и юзернейм нужны для профиля и чатов.</p>
-            <SubmitButton pending={complete.isPending} pendingLabel="Собираем профиль…">Открыть GRAM</SubmitButton>
+            <p>You can skip the avatar and topics. Your name and username are needed for your profile and chats.</p>
+            <SubmitButton pending={complete.isPending} pendingLabel="Building your profile…">Open GRAM</SubmitButton>
           </div>
         </form>
       </section>

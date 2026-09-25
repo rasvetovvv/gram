@@ -108,6 +108,17 @@
   text-align: center;
 }
 
+/*
+ * Said under the row of actions rather than only on the disabled button, because a control that
+ * does nothing and does not say why reads as broken.
+ */
+.payoutClosed {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
 .balanceSkeleton {
   width: 116px;
   height: 30px;
@@ -129,11 +140,15 @@
 
 .balanceActions {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-top: 16px;
 }
 
-.balanceActions > * { flex: 1 1 0; min-width: 0; }
+/* Three actions now fit here — top up, send, withdraw. `min-width` is what makes the third one
+   drop onto its own line on a narrow phone instead of squeezing all three into unreadable
+   slivers. */
+.balanceActions > * { flex: 1 1 96px; min-width: 96px; }
 
 /* Reference button metrics: 48px tall, 16px radius, 15px/500 label, 8px icon gap. */
 .actionPrimary,
@@ -159,6 +174,9 @@
 .actionPrimary:hover { background: var(--primary-strong); }
 .actionSecondary { background: var(--hover); }
 .actionSecondary:hover { background: var(--line-strong); }
+/* A closed door still looks like a control, so it looks like a disabled one. */
+.actionSecondary:disabled { opacity: 0.45; cursor: not-allowed; }
+.actionSecondary:disabled:hover { background: var(--hover); }
 .actionPrimary:active,
 .actionSecondary:active { transform: scale(0.98); }
 
@@ -352,10 +370,28 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 10px;
 }
 
 .transactionList li + li { border-top: 1px solid var(--line); }
+
+/* Every row opens its own receipt, so the row itself is the button — a separate «details» control
+   beside it would put two tap targets on one line. */
+.transactionRow {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  padding: 14px 10px;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.transactionRow:hover { background: rgba(255, 255, 255, 0.04); }
+.transactionRow:active { transform: scale(0.995); }
 
 .transactionIcon {
   display: grid;

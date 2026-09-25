@@ -50,7 +50,7 @@ import { API_URL, ApiError, api } from "@/lib/api";
 import type { Community, Post, ProfileReply, User } from "@/lib/types";
 import { presenceText, statusLine } from "@/lib/presence";
 import { nameStyle, profileTheme, themeGradient } from "@/lib/profile-color";
-import { compactNumber, relativeTime } from "@/lib/utils";
+import { compactNumber, isVideoUrl, relativeTime } from "@/lib/utils";
 import { GiftCard, GiftDetailTrigger, type RichGift } from "../gifts/gift-gallery";
 import { UserReportSheet } from "./user-report-sheet";
 import { GiftImage, giftArtProps } from "../gifts/gift-image";
@@ -61,13 +61,17 @@ import { PremiumMark } from "../premium-mark";
 import { AdminMark, AdminMarkExplained } from "../admin-mark";
 import { VerifiedMark, VerifiedMarkExplained } from "../verified-mark";
 import { ConfirmDialog } from "../ui/confirm-dialog";
+import { StaffUserControls } from "../admin/staff-controls";
+import { ProfileStoryGrid } from "../stories/profile-story-grid";
+import { StoryComposer } from "../stories/story-composer";
 import { useToast } from "../ui/toast";
 import { NoteDialog } from "./note-dialog";
 import { BadgeStrip } from "./badge-detail";
+import { BadgePickerSheet } from "./badge-picker-sheet";
 import { CoverGiftsSheet } from "./cover-gifts-sheet";
 import { GiftContextMenu } from "./gift-context-menu";
 import { ProfileEditSheet } from "./profile-edit-sheet";
-import { ConnectionsDialog, ProfileQrDialog, ProfileStories } from "./profile-overlays";
+import { ConnectionsDialog, ProfileQrDialog } from "./profile-overlays";
 import { RelatedUsernames } from "./username-ownership";
 import { useUiStore } from "@/store/ui";
 
@@ -95,9 +99,11 @@ export function ProfileView({ username }: { username: string }) {
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [connectionTab, setConnectionTab] = useState<ConnectionTab>("followers");
   const [storyComposerOpen, setStoryComposerOpen] = useState(false);
+  const [storyUploadOpen, setStoryUploadOpen] = useState(false);
+  const [badgePickerOpen, setBadgePickerOpen] = useState(false);
   const [songPlaying, setSongPlaying] = useState(false);
   /**
-   * The tab can arrive in the URL, so "Мои истории" in the feed menu can land on the right
+   * The tab can arrive in the URL, so "My stories" in the feed menu can land on the right
    * section instead of the visitor hunting for it.
    */
   const requestedTab = searchParams.get("tab");
@@ -216,12 +222,12 @@ export function ProfileView({ username }: { username: string }) {
       ]);
       setFeedback(
         result.requested
-          ? `Заявка отправлена @${canonicalUsername} — ждём ответа`
+          ? `Request sent to @${canonicalUsername} — awaiting a reply`
           : result.is_following
-            ? `Вы подписались на @${canonicalUsername}`
+            ? `You're now following @${canonicalUsername}`
             : withdrew
-              ? "Заявка отменена"
-              : "Подписка отменена"
+              ? "Request withdrawn"
+              : "Unfollowed"
       );
     }
   });
@@ -231,7 +237,7 @@ export function ProfileView({ username }: { username: string }) {
       : api.subscribe(canonicalUsername, profile?.subscription_price_stars ?? 50),
     onSuccess: async () => {
       await Promise.all([queryClient.invalidateQueries({ queryKey: ["profile", username] }), queryClient.invalidateQueries({ queryKey: ["me"] })]);
-      setFeedback(profile?.is_subscribed ? "Платная подписка отменена" : "Платная подписка оформлена");
+      setFeedback(profile?.is_subscribed ? "Paid subscription cancelled" : "Paid subscription started");
     }
   });
   const directChat = useMutation({
@@ -242,14 +248,14 @@ export function ProfileView({ username }: { username: string }) {
     mutationFn: ({ giftId, slot }: { giftId: string; slot: "featured" | "name" }) => api.updateShowcase(slot === "featured" ? { featured_gift_id: giftId } : { name_gift_id: giftId }),
     onSuccess: async (_, variables) => {
       await Promise.all([queryClient.invalidateQueries({ queryKey: ["profile", username] }), queryClient.invalidateQueries({ queryKey: ["me"] })]);
-      setFeedback(variables.slot === "featured" ? "Подарок закреплён в шапке" : "Подарок появился рядом с именем");
+      setFeedback(variables.slot === "featured" ? "Gift pinned to your header" : "Gift now shows next to your name");
     }
   });
 
   if (profileQuery.isLoading) return <ProfileSkeleton />;
   if (!profile) {
     const missing = profileQuery.error instanceof ApiError && profileQuery.error.status === 404;
-    return <div className="empty-state"><UsersRound className="mx-auto mb-3 text-[var(--primary-strong)]" /><p className="font-bold text-white">{missing ? "Профиль не найден" : "Не удалось открыть профиль"}</p><p>{missing ? "Возможно, пользователь сменил юзернейм." : profileQuery.error?.message ?? "Проверьте соединение и попробуйте ещё раз."}</p><div className="mt-4 flex justify-center gap-2">{!missing ? <button className="quiet-button" onClick={() => profileQuery.refetch()}><RefreshCw size={17} />Повторить</button> : null}<Link href="/discover" className="quiet-button">К поиску</Link></div></div>;
+    return <div className="empty-state"><UsersRound className="mx-auto mb-3 text-[var(--primary-strong)]" /><p className="font-bold text-white">{missing ? "Profile not found" : "Couldn't open profile"}</p><p>{missing ? "The user may have changed their username." : profileQuery.error?.message ?? "Check your connection and try again."}</p><div className="mt-4 flex justify-center gap-2">{!missing ? <button className="quiet-button" onClick={() => profileQuery.refetch()}><RefreshCw size={17} />Retry</button> : null}<Link href="/discover" className="quiet-button">Search</Link></div></div>;
   }
 
   function openConnections(tab: ConnectionTab) {
@@ -260,13 +266,13 @@ export function ProfileView({ username }: { username: string }) {
   async function shareProfile() {
     const url = `${window.location.origin}/u/${profile!.username}`;
     try {
-      if (navigator.share) await navigator.share({ title: `${profile!.display_name} в GRAM`, url });
+      if (navigator.share) await navigator.share({ title: `${profile!.display_name} on GRAM`, url });
       else {
         await navigator.clipboard.writeText(url);
-        notify("Ссылка на профиль скопирована");
+        notify("Profile link copied");
       }
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === "AbortError")) setFeedback("Не удалось поделиться профилем");
+      if (!(error instanceof DOMException && error.name === "AbortError")) setFeedback("Couldn't share profile");
     }
   }
 
@@ -276,10 +282,10 @@ export function ProfileView({ username }: { username: string }) {
       await navigator.clipboard.writeText(handle);
     } catch {
       // Clipboard access can be denied; say so rather than showing a false confirmation.
-      notify("Не удалось скопировать юзернейм");
+      notify("Couldn't copy username");
       return;
     }
-    notify(`${handle} скопирован`);
+    notify(`${handle} copied`);
     // A toast alone is easy to miss next to the tapped handle, so the control confirms too.
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
@@ -297,12 +303,11 @@ export function ProfileView({ username }: { username: string }) {
         setSongPlaying(false);
       }
     } catch {
-      setFeedback("Не удалось воспроизвести трек");
+      setFeedback("Couldn't play the track");
     }
   }
 
   const errorMessage = follow.error?.message || subscription.error?.message || directChat.error?.message || showcase.error?.message;
-  const storyViews = stories.map((story) => ({ id: story.id, title: story.title, media_url: story.media_url, created_at: story.created_at }));
   const theme = profileTheme(profile.profile_color);
 
   return (
@@ -310,7 +315,7 @@ export function ProfileView({ username }: { username: string }) {
       className="pb-8"
       /*
        * The chosen colour drives this page's accents, not just the name: the presence dot and
-       * the "в сети" line read `--online`, so overriding it here themes them together. Scoped
+       * the "online" line reads `--online`, so overriding it here themes them together. Scoped
        * to the page on purpose — a green dot still means "online" everywhere else.
        */
       style={theme.slug === "default" ? undefined : ({ "--online": theme.accent } as CSSProperties)}
@@ -318,27 +323,58 @@ export function ProfileView({ username }: { username: string }) {
       <header
         className={`sticky top-0 z-40 flex min-h-[56px] items-center gap-3 border-b border-[var(--line-structural)] bg-[var(--header)] px-3 backdrop-blur-xl transition duration-200 sm:px-4 max-[899px]:fixed max-[899px]:inset-x-0 ${scrolled ? "" : "max-[899px]:pointer-events-none max-[899px]:-translate-y-full max-[899px]:opacity-0"}`}
       >
-        <button onClick={() => router.back()} className="icon-button" aria-label="Назад"><ArrowLeft size={20} /></button>
+        <button onClick={() => router.back()} className="icon-button" aria-label="Back"><ArrowLeft size={20} /></button>
         <UserAvatar src={profile.avatar_url} name={profile.display_name} size={36} ringColor="transparent" />
         <div className="min-w-0 flex-1">
           {/* Both marks are tappable here too: this header replaces the identity block on
               scroll, and a mark that explains itself in one place but not the other reads
               as broken rather than as a different affordance. */}
-          <div className="flex items-center gap-1.5"><strong className="truncate text-[15px] font-black leading-tight" style={nameStyle(profile.profile_color)}>{profile.display_name}</strong>{profile.is_admin ? <AdminMark size={14} /> : null}{profile.verified ? <VerifiedMarkExplained name={profile.display_name} label="Личность подтверждена GRAM" /> : null}{profile.is_premium ? <button type="button" onClick={() => openPremium()} className="inline-grid place-items-center border-0 bg-transparent p-0 transition-transform hover:scale-110 active:scale-95" aria-label="Открыть GRAM Premium"><PremiumMark size={14} profileColor={profile.profile_color} /></button> : null}</div>
-          <span className="block truncate text-xs text-[var(--dim)]">{compactNumber(profile.posts_count ?? posts.length)} постов</span>
+          <div className="flex items-center gap-1.5"><strong className="truncate text-[15px] font-black leading-tight" style={nameStyle(profile.profile_color)}>{profile.display_name}</strong>{profile.is_admin ? <AdminMark size={14} /> : null}{profile.verified ? <VerifiedMarkExplained name={profile.display_name} label="Identity verified by GRAM" /> : null}{profile.is_premium ? <button type="button" onClick={() => openPremium()} className="inline-grid place-items-center border-0 bg-transparent p-0 transition-transform hover:scale-110 active:scale-95" aria-label="Open GRAM Premium"><PremiumMark size={14} profileColor={profile.profile_color} /></button> : null}</div>
+          <span className="block truncate text-xs text-[var(--dim)]">{compactNumber(profile.posts_count ?? posts.length)} posts</span>
         </div>
-        <button onClick={() => setQrOpen(true)} className="icon-button" aria-label="QR-код профиля"><QrCode size={18} /></button>
+        <button onClick={() => setQrOpen(true)} className="icon-button" aria-label="Profile QR code"><QrCode size={18} /></button>
       </header>
 
       <section className="relative h-[176px] overflow-hidden bg-[#121216] sm:h-[208px]">
-        {profile.cover_url ? (
-          <Image src={profile.cover_url} alt={`Обложка профиля ${profile.display_name}`} fill priority unoptimized={profile.cover_url.startsWith(API_URL)} sizes="(max-width: 900px) 100vw, 780px" className="object-cover" />
+        {isVideoUrl(profile.cover_url) ? (
+          /* A living cover: the clip the owner uploaded, looping and silent, exactly as an
+             image would sit here. */
+          <video
+            src={profile.cover_url ?? undefined}
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="metadata"
+            aria-label={`${profile.display_name}'s live cover`}
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        ) : profile.cover_url ? (
+          <Image src={profile.cover_url} alt={`${profile.display_name}'s profile cover`} fill priority unoptimized={profile.cover_url.startsWith(API_URL)} sizes="(max-width: 900px) 100vw, 780px" className="object-cover" />
         ) : (
           <div className="h-full w-full bg-[radial-gradient(circle_at_72%_18%,#1f3a63_0,transparent_28%),radial-gradient(circle_at_22%_110%,#17384d_0,transparent_42%),#0d0d11]" />
         )}
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-3 pb-6 pt-[max(0.6rem,env(safe-area-inset-top))] min-[900px]:hidden">
-          <button type="button" onClick={() => router.back()} className="pointer-events-auto grid size-9 place-items-center rounded-full border-0 bg-black/45 text-white backdrop-blur-sm transition-colors hover:bg-black/65" aria-label="Назад"><ArrowLeft size={20} /></button>
-          <button type="button" onClick={() => setQrOpen(true)} className="pointer-events-auto grid size-9 place-items-center rounded-full border-0 bg-black/45 text-white backdrop-blur-sm transition-colors hover:bg-black/65" aria-label="QR-код профиля"><QrCode size={18} /></button>
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent px-3 pb-7 pt-[max(0.6rem,env(safe-area-inset-top))] min-[900px]:hidden">
+          <button type="button" onClick={() => router.back()} className="pointer-events-auto grid size-11 place-items-center rounded-full border-0 bg-black/50 text-white backdrop-blur-sm transition-colors hover:bg-black/70 active:scale-95" aria-label="Back"><ArrowLeft size={21} /></button>
+          <div className="pointer-events-auto flex items-center gap-2">
+            {isMe ? (
+              <button
+                type="button"
+                onClick={() => setCoverSheet(true)}
+                className="relative grid size-11 place-items-center rounded-full border-0 bg-black/50 text-white backdrop-blur-sm transition-colors hover:bg-black/70 active:scale-95"
+                aria-label="Arrange header gifts"
+                title="Header gifts"
+              >
+                <Sparkles size={18} />
+                {coverGifts.length ? (
+                  <span className="absolute -bottom-0.5 -right-0.5 grid size-5 place-items-center rounded-full bg-[var(--primary)] text-[10px] font-black text-white shadow-[0_2px_8px_rgba(0,0,0,.45)]">
+                    {coverGifts.length}
+                  </span>
+                ) : null}
+              </button>
+            ) : null}
+            <button type="button" onClick={() => setQrOpen(true)} className="grid size-11 place-items-center rounded-full border-0 bg-black/50 text-white backdrop-blur-sm transition-colors hover:bg-black/70 active:scale-95" aria-label="Profile QR code"><QrCode size={19} /></button>
+          </div>
         </div>
         {profile.note || isMe ? <div className="absolute bottom-3 left-[122px] z-10 max-w-[42%] sm:left-[136px] sm:max-w-[50%]"><NoteDialog username={profile.username} note={profile.note} canEdit={Boolean(profile.can_edit_note ?? isMe)} variant="bubble" /></div> : null}
         <CoverGifts
@@ -357,7 +393,7 @@ export function ProfileView({ username }: { username: string }) {
             {isMe ? (
               <>
                 <ProfileMoreMenu profile={profile} isMe={isMe} shareProfile={shareProfile} />
-                <button className="profile-primary-action" onClick={() => setEditOpen(true)}><Edit3 size={16} />Редактировать</button>
+                <button className="profile-primary-action" onClick={() => setEditOpen(true)}><Edit3 size={16} />Edit</button>
               </>
             ) : profile.blocked_me ? (
               // Blocked: writing, gifting and following would all be refused, so the page
@@ -365,21 +401,57 @@ export function ProfileView({ username }: { username: string }) {
               <ProfileMoreMenu profile={profile} isMe={isMe} shareProfile={shareProfile} />
             ) : (
               <>
-                <button className={OUTLINE_ACTION} onClick={() => directChat.mutate()} disabled={directChat.isPending} aria-label="Написать"><MessageCircle size={16} /></button>
-                <button className={OUTLINE_ACTION} onClick={() => setGiftSheetOpen(true)} aria-label="Отправить подарок"><GiftIcon size={16} /></button>
+                <button className={OUTLINE_ACTION} onClick={() => directChat.mutate()} disabled={directChat.isPending} aria-label="Message"><MessageCircle size={16} /></button>
+                <button className={OUTLINE_ACTION} onClick={() => setGiftSheetOpen(true)} aria-label="Send a gift"><GiftIcon size={16} /></button>
                 <ProfileMoreMenu profile={profile} isMe={isMe} shareProfile={shareProfile} />
-                <button className={profile.is_following || profile.follow_requested ? "quiet-button" : "profile-primary-action"} onClick={() => follow.mutate()} disabled={follow.isPending} title={profile.follow_requested ? "Нажмите, чтобы отменить заявку" : undefined}>{profile.is_following ? <><Check size={16} />Вы подписаны</> : profile.follow_requested ? <><Clock size={15} />Заявка отправлена</> : "Читать"}</button>
+                <button className={profile.is_following || profile.follow_requested ? "quiet-button" : "profile-primary-action"} onClick={() => follow.mutate()} disabled={follow.isPending} title={profile.follow_requested ? "Tap to cancel your request" : undefined}>{profile.is_following ? <><Check size={16} />Following</> : profile.follow_requested ? <><Clock size={15} />Requested</> : "Follow"}</button>
               </>
             )}
           </div>
         </div>
 
+        {/* Moderation state, stated before anything else on the page: a visitor deciding whether
+            to trust this account should not have to scroll to find out it is blocked, and the
+            owner should read the same words everyone else does. */}
+        {profile.banned_at ? (
+          <div className="mt-3 flex items-start gap-2.5 rounded-[16px] bg-[rgba(229,57,53,.12)] px-3.5 py-3 shadow-[inset_0_0_0_1px_rgba(229,57,53,.28)]">
+            <Ban size={18} className="mt-0.5 shrink-0 text-[var(--danger)]" />
+            <div className="min-w-0">
+              <strong className="block text-[14px] font-bold text-[var(--danger)]">
+                {isMe ? "Your account is blocked" : "Account blocked by moderators"}
+              </strong>
+              {profile.ban_reason ? (
+                <span className="mt-0.5 block text-[13px] leading-5 text-[var(--muted)]">
+                  Reason: {profile.ban_reason}
+                </span>
+              ) : null}
+            </div>
+          </div>
+        ) : profile.heavily_reported ? (
+          <div className="mt-3 flex items-start gap-2.5 rounded-[16px] bg-[rgba(245,158,11,.12)] px-3.5 py-3 shadow-[inset_0_0_0_1px_rgba(245,158,11,.26)]">
+            <Flag size={18} className="mt-0.5 shrink-0 text-[#f59e0b]" />
+            <div className="min-w-0">
+              <strong className="block text-[14px] font-bold text-[#f59e0b]">
+                This account has been reported
+              </strong>
+              <span className="mt-0.5 block text-[13px] leading-5 text-[var(--muted)]">
+                {profile.reports_count} open reports under review. This isn&apos;t a moderator
+                ruling — just a reason to be careful.
+              </span>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Staff controls where the content is: a moderator reading this profile already has the
+            context the panel would make them rebuild. Renders for admins only. */}
+        <StaffUserControls profile={profile} />
+
         <div className="mt-3.5">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
             {profile.is_admin ? <AdminMarkExplained name={profile.display_name} size={20} /> : null}
             <h1 className="m-0 inline-block min-w-0 break-words text-xl font-extrabold leading-tight" style={nameStyle(profile.profile_color)}>{profile.display_name}</h1>
-            {profile.verified ? <VerifiedMarkExplained name={profile.display_name} label="Личность подтверждена GRAM" size={20} /> : null}
-            {profile.is_premium ? <button type="button" onClick={() => openPremium()} className="inline-grid place-items-center border-0 bg-transparent p-0 transition-transform hover:scale-110 active:scale-95" aria-label="Открыть GRAM Premium"><PremiumMark size={18} profileColor={profile.profile_color} /></button> : null}
+            {profile.verified ? <VerifiedMarkExplained name={profile.display_name} label="Identity verified by GRAM" size={20} /> : null}
+            {profile.is_premium ? <button type="button" onClick={() => openPremium()} className="inline-grid place-items-center border-0 bg-transparent p-0 transition-transform hover:scale-110 active:scale-95" aria-label="Open GRAM Premium"><PremiumMark size={18} profileColor={profile.profile_color} /></button> : null}
             {identityGift ? <GiftDetailTrigger gift={identityGift} me={meQuery.data?.username} className="inline-grid size-7 place-items-center rounded-full border-0 bg-transparent p-0 transition-transform duration-150 hover:scale-[1.08] active:scale-95"><GiftImage {...giftArtProps(identityGift)} size={26} bare animate="hover" /></GiftDetailTrigger> : null}
             {(profile.streak_days ?? 0) > 0 ? <StreakBadge days={profile.streak_days ?? 0} isMe={isMe} /> : null}
           </div>
@@ -387,7 +459,7 @@ export function ProfileView({ username }: { username: string }) {
           <button
             className="mt-1 flex min-h-9 items-center gap-1.5 rounded-md border-0 bg-transparent px-1 text-base text-[var(--dim)] transition-colors active:scale-[0.98]"
             onClick={copyUsername}
-            aria-label={`Скопировать @${profile.username}`}
+            aria-label={`Copy @${profile.username}`}
           >
             <span style={copied ? { color: "var(--online)" } : undefined}>@{profile.username}</span>
             <AnimatePresence initial={false} mode="wait">
@@ -426,12 +498,25 @@ export function ProfileView({ username }: { username: string }) {
 
         {profile.related_usernames?.length ? <RelatedUsernames handles={profile.related_usernames} profileColor={profile.profile_color} /> : null}
         {profile.bio ? <p className="mb-0 mt-3 max-w-[70ch] whitespace-pre-wrap break-words text-[15px] leading-6 text-[var(--ink)]">{profile.bio}</p> : null}
-        {profile.badges?.length ? <BadgeStrip badges={profile.badges} className="mt-3" /> : null}
+        {/* Badges are a choice, so their owner gets the way to make it right where they show. */}
+        <div className="mt-3 flex items-center gap-2">
+          {profile.badges?.length ? <BadgeStrip badges={profile.badges} /> : null}
+          {isMe ? (
+            <button
+              type="button"
+              onClick={() => setBadgePickerOpen(true)}
+              className="inline-flex min-h-8 items-center gap-1 rounded-full border-0 bg-[var(--surface-raised)] px-2.5 text-[12px] font-bold text-[var(--muted)] transition hover:brightness-125"
+            >
+              <Plus size={13} />
+              {profile.badges?.length ? "Badges" : "Choose badges"}
+            </button>
+          ) : null}
+        </div>
         <ProfileMeta profile={profile} />
 
         <div className="mt-3 flex items-center gap-5 text-[15px]">
-          <button className="min-h-11 border-0 bg-transparent p-0 text-left" onClick={() => openConnections("following")}><strong className="font-bold">{compactNumber(profile.following_count)}</strong> <span className="text-[var(--dim)]">Подписки</span></button>
-          <button className="min-h-11 border-0 bg-transparent p-0 text-left" onClick={() => openConnections("followers")}><strong className="font-bold">{compactNumber(profile.followers_count)}</strong> <span className="text-[var(--dim)]">Подписчики</span></button>
+          <button className="min-h-11 border-0 bg-transparent p-0 text-left" onClick={() => openConnections("following")}><strong className="font-bold">{compactNumber(profile.following_count)}</strong> <span className="text-[var(--dim)]">Following</span></button>
+          <button className="min-h-11 border-0 bg-transparent p-0 text-left" onClick={() => openConnections("followers")}><strong className="font-bold">{compactNumber(profile.followers_count)}</strong> <span className="text-[var(--dim)]">Followers</span></button>
         </div>
 
         {!isMe && !profile.blocked_me && profile.paid_subscription_enabled && (profile.subscription_price_stars ?? 0) > 0 ? (
@@ -448,18 +533,18 @@ export function ProfileView({ username }: { username: string }) {
             onClick={() => (profile.is_subscribed ? setCancelSubOpen(true) : subscription.mutate())}
             disabled={subscription.isPending}
           >
-            <Star size={18} fill="currentColor" />{profile.is_subscribed ? "Платная подписка активна" : `Подписаться · ${profile.subscription_price_stars} ★ / мес`}
+            <Star size={18} fill="currentColor" />{profile.is_subscribed ? "Paid subscription active" : `Subscribe · ${profile.subscription_price_stars} ★ / mo`}
           </button>
         ) : null}
       </section>
 
-      {/* One label over the group: repeating «КАНАЛ» above each card read as three headings. */}
+      {/* One label over the group: repeating «CHANNEL» above each card read as three headings. */}
       {communityQueries.some((query) => query.data) ? (
         <section className="mx-4 mb-3">
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-[.08em] text-[#52525c]">
-            {communityQueries.filter((query) => query.data).length > 1 ? "Каналы" : "Канал"}
+            {communityQueries.filter((query) => query.data).length > 1 ? "Channels" : "Channel"}
           </div>
-          <div className="grid gap-2">
+          <div className="stagger-in grid gap-2">
             {communityQueries.map((query, index) =>
               query.data ? (
                 <FeaturedCommunityCard
@@ -473,41 +558,41 @@ export function ProfileView({ username }: { username: string }) {
         </section>
       ) : null}
       {profile.profile_song_url ? <ProfileSong profile={profile} audioRef={audioRef} playing={songPlaying} toggle={toggleSong} onEnded={() => setSongPlaying(false)} /> : null}
-      {stories.length ? <><StoryPreviewRow stories={storyViews} onOpen={() => setTab("stories")} /><ProfileRule /></> : null}
+      {stories.length ? <><StoryPreviewRow stories={stories} onOpen={() => setTab("stories")} /><ProfileRule /></> : null}
 
-      {profile.verified ? <><div className="mx-4 mb-3 flex items-center gap-1.5 text-[13px] text-[var(--ink)]"><ShieldCheck size={15} className="flex-none text-[var(--verified)]" /><span>Представители GRAM подтвердили, что этот профиль официальный.</span></div><ProfileRule /></> : null}
+      {profile.verified ? <><div className="mx-4 mb-3 flex items-center gap-1.5 text-[13px] text-[var(--ink)]"><ShieldCheck size={15} className="flex-none text-[var(--verified)]" /><span>GRAM&apos;s team has confirmed this profile is official.</span></div><ProfileRule /></> : null}
 
       {contentOpen ? null : <ClosedAccountPanel profile={profile} />}
 
       {contentOpen ? (
       <Tabs.Root value={tab} onValueChange={setTab}>
-        <Tabs.List className="sticky top-[56px] z-30 flex overflow-x-auto border-b border-[var(--line-structural)] bg-[var(--header)] backdrop-blur-xl [scrollbar-width:none]" aria-label="Разделы профиля">
-          {/* Russian, like every other tab strip in the product and in the reference. */}
-          <ProfileTab value="posts" label="Посты" accent={tabAccent} />
-          <ProfileTab value="stories" label={stories.length ? `Истории • ${stories.length}` : "Истории"} accent={tabAccent} />
-          <ProfileTab value="replies" label="Ответы" accent={tabAccent} />
-          <ProfileTab value="media" label="Медиа" accent={tabAccent} />
-          <ProfileTab value="gifts" label="Подарки" accent={tabAccent} emblems={tabGifts} me={meQuery.data?.username} />
+        <Tabs.List className="sticky top-[56px] z-30 flex overflow-x-auto border-b border-[var(--line-structural)] bg-[var(--header)] backdrop-blur-xl [scrollbar-width:none]" aria-label="Profile sections">
+          {/* English, like every other tab strip in the product and in the reference. */}
+          <ProfileTab value="posts" label="Posts" accent={tabAccent} />
+          <ProfileTab value="stories" label={stories.length ? `Stories • ${stories.length}` : "Stories"} accent={tabAccent} />
+          <ProfileTab value="replies" label="Replies" accent={tabAccent} />
+          <ProfileTab value="media" label="Media" accent={tabAccent} />
+          <ProfileTab value="gifts" label="Gifts" accent={tabAccent} emblems={tabGifts} me={meQuery.data?.username} />
         </Tabs.List>
 
-        <Tabs.Content value="posts" className="space-y-3 px-3 py-4 outline-none sm:px-5">
-          {feedQuery.isLoading ? <ProfileFeedSkeleton /> : feedQuery.isError ? <SectionError text={feedQuery.error.message} retry={() => feedQuery.refetch()} /> : posts.length ? posts.map((post) => <PostCard key={post.id} post={post} showPinned />) : <EmptySection icon={Grid3X3} title="Пока нет постов" text="Новые публикации появятся здесь." />}
+        <Tabs.Content value="posts" className="panel-enter space-y-3 px-3 py-4 outline-none sm:px-5">
+          {feedQuery.isLoading ? <ProfileFeedSkeleton /> : feedQuery.isError ? <SectionError text={feedQuery.error.message} retry={() => feedQuery.refetch()} /> : posts.length ? posts.map((post) => <PostCard key={post.id} post={post} showPinned />) : <EmptySection icon={Grid3X3} title="No posts yet" text="New posts will show up here." />}
         </Tabs.Content>
 
-        <Tabs.Content value="stories" className="outline-none">
-          <div className="flex items-center justify-between px-4 pt-4 sm:px-5"><div><h2 className="m-0 text-lg font-bold">Истории</h2><p className="mb-0 mt-1 text-xs text-[var(--muted)]">Моменты и закреплённые истории профиля</p></div>{isMe ? <button className="quiet-button !min-h-10 !px-3 text-xs" onClick={() => setStoryComposerOpen(true)}><Plus size={16} />Добавить</button> : null}</div>
-          {storiesQuery.isLoading ? <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 sm:p-5"><div className="skeleton aspect-[3/4] rounded-[18px]" /><div className="skeleton aspect-[3/4] rounded-[18px]" /></div> : storiesQuery.isError ? <SectionError text={storiesQuery.error.message} retry={() => storiesQuery.refetch()} /> : stories.length ? <ProfileStories stories={storyViews} profileName={profile.display_name} className="p-4 sm:p-5" /> : <EmptySection icon={Sparkles} title="Историй пока нет" text={isMe ? "Добавьте историю из медиа своих публикаций." : "Новые истории появятся здесь."} />}
+        <Tabs.Content value="stories" className="panel-enter outline-none">
+          <div className="flex items-center justify-between px-4 pt-4 sm:px-5"><div><h2 className="m-0 text-lg font-bold">Stories</h2><p className="mb-0 mt-1 text-xs text-[var(--muted)]">Moments and pinned profile stories</p></div>{isMe ? <span className="flex flex-none gap-2"><button className="quiet-button !min-h-10 !px-3 text-xs" onClick={() => setStoryUploadOpen(true)}><Plus size={16} />Add</button><button className="quiet-button !min-h-10 !px-3 text-xs" onClick={() => setStoryComposerOpen(true)}><ImageIcon size={15} />From posts</button></span> : null}</div>
+          {storiesQuery.isLoading ? <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 sm:p-5"><div className="skeleton aspect-[3/4] rounded-[18px]" /><div className="skeleton aspect-[3/4] rounded-[18px]" /></div> : storiesQuery.isError ? <SectionError text={storiesQuery.error.message} retry={() => storiesQuery.refetch()} /> : stories.length ? <ProfileStoryGrid stories={stories} className="p-4 sm:p-5" /> : <EmptySection icon={Sparkles} title="No stories yet" text={isMe ? "Upload a photo or video — or pull media from one of your posts." : "New stories will show up here."} />}
         </Tabs.Content>
 
-        <Tabs.Content value="replies" className="space-y-3 px-3 py-4 outline-none sm:px-5">
-          {repliesQuery.isLoading ? <ProfileFeedSkeleton /> : repliesQuery.isError ? <SectionError text={repliesQuery.error.message} retry={() => repliesQuery.refetch()} /> : replies.length ? replies.map((reply) => <ReplyCard key={reply.id} reply={reply} />) : <EmptySection icon={Reply} title="Ответов пока нет" text="Ответы пользователя на публикации появятся здесь." />}
+        <Tabs.Content value="replies" className="panel-enter space-y-3 px-3 py-4 outline-none sm:px-5">
+          {repliesQuery.isLoading ? <ProfileFeedSkeleton /> : repliesQuery.isError ? <SectionError text={repliesQuery.error.message} retry={() => repliesQuery.refetch()} /> : replies.length ? replies.map((reply) => <ReplyCard key={reply.id} reply={reply} />) : <EmptySection icon={Reply} title="No replies yet" text="This user's replies to posts will show up here." />}
         </Tabs.Content>
 
-        <Tabs.Content value="media" className="outline-none">
-          {feedQuery.isError ? <SectionError text={feedQuery.error.message} retry={() => feedQuery.refetch()} /> : mediaPosts.length ? <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-3 sm:p-5">{mediaPosts.map((post) => <Link href={`/post/${post.id}`} key={post.id} className="relative aspect-square overflow-hidden rounded-[16px] bg-[#121216] focus-visible:outline"><Image src={post.media_url!} alt={`Медиа публикации: ${post.content.slice(0, 80)}`} fill sizes="240px" className="object-cover transition-transform duration-300 hover:scale-[1.03]" /></Link>)}</div> : <EmptySection icon={ImageIcon} title="Медиа пока нет" text="Изображения из публикаций появятся здесь." />}
+        <Tabs.Content value="media" className="panel-enter outline-none">
+          {feedQuery.isError ? <SectionError text={feedQuery.error.message} retry={() => feedQuery.refetch()} /> : mediaPosts.length ? <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-3 sm:p-5">{mediaPosts.map((post) => <Link href={`/post/${post.id}`} key={post.id} className="relative aspect-square overflow-hidden rounded-[16px] bg-[#121216] focus-visible:outline"><Image src={post.media_url!} alt={`Post media: ${post.content.slice(0, 80)}`} fill sizes="240px" className="object-cover transition-transform duration-300 hover:scale-[1.03]" /></Link>)}</div> : <EmptySection icon={ImageIcon} title="No media yet" text="Images from posts will show up here." />}
         </Tabs.Content>
 
-        <Tabs.Content value="gifts" className="outline-none">
+        <Tabs.Content value="gifts" className="panel-enter outline-none">
           {giftsQuery.isLoading ? <div className="grid grid-cols-3 gap-2 p-3 sm:grid-cols-4 sm:p-5">{[0,1,2,3].map((item) => <div key={item} className="skeleton aspect-square rounded-[16px]" />)}</div> : giftsQuery.isError ? <SectionError text={giftsQuery.error.message} retry={() => giftsQuery.refetch()} /> : <ProfileCollection gifts={gifts} meUsername={meQuery.data?.username} isOwner={isMe} />}
         </Tabs.Content>
 
@@ -517,6 +602,11 @@ export function ProfileView({ username }: { username: string }) {
       <ProfileQrDialog open={qrOpen} onOpenChange={setQrOpen} profile={profile} />
       <ConnectionsDialog open={connectionsOpen} onOpenChange={setConnectionsOpen} username={profile.username} initialTab={connectionTab} />
       <StoryComposerDialog open={storyComposerOpen} onOpenChange={setStoryComposerOpen} posts={mediaPosts} username={profile.username} />
+      {/* The upload path, next to the one that reuses a published picture. */}
+      <StoryComposer open={storyUploadOpen} onOpenChange={setStoryUploadOpen} />
+      {isMe ? (
+        <BadgePickerSheet open={badgePickerOpen} onOpenChange={setBadgePickerOpen} />
+      ) : null}
       <GiftPurchaseSheet recipient={profile.username} open={giftSheetOpen} onOpenChange={setGiftSheetOpen} />
       <ProfileEditSheet open={editOpen} onOpenChange={setEditOpen} />
       {isMe ? (
@@ -530,10 +620,10 @@ export function ProfileView({ username }: { username: string }) {
       <ConfirmDialog
         open={cancelSubOpen}
         onOpenChange={setCancelSubOpen}
-        title="Отменить платную подписку?"
-        description={`Доступ к платным материалам @${canonicalUsername} закроется сразу, а списанные за текущий период ${profile.subscription_price_stars ?? 0} ★ не возвращаются.`}
-        confirmLabel={subscription.isPending ? "Отменяем…" : "Отменить подписку"}
-        cancelLabel="Оставить"
+        title="Cancel paid subscription?"
+        description={`Access to @${canonicalUsername}'s paid content ends right away, and the ${profile.subscription_price_stars ?? 0} ★ charged for the current period aren't refunded.`}
+        confirmLabel={subscription.isPending ? "Cancelling…" : "Cancel subscription"}
+        cancelLabel="Keep"
         error={subscription.error?.message}
         pending={subscription.isPending}
         onConfirm={() => {
@@ -572,7 +662,7 @@ function ProfileTab({
             <span
               key={gift.id}
               className="rounded-full ring-1 ring-[var(--canvas)]"
-              title={`${gift.name} · ${me === gift.owner_username ? "ваш" : gift.owner_username}`}
+              title={`${gift.name} · ${me === gift.owner_username ? "yours" : gift.owner_username}`}
             >
               {/* Bare: these sit on the tab strip itself, where a coloured disc reads as a badge. */}
               <GiftImage {...giftArtProps(gift)} size={18} bare />
@@ -615,16 +705,16 @@ function ProfileMoreMenu({ profile, isMe, shareProfile }: { profile: User; isMe:
         queryClient.invalidateQueries({ queryKey: ["profile", profile.username] }),
         queryClient.invalidateQueries({ queryKey: ["stars-wallet"] })
       ]);
-      notify(`Premium подарен @${profile.username}`, {
+      notify(`Premium gifted to @${profile.username}`, {
         variant: "success",
         kind: "premium",
-        detail: `До ${new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(new Date(entitlement.expires_at))} · −${entitlement.price_stars} ★`
+        detail: `Until ${new Intl.DateTimeFormat("en-US", { day: "numeric", month: "long" }).format(new Date(entitlement.expires_at))} · −${entitlement.price_stars} ★`
       });
     },
     // The server already says exactly what went wrong — already has Premium, and until when;
     // how many stars are missing — so the notice repeats it instead of burying it.
     onError: (error: Error) =>
-      notify("Не удалось подарить Premium", { variant: "error", detail: error.message })
+      notify("Couldn't gift Premium", { variant: "error", detail: error.message })
   });
   // Keyed rather than unmounted on close: a Radix dialog torn down while still open leaves
   // `pointer-events: none` on the page behind it.
@@ -640,48 +730,48 @@ function ProfileMoreMenu({ profile, isMe, shareProfile }: { profile: User; isMe:
         queryClient.invalidateQueries({ queryKey: ["chats"] }),
         queryClient.invalidateQueries({ queryKey: ["feed"] })
       ]);
-      notify(profile.is_blocked ? "Пользователь разблокирован" : "Пользователь заблокирован", {
+      notify(profile.is_blocked ? "User unblocked" : "User blocked", {
         variant: "success",
         detail: profile.is_blocked
-          ? `@${profile.username} снова может писать вам`
-          : `@${profile.username} не сможет писать вам`
+          ? `@${profile.username} can message you again`
+          : `@${profile.username} won't be able to message you`
       });
     },
     onError: (error: Error) =>
-      notify("Не получилось", { variant: "error", detail: error.message })
+      notify("Something went wrong", { variant: "error", detail: error.message })
   });
   return (
     <>
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <button className={OUTLINE_ACTION} aria-label="Ещё"><MoreHorizontal size={16} /></button>
+        <button className={OUTLINE_ACTION} aria-label="More"><MoreHorizontal size={16} /></button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content align="end" sideOffset={8} className="z-[90] min-w-[232px] rounded-[20px] bg-[#17171d] p-1.5 shadow-[0_18px_50px_rgba(0,0,0,.55)]">
           <DropdownMenu.Item className={item} onSelect={shareProfile}>
-            <Link2 size={18} className="text-[var(--muted)]" />Скопировать ссылку
+            <Link2 size={18} className="text-[var(--muted)]" />Copy link
           </DropdownMenu.Item>
           {/* Gifting, reporting and blocking only make sense towards someone else. */}
           {isMe ? null : (
             <>
               <DropdownMenu.Item asChild>
                 <Link href={`/stars?to=${encodeURIComponent(profile.username)}`} className={item}>
-                  <Star size={18} className="text-[var(--stars)]" />Подарить звёзды
+                  <Star size={18} className="text-[var(--stars)]" />Send stars
                 </Link>
               </DropdownMenu.Item>
               <DropdownMenu.Item className={item} onSelect={() => setGiftPremiumOpen(true)}>
-                <Sparkles size={18} className="text-[var(--premium)]" />Подарить Premium
+                <Sparkles size={18} className="text-[var(--premium)]" />Gift Premium
               </DropdownMenu.Item>
               <DropdownMenu.Separator className="mx-2 my-1.5 h-px bg-[var(--line)]" />
               <DropdownMenu.Item className={item} onSelect={() => setReport((current) => ({ open: true, seq: current.seq + 1 }))}>
-                <Flag size={18} className="text-[var(--muted)]" />Пожаловаться
+                <Flag size={18} className="text-[var(--muted)]" />Report
               </DropdownMenu.Item>
               <DropdownMenu.Item
                 className={`${item} ${profile.is_blocked ? "" : "text-[var(--danger)]"}`}
                 onSelect={() => (profile.is_blocked ? block.mutate() : setConfirmBlock(true))}
               >
                 {profile.is_blocked ? <ShieldCheck size={18} /> : <Ban size={18} />}
-                {profile.is_blocked ? "Разблокировать" : "Заблокировать"}
+                {profile.is_blocked ? "Unblock" : "Block"}
               </DropdownMenu.Item>
             </>
           )}
@@ -691,9 +781,9 @@ function ProfileMoreMenu({ profile, isMe, shareProfile }: { profile: User; isMe:
     <ConfirmDialog
       open={confirmBlock}
       onOpenChange={setConfirmBlock}
-      title={`Заблокировать @${profile.username}?`}
-      description="Он не сможет писать вам, а ваш диалог закроется с обеих сторон. Разблокировать можно в любой момент."
-      confirmLabel={block.isPending ? "Блокируем…" : "Заблокировать"}
+      title={`Block @${profile.username}?`}
+      description="They won't be able to message you, and your conversation closes on both sides. You can unblock anytime."
+      confirmLabel={block.isPending ? "Blocking…" : "Block"}
       error={block.error?.message}
       pending={block.isPending}
       onConfirm={() => block.mutate()}
@@ -711,11 +801,11 @@ function ProfileMoreMenu({ profile, isMe, shareProfile }: { profile: User; isMe:
         if (!next) giftPremium.reset();
       }}
       tone="primary"
-      title={`Подарить Premium @${profile.username}?`}
-      description={`${profile.display_name} получит GRAM Premium на 30 дней. Спишем ${price} ★${
-        typeof wallet.data?.balance === "number" ? ` — на балансе ${wallet.data.balance} ★` : ""
+      title={`Gift Premium to @${profile.username}?`}
+      description={`${profile.display_name} will get GRAM Premium for 30 days. We'll charge ${price} ★${
+        typeof wallet.data?.balance === "number" ? ` — balance ${wallet.data.balance} ★` : ""
       }.`}
-      confirmLabel={giftPremium.isPending ? "Дарим…" : `Подарить за ${price} ★`}
+      confirmLabel={giftPremium.isPending ? "Gifting…" : `Gift for ${price} ★`}
       error={giftPremium.error?.message}
       pending={giftPremium.isPending}
       onConfirm={() => giftPremium.mutate()}
@@ -731,7 +821,7 @@ function ProfileMeta({ profile }: { profile: User }) {
     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[15px] text-[var(--dim)]">
       {profile.location ? <span className="inline-flex items-center gap-1.5"><MapPin size={15} className="flex-none" />{profile.location}</span> : null}
       {profile.website_url ? <a href={profile.website_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-[var(--link)]"><Link2 size={15} className="flex-none" />{websiteLabel(profile.website_url)}<ExternalLink size={12} /></a> : null}
-      <span className="inline-flex items-center gap-1.5"><CalendarDays size={15} className="flex-none" />В GRAM с {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", year: "numeric" }).format(new Date(profile.joined_at))}</span>
+      <span className="inline-flex items-center gap-1.5"><CalendarDays size={15} className="flex-none" />On GRAM since {new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric" }).format(new Date(profile.joined_at))}</span>
       {birthday ? <span className="inline-flex items-center gap-1.5"><CalendarDays size={15} className="flex-none" />{birthday}</span> : null}
     </div>
     {hasSocials ? <div className="mt-3 flex flex-wrap gap-2">
@@ -741,8 +831,17 @@ function ProfileMeta({ profile }: { profile: User }) {
   </>;
 }
 
+/**
+ * The channel a profile advertises.
+ *
+ * Two things here are the channel's own, and used to be borrowed from elsewhere. The tick is
+ * `is_verified` — the channel's, granted by staff — not its owner's: reading the owner's tick put
+ * one on every channel a verified person happened to run, and it vanished the moment you opened
+ * the channel, which renders the real flag. And the right-hand figure is how many people read the
+ * channel; it was the creation date, which answered a question nobody asked of a channel card.
+ */
 function FeaturedCommunityCard({ community, latestPost }: { community: Community; latestPost?: string }) {
-  return <Link href={`/c/${community.slug}`} className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-[24px] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-raised)]"><div className="relative size-12 overflow-hidden rounded-full bg-[var(--surface-raised)]">{community.avatar_url ? <Image src={community.avatar_url} alt={community.title} fill sizes="48px" className="object-cover" /> : <span className="grid h-full place-items-center font-black text-[var(--primary-strong)]">{community.title.slice(0,1)}</span>}</div><span className="min-w-0"><span className="flex items-center gap-1.5"><strong className="truncate text-[15px] font-bold">{community.title}</strong>{community.owner.verified ? <VerifiedMark /> : null}</span><span className="mt-0.5 block truncate text-[13px] text-[var(--dim)]">{latestPost ?? community.description}</span></span><time className="self-start text-[12px] text-[var(--dim)]">{relativeTime(community.created_at)}</time></Link>;
+  return <Link href={`/c/${community.slug}`} className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-[24px] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-raised)]"><div className="relative size-12 overflow-hidden rounded-full bg-[var(--surface-raised)]">{community.avatar_url ? <Image src={community.avatar_url} alt={community.title} fill sizes="48px" className="object-cover" /> : <span className="grid h-full place-items-center font-black text-[var(--primary-strong)]">{community.title.slice(0,1)}</span>}</div><span className="min-w-0"><span className="flex items-center gap-1.5"><strong className="truncate text-[15px] font-bold">{community.title}</strong>{community.is_verified ? <VerifiedMark /> : null}</span><span className="mt-0.5 block truncate text-[13px] text-[var(--dim)]">{latestPost ?? community.description}</span></span><span className="grid justify-items-end gap-0.5 self-center text-right"><strong className="text-[15px] font-bold leading-none">{compactNumber(community.members_count)}</strong><span className="text-[11px] leading-none text-[var(--dim)]">{community.members_count === 1 ? "subscriber" : "subscribers"}</span></span></Link>;
 }
 
 /**
@@ -790,7 +889,7 @@ function CoverGifts({
               ...spot.style,
               filter: `drop-shadow(0 0 12px ${gift.accent ?? "#8b5cf6"}88) drop-shadow(0 8px 14px rgba(0,0,0,.5))`
             }}
-            label={`Показать подарок ${gift.name} #${gift.serial_number}`}
+            label={`Show gift ${gift.name} #${gift.serial_number}`}
           >
             <GiftImage
               {...giftArtProps(gift)}
@@ -806,8 +905,8 @@ function CoverGifts({
         <button
           type="button"
           onClick={onArrange}
-          aria-label="Настроить подарки в шапке"
-          className="absolute right-2 top-2 z-20 grid size-9 place-items-center rounded-full bg-black/45 text-white backdrop-blur transition hover:bg-black/65 active:scale-95"
+          aria-label="Arrange header gifts"
+          className="absolute right-2 top-2 z-20 hidden size-9 place-items-center rounded-full bg-black/45 text-white backdrop-blur transition hover:bg-black/65 active:scale-95 min-[900px]:grid"
         >
           <Sparkles size={16} />
         </button>
@@ -817,14 +916,14 @@ function CoverGifts({
 }
 
 function StreakBadge({ days, isMe }: { days: number; isMe: boolean }) {
-  const word = days % 10 === 1 && days % 100 !== 11 ? "день" : days % 10 >= 2 && days % 10 <= 4 && (days % 100 < 10 || days % 100 >= 20) ? "дня" : "дней";
+  const word = days === 1 ? "day" : "days";
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
         <button
           type="button"
           className="inline-flex h-7 items-center gap-1 rounded-full border-0 bg-[#32191d] px-2 text-xs font-extrabold text-[#ff7285] transition-transform hover:scale-105 active:scale-95"
-          aria-label={`Огоньки: серия ${days} ${word}`}
+          aria-label={`Streak: ${days} ${word} in a row`}
         >
           <Flame size={14} fill="currentColor" />
           {days}
@@ -838,14 +937,14 @@ function StreakBadge({ days, isMe }: { days: number; isMe: boolean }) {
           collisionPadding={12}
           className="z-[90] w-[min(20rem,calc(100vw-24px))] rounded-[20px] border border-[var(--sheet-line)] bg-[var(--sheet)] px-5 py-[18px] outline-none"
         >
-          <h3 className="m-0 text-xl font-extrabold">Огоньки</h3>
+          <h3 className="m-0 text-xl font-extrabold">Streak</h3>
           <p className="mb-0 mt-3 text-[15px] leading-6 text-[var(--muted)]">
-            Серия — {days} {word} подряд. Огонёк добавляется один раз в сутки при заходе в GRAM
-            и сгорает, если пропустить день.
+            A streak of {days} {word} in a row. One flame is added per day when you open GRAM,
+            and it burns out if you miss a day.
           </p>
           {isMe ? (
             <p className="mb-0 mt-2 text-[13px] leading-5 text-[var(--dim)]">
-              Сегодняшний визит уже засчитан.
+              Today&apos;s visit already counts.
             </p>
           ) : null}
         </Popover.Content>
@@ -863,7 +962,7 @@ function StoryPreviewRow({ stories, onOpen }: { stories: { id: string; title: st
     <div className="flex gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {stories.map((story) => (
         <div key={story.id} className="relative w-[66px] shrink-0 text-center">
-          <button type="button" onClick={onOpen} className="group block w-full border-0 bg-transparent p-0" aria-label={`Открыть историю «${story.title}»`}>
+          <button type="button" onClick={onOpen} className="group block w-full border-0 bg-transparent p-0" aria-label={`Open story “${story.title}”`}>
             <span className="mx-auto block size-14 rounded-full bg-gradient-to-br from-zinc-700 via-zinc-900 to-black p-[2px] transition group-hover:from-violet-400 group-hover:via-sky-400 group-hover:to-fuchsia-500">
               <span className="block size-full overflow-hidden rounded-full bg-[#09090b] p-[2px]">
                 <Image src={story.media_url} alt="" width={56} height={56} className="size-full rounded-full object-cover" />
@@ -879,14 +978,14 @@ function StoryPreviewRow({ stories, onOpen }: { stories: { id: string; title: st
 
 /** The reference renders profile music as a full-bleed hairline strip, not a card. */
 function ProfileSong({ profile, audioRef, playing, toggle, onEnded }: { profile: User; audioRef: React.RefObject<HTMLAudioElement | null>; playing: boolean; toggle: () => void; onEnded: () => void }) {
-  const title = profile.profile_song_title || "Песня профиля";
+  const title = profile.profile_song_title || "Profile song";
   const artist = profile.profile_song_artist || "GRAM profile music";
   return (
     <section className="mb-3 flex items-center border-y border-white/[0.045] bg-[#151515]">
       <button
         className="flex h-5 min-w-0 flex-1 items-center justify-center gap-1.5 border-0 bg-transparent px-4 text-xs font-medium text-[#e4e4e7] transition-colors hover:bg-white/[0.035]"
         onClick={toggle}
-        aria-label={playing ? "Приостановить песню профиля" : "Слушать песню профиля"}
+        aria-label={playing ? "Pause profile song" : "Play profile song"}
       >
         {playing ? <Pause size={12} className="shrink-0 fill-current text-white" /> : <Play size={12} className="shrink-0 fill-current text-white" />}
         <span className="truncate">{artist} — {title}</span>
@@ -897,25 +996,25 @@ function ProfileSong({ profile, audioRef, playing, toggle, onEnded }: { profile:
 }
 
 function ReplyCard({ reply }: { reply: ProfileReply }) {
-  return <Link href={`/post/${reply.post_id}`} className="block rounded-[20px] bg-[#121216] p-4 shadow-[inset_0_0_0_1px_var(--line)] hover:bg-[#17171d]"><div className="flex items-center gap-2 text-xs text-[var(--muted)]"><Reply size={15} /><span>Ответ пользователю <strong className="text-[var(--link)]">@{reply.parent_post.author.username}</strong></span><span className="ml-auto">{relativeTime(reply.created_at)}</span></div><p className="mb-0 mt-3 whitespace-pre-wrap text-sm leading-6 text-white">{reply.content}</p><blockquote className="mb-0 mt-3 rounded-[14px] bg-[#121216] px-3 py-2 text-xs leading-5 text-[var(--muted)] shadow-[inset_0_0_0_1px_var(--line)]">{reply.parent_post.content}</blockquote></Link>;
+  return <Link href={`/post/${reply.post_id}`} className="block rounded-[20px] bg-[#121216] p-4 shadow-[inset_0_0_0_1px_var(--line)] hover:bg-[#17171d]"><div className="flex items-center gap-2 text-xs text-[var(--muted)]"><Reply size={15} /><span>Replying to <strong className="text-[var(--link)]">@{reply.parent_post.author.username}</strong></span><span className="ml-auto">{relativeTime(reply.created_at)}</span></div><p className="mb-0 mt-3 whitespace-pre-wrap text-sm leading-6 text-white">{reply.content}</p><blockquote className="mb-0 mt-3 rounded-[14px] bg-[#121216] px-3 py-2 text-xs leading-5 text-[var(--muted)] shadow-[inset_0_0_0_1px_var(--line)]">{reply.parent_post.content}</blockquote></Link>;
 }
 
 function StoryComposerDialog({ open, onOpenChange, posts, username }: { open: boolean; onOpenChange: (open: boolean) => void; posts: Post[]; username: string }) {
   const queryClient = useQueryClient();
   const createStory = useMutation({
-    mutationFn: (post: Post) => api.createProfileStory({ title: post.content.slice(0, 80) || "История", media_url: post.media_url!, highlight: true }),
+    mutationFn: (post: Post) => api.createProfileStory({ title: post.content.slice(0, 80) || "Story", media_url: post.media_url!, highlight: true }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["profile-stories", username] });
       onOpenChange(false);
     }
   });
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-[80] bg-black/75 backdrop-blur-sm" /><Dialog.Content className="fixed inset-x-2 bottom-2 z-[90] mx-auto max-h-[86dvh] max-w-[640px] overflow-y-auto rounded-[28px] bg-[#121216] p-4 shadow-[0_28px_80px_rgba(0,0,0,.62)] sm:bottom-auto sm:inset-x-auto sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2"><div className="flex items-center gap-3"><button className="icon-button" onClick={() => onOpenChange(false)} aria-label="Закрыть"><ChevronLeft size={21} /></button><div className="min-w-0 flex-1"><Dialog.Title className="text-lg font-bold">Новая история</Dialog.Title><Dialog.Description className="mt-1 text-xs text-[var(--muted)]">Выберите изображение из своей публикации</Dialog.Description></div><Dialog.Close className="icon-button" aria-label="Закрыть"><X size={20} /></Dialog.Close></div>{posts.length ? <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{posts.map((post) => <button key={post.id} className="group relative aspect-[3/4] overflow-hidden rounded-[18px] border-0 bg-[#17171d] p-0 text-left" onClick={() => createStory.mutate(post)} disabled={createStory.isPending}><Image src={post.media_url!} alt={post.content.slice(0,80)} fill sizes="200px" className="object-cover transition-transform group-hover:scale-[1.03]" /><span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/70 to-transparent p-3 pt-10 text-xs font-bold text-white">{post.content.slice(0,55)}</span></button>)}</div> : <div className="empty-state"><ImageIcon className="mx-auto mb-3" /><p className="font-bold text-white">Нет публикаций с медиа</p><p className="text-sm">Сначала добавьте изображение в новую запись.</p></div>}<p className="mb-0 mt-3 min-h-5 text-sm text-[var(--danger)]" aria-live="polite">{createStory.error?.message}</p></Dialog.Content></Dialog.Portal></Dialog.Root>;
+  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-[80] bg-black/75 backdrop-blur-sm" /><Dialog.Content className="fixed inset-x-2 bottom-2 z-[90] mx-auto max-h-[86dvh] max-w-[640px] overflow-y-auto rounded-[28px] bg-[#121216] p-4 shadow-[0_28px_80px_rgba(0,0,0,.62)] sm:bottom-auto sm:inset-x-auto sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2"><div className="flex items-center gap-3"><button className="icon-button" onClick={() => onOpenChange(false)} aria-label="Close"><ChevronLeft size={21} /></button><div className="min-w-0 flex-1"><Dialog.Title className="text-lg font-bold">New story</Dialog.Title><Dialog.Description className="mt-1 text-xs text-[var(--muted)]">Pick an image from one of your posts</Dialog.Description></div><Dialog.Close className="icon-button" aria-label="Close"><X size={20} /></Dialog.Close></div>{posts.length ? <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{posts.map((post) => <button key={post.id} className="group relative aspect-[3/4] overflow-hidden rounded-[18px] border-0 bg-[#17171d] p-0 text-left" onClick={() => createStory.mutate(post)} disabled={createStory.isPending}><Image src={post.media_url!} alt={post.content.slice(0,80)} fill sizes="200px" className="object-cover transition-transform group-hover:scale-[1.03]" /><span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/70 to-transparent p-3 pt-10 text-xs font-bold text-white">{post.content.slice(0,55)}</span></button>)}</div> : <div className="empty-state"><ImageIcon className="mx-auto mb-3" /><p className="font-bold text-white">No posts with media</p><p className="text-sm">Add an image to a new post first.</p></div>}<p className="mb-0 mt-3 min-h-5 text-sm text-[var(--danger)]" aria-live="polite">{createStory.error?.message}</p></Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
 function ProfileCollection({ gifts, meUsername, isOwner }: { gifts: RichGift[]; meUsername?: string; isOwner?: boolean }) {
   const openGifts = useUiStore((state) => state.openGifts);
-  if (!gifts.length) return <EmptySection icon={GiftIcon} title="Коллекция пока пуста" text="Подарки пользователя появятся здесь." action={<button type="button" className="quiet-button mt-3" onClick={() => openGifts()}>Открыть подарки</button>} />;
-  return <section className="px-3 py-4 sm:px-5"><div className="mb-4 flex items-center justify-between"><div><h2 className="m-0 text-lg font-bold">Подарки</h2><p className="mb-0 mt-1 text-xs text-[var(--muted)]">Коллекционные предметы с историей владения</p></div><button type="button" className="border-0 bg-transparent p-0 text-sm font-semibold text-[var(--link)]" onClick={() => openGifts()}>Все</button></div><div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-3">{gifts.map((gift, index) => <CollectionItem key={gift.id} gift={gift} index={index} meUsername={meUsername} owned={isOwner} />)}</div></section>;
+  if (!gifts.length) return <EmptySection icon={GiftIcon} title="Collection is empty" text="This user's gifts will show up here." action={<button type="button" className="quiet-button mt-3" onClick={() => openGifts()}>Open gifts</button>} />;
+  return <section className="px-3 py-4 sm:px-5"><div className="mb-4 flex items-center justify-between"><div><h2 className="m-0 text-lg font-bold">Gifts</h2><p className="mb-0 mt-1 text-xs text-[var(--muted)]">Collectibles with an ownership history</p></div><button type="button" className="border-0 bg-transparent p-0 text-sm font-semibold text-[var(--link)]" onClick={() => openGifts()}>All</button></div><div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-3">{gifts.map((gift, index) => <CollectionItem key={gift.id} gift={gift} index={index} meUsername={meUsername} owned={isOwner} />)}</div></section>;
 }
 
 /**
@@ -947,8 +1046,8 @@ function CollectionItem({
         {gift.is_pinned ? (
           <span
             className="pointer-events-none absolute left-1.5 top-1.5 grid size-6 place-items-center rounded-full bg-black/65 text-white backdrop-blur-sm"
-            title="Закреплён в коллекции"
-            aria-label="Закреплён в коллекции"
+            title="Pinned in collection"
+            aria-label="Pinned in collection"
           >
             <Pin size={13} />
           </span>
@@ -960,17 +1059,17 @@ function CollectionItem({
         {gift.hidden_in_profile ? (
           <span
             className="pointer-events-none absolute inset-x-1.5 bottom-1.5 flex items-center justify-center gap-1 rounded-full bg-black/70 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm"
-            title="Скрыт из профиля — виден только вам"
+            title="Hidden from profile — visible only to you"
           >
             <EyeOff size={11} />
-            Скрыт
+            Hidden
           </span>
         ) : null}
         {gift.offers_disabled ? (
           <span
             className="pointer-events-none absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-full bg-black/65 text-white backdrop-blur-sm"
-            title="Цену за этот подарок не предлагают"
-            aria-label="Предложения цены отключены"
+            title="Offers on this gift are off"
+            aria-label="Price offers disabled"
           >
             <Ban size={12} />
           </span>
@@ -985,7 +1084,7 @@ function EmptySection({ icon: Icon, title, text, action }: { icon: React.Compone
 }
 
 function SectionError({ text, retry }: { text: string; retry: () => void }) {
-  return <div className="empty-state"><RefreshCw className="mx-auto mb-3 text-[var(--danger)]" /><p className="font-bold text-white">Не удалось загрузить раздел</p><p className="text-sm">{text}</p><button className="quiet-button mt-3" onClick={retry}><RefreshCw size={16} />Повторить</button></div>;
+  return <div className="empty-state"><RefreshCw className="mx-auto mb-3 text-[var(--danger)]" /><p className="font-bold text-white">Couldn&apos;t load this section</p><p className="text-sm">{text}</p><button className="quiet-button mt-3" onClick={retry}><RefreshCw size={16} />Retry</button></div>;
 }
 
 /**
@@ -1008,12 +1107,12 @@ function ClosedAccountPanel({ profile }: { profile: User }) {
         {blocked ? <Ban size={22} /> : <Lock size={22} />}
       </span>
       <strong className="text-[16px]">
-        {blocked ? `@${profile.username} заблокировал(а) вас` : "Закрытый аккаунт"}
+        {blocked ? `@${profile.username} has blocked you` : "Private account"}
       </strong>
       <p className="mb-0 max-w-[42ch] text-[14px] leading-6 text-[var(--muted)]">
         {blocked
-          ? "Посты, истории и ответы этого аккаунта вам недоступны, и написать ему нельзя."
-          : `Посты, истории и ответы ${profile.display_name} видны только подписчикам. Подпишитесь, чтобы открыть их.`}
+          ? "This account's posts, stories and replies aren't available to you, and you can't message them."
+          : `${profile.display_name}'s posts, stories and replies are visible only to followers. Follow to see them.`}
       </p>
     </section>
   );

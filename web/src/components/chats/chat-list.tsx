@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import type { Chat, ChatFolder } from "@/lib/types";
+import type { Chat, ChatFolder, Message } from "@/lib/types";
 import { nameColor } from "@/lib/profile-color";
 import { UserAvatar } from "../user-avatar";
 import { PremiumMark } from "../premium-mark";
@@ -20,7 +20,7 @@ type Filter = "all" | "pinned" | "archived";
 
 /**
  * The conversation list column, following the reference: a sticky header with the title and
- * two round actions, a stories strip, the Все/Закреплённые/Архив tabs, then 72px rows.
+ * two round actions, a stories strip, the All/Pinned/Archive tabs, then 72px rows.
  */
 export function ChatList({
   chats,
@@ -61,7 +61,7 @@ export function ChatList({
       router.push(`/chats?chat=${chat.id}`);
     },
     onError: (error: Error) =>
-      notify("Не удалось открыть Избранное", { variant: "error", detail: error.message })
+      notify("Couldn't open Saved Messages", { variant: "error", detail: error.message })
   });
 
   const createFolder = useMutation({
@@ -114,11 +114,11 @@ export function ChatList({
       <header className="sticky top-0 z-20 flex-none pt-4 backdrop-blur-xl">
         <div className="flex items-center gap-1 px-2 py-2">
           <h1 className="m-0 flex-1 truncate px-2 text-[20px] font-medium leading-7 tracking-[0.5px]">
-            Сообщения
+            Messages
           </h1>
           <button
             type="button"
-            aria-label="Поиск"
+            aria-label="Search"
             aria-expanded={searchOpen}
             onClick={() => {
               setSearchOpen((open) => !open);
@@ -139,8 +139,8 @@ export function ChatList({
                 ref={searchRef}
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Найти разговор"
-                aria-label="Найти разговор"
+                placeholder="Search conversations"
+                aria-label="Search conversations"
                 className="min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-[var(--muted)]"
               />
             </label>
@@ -154,9 +154,9 @@ export function ChatList({
           count={stories.data?.length ?? 0}
         />
 
-        <div className="folder-tabs px-1" role="tablist" aria-label="Фильтры чатов">
+        <div className="folder-tabs px-1" role="tablist" aria-label="Chat filters">
           <FolderTab
-            label="Все"
+            label="All"
             count={counts.all}
             active={filter === "all" && !folderId}
             onSelect={() => {
@@ -165,7 +165,7 @@ export function ChatList({
             }}
           />
           <FolderTab
-            label="Закреплённые"
+            label="Pinned"
             count={counts.pinned}
             active={filter === "pinned"}
             onSelect={() => {
@@ -174,7 +174,7 @@ export function ChatList({
             }}
           />
           <FolderTab
-            label="Архив"
+            label="Archive"
             count={counts.archived}
             active={filter === "archived"}
             onSelect={() => {
@@ -196,9 +196,9 @@ export function ChatList({
           ))}
           <button
             type="button"
-            aria-label="Новая папка"
+            aria-label="New folder"
             onClick={() => {
-              const title = window.prompt("Название папки");
+              const title = window.prompt("Folder name");
               if (title?.trim()) createFolder.mutate(title.trim());
             }}
             disabled={createFolder.isPending}
@@ -219,14 +219,16 @@ export function ChatList({
               onClick={() => removeFolder.mutate(activeFolder.id)}
               disabled={removeFolder.isPending}
             >
-              Удалить папку
+              Delete folder
             </button>
           </div>
-          <p className="mb-0 mt-1">{activeFolder.chats_count} чатов · отметьте разговоры ниже</p>
+          <p className="mb-0 mt-1">{activeFolder.chats_count} chats · tag conversations below</p>
         </div>
       ) : null}
 
-      <div className="min-h-[55dvh] px-1 pb-28">
+      {/* Keyed by which shelf is showing, so «All» ⇄ «Pinned» ⇄ «Archive» ⇄ a folder fades the
+          rows instead of swapping one column of avatars for another that looks just like it. */}
+      <div key={folderId ?? filter} className="panel-enter min-h-[55dvh] px-1 pb-28">
         {isLoading
           ? [0, 1, 2, 3].map((index) => (
               <div key={index} className="flex h-[72px] items-center gap-3 px-3">
@@ -241,12 +243,12 @@ export function ChatList({
         {!isLoading && !visible.length ? (
           <p className="px-4 py-10 text-center text-[13px] text-[var(--muted)]">
             {filter === "archived"
-              ? "Архив пуст"
+              ? "Archive is empty"
               : filter === "pinned"
-                ? "Ничего не закреплено"
+                ? "Nothing pinned"
                 : search.trim()
-                  ? "Ничего не нашли"
-                  : "Начните первый разговор"}
+                  ? "Nothing found"
+                  : "Start your first conversation"}
           </p>
         ) : null}
         {visible.map((chat) => (
@@ -255,7 +257,7 @@ export function ChatList({
               <button
                 type="button"
                 onClick={() => router.push(`/chats?chat=${chat.id}`)}
-                className="relative flex h-[72px] min-w-0 flex-1 items-center gap-3 rounded-[10px] px-3 text-left transition-colors hover:bg-white/[0.045] active:bg-white/[0.07]"
+                className="lift relative flex h-[72px] min-w-0 flex-1 items-center gap-3 rounded-[10px] px-3 text-left hover:bg-white/[0.045] active:bg-white/[0.07]"
                 style={chat.id === activeId ? { background: "rgba(255,255,255,.06)" } : undefined}
               >
                 <ChatAvatar chat={chat} />
@@ -288,11 +290,11 @@ export function ChatList({
                         <Ban
                           size={13}
                           className="text-[var(--danger)]"
-                          aria-label={chat.peer_blocked ? "Вы заблокировали" : "Вы заблокированы"}
+                          aria-label={chat.peer_blocked ? "You blocked them" : "You're blocked"}
                         />
                       ) : null}
                       {chat.muted ? (
-                        <BellOff size={13} className="text-[var(--muted)]" aria-label="Без звука" />
+                        <BellOff size={13} className="text-[var(--muted)]" aria-label="Muted" />
                       ) : null}
                       {chat.pinned ? <Pin size={13} className="text-[var(--muted)]" /> : null}
                       <span className="text-[12px] leading-4 text-[var(--muted)]">
@@ -303,7 +305,7 @@ export function ChatList({
                   <span className="flex items-center gap-2">
                     <span className="min-w-0 flex-1 truncate text-[15px] leading-[18px] text-[var(--muted)]">
                       {chat.is_typing ? (
-                        <em className="not-italic text-[var(--link)]">печатает…</em>
+                        <em className="not-italic text-[var(--link)]">typing…</em>
                       ) : (
                         preview(chat)
                       )}
@@ -327,8 +329,8 @@ export function ChatList({
                   }
                   aria-label={
                     activeFolder.chat_ids.includes(chat.id)
-                      ? `Убрать из папки ${activeFolder.title}`
-                      : `Добавить в папку ${activeFolder.title}`
+                      ? `Remove from folder ${activeFolder.title}`
+                      : `Add to folder ${activeFolder.title}`
                   }
                   aria-pressed={activeFolder.chat_ids.includes(chat.id)}
                   disabled={folderMembership.isPending}
@@ -358,7 +360,7 @@ function SecretGlyph() {
       width={14}
       height={14}
       viewBox="0 0 24 24"
-      aria-label="Секретный чат"
+      aria-label="Secret chat"
       role="img"
       className="flex-none text-emerald-400"
     >
@@ -370,12 +372,12 @@ function SecretGlyph() {
   );
 }
 
-/** Groups and Избранное get a rounded square; a person keeps their circle. */
+/** Groups and Saved Messages get a rounded square; a person keeps their circle. */
 function ChatAvatar({ chat }: { chat: Chat }) {  if (chat.is_group || !chat.participant) {
     return (
       <UserAvatar
         src={chat.avatar_url}
-        name={chat.title ?? "Чат"}
+        name={chat.title ?? "Chat"}
         size={54}
         radius={chat.kind === "saved" ? "50%" : "16px"}
       />
@@ -396,8 +398,24 @@ function preview(chat: Chat) {
   const detail = chat.last_message_detail;
   if (!detail) return chat.last_message;
   if (detail.service) return detail.content;
-  if (chat.is_group && !detail.is_mine) return `${detail.sender.display_name}: ${detail.content}`;
-  return detail.content;
+  const text = detail.content || wordless(detail);
+  if (chat.is_group && !detail.is_mine) return `${detail.sender.display_name}: ${text}`;
+  return text;
+}
+
+/**
+ * What a message with no text is called here.
+ *
+ * A shared story, a photo or a document left the row blank before this: the message carried
+ * something, and the list said nothing about it.
+ */
+function wordless(detail: Message) {
+  if (detail.story) return "Story";
+  if (detail.gift) return "Gift";
+  if (detail.media_kind === "video") return "Video";
+  if (detail.media_url) return "Photo";
+  if (detail.file_name) return `File · ${detail.file_name}`;
+  return "";
 }
 
 function FolderTab({
@@ -468,7 +486,7 @@ function StoriesStrip({
               }}
             >
               <span className="flex size-full items-center justify-center rounded-full bg-black p-[2px]">
-                <UserAvatar src={avatar} name={name ?? "Я"} size={48} />
+                <UserAvatar src={avatar} name={name ?? "Me"} size={48} />
               </span>
             </span>
             <span
@@ -479,11 +497,11 @@ function StoriesStrip({
               <Plus size={11} />
             </span>
           </span>
-          <span className="w-full truncate text-[11px] text-[var(--muted)]">Моя история</span>
+          <span className="w-full truncate text-[11px] text-[var(--muted)]">My story</span>
         </Link>
         {!count ? (
           <div className="flex items-center px-2 text-xs text-[var(--dim)]">
-            Активных историй пока нет
+            No active stories yet
           </div>
         ) : null}
       </div>
@@ -496,13 +514,13 @@ function listTime(iso: string) {
   const date = new Date(iso);
   const now = new Date();
   if (date.toDateString() === now.toDateString())
-    return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(date);
+    return new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
-  if (date.toDateString() === yesterday.toDateString()) return "вчера";
+  if (date.toDateString() === yesterday.toDateString()) return "yesterday";
   if (now.getTime() - date.getTime() < 6 * 864e5)
-    return new Intl.DateTimeFormat("ru-RU", { weekday: "short" }).format(date);
-  return new Intl.DateTimeFormat("ru-RU", {
+    return new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(date);
+  return new Intl.DateTimeFormat("en-US", {
     day: "2-digit",
     month: "2-digit",
     ...(date.getFullYear() === now.getFullYear() ? {} : { year: "2-digit" })

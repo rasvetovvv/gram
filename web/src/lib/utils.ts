@@ -6,34 +6,42 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function compactNumber(value: number) {
-  return new Intl.NumberFormat("ru-RU", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
 export function relativeTime(value: string) {
   const diff = Date.now() - new Date(value).getTime();
   const minutes = Math.max(1, Math.floor(diff / 60_000));
-  if (minutes < 60) return `${minutes} мин`;
+  if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} ч`;
+  if (hours < 24) return `${hours} h`;
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} д`;
-  return new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(new Date(value));
+  if (days < 7) return `${days} d`;
+  return new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short" }).format(new Date(value));
 }
 
 export function money(value?: number | null) {
   if (!value) return "—";
-  return `${new Intl.NumberFormat("ru-RU").format(value)} GR`;
+  return `${new Intl.NumberFormat("en-US").format(value)} GR`;
 }
 
 /**
- * Russian noun agreement for counts: 1 предмет, 2 предмета, 5 предметов.
- * Numeric counts are printed all over the product, and "61 предметов" reads as a bug.
+ * English plural agreement for counts: 1 item, 2 items, 5 items.
+ * Numeric counts are printed all over the product, and "1 items" reads as a bug.
  */
 export function plural(count: number, one: string, few: string, many: string) {
-  const abs = Math.abs(count) % 100;
-  const last = abs % 10;
-  if (abs > 10 && abs < 20) return many;
-  if (last > 1 && last < 5) return few;
-  if (last === 1) return one;
-  return many;
+  return Math.abs(count) === 1 ? one : many || few;
+}
+
+/**
+ * Whether a stored upload is a clip.
+ *
+ * An avatar and a cover hold whichever the owner uploaded, and the surface that draws them has
+ * to decide between `<img>` and a looping `<video>`. The container is read from the url because
+ * that is all a rendered profile carries — the API stores what it verified from the bytes.
+ */
+export function isVideoUrl(url?: string | null) {
+  if (!url) return false;
+  const clean = url.split(/[?#]/, 1)[0]?.toLocaleLowerCase("en-US") ?? "";
+  return /\.(mp4|m4v|mov|webm|ogv)$/.test(clean);
 }

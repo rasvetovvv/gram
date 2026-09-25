@@ -35,7 +35,7 @@ export function CatalogTile({
       type="button"
       onClick={onBuy}
       disabled={pending}
-      aria-label={`${model.name}, ${model.price_stars} звёзд${model.sold_out ? ", распродан" : ""}`}
+      aria-label={`${model.name}, ${model.price_stars} stars${model.sold_out ? ", sold out" : ""}`}
       initial={reduceMotion ? undefined : { opacity: 0, y: 10 }}
       animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index * 0.03, 0.15), duration: 0.24 }}
@@ -43,12 +43,12 @@ export function CatalogTile({
     >
       {model.on_market ? (
         <span className="absolute -right-8 top-3 w-24 rotate-45 bg-[#1f7a4d] py-1 text-center text-[0.56rem] font-extrabold uppercase tracking-wide text-white">
-          маркет
+          market
         </span>
       ) : null}
       {model.limited ? (
         <span className="absolute left-2 top-2 rounded-full bg-black/60 px-1.5 py-0.5 text-[0.52rem] font-extrabold uppercase tracking-wide text-[var(--stars)]">
-          лимит
+          limited
         </span>
       ) : null}
       {/*
@@ -64,15 +64,15 @@ export function CatalogTile({
       </strong>
       {model.sold_out ? (
         <span className="mt-1 block text-[0.56rem] font-bold uppercase tracking-wide text-[var(--danger)]">
-          распродан
+          sold out
         </span>
       ) : scarce ? (
         <span className="mt-1 block text-[0.56rem] font-bold uppercase tracking-wide text-[var(--stars)]">
-          осталось {remaining.toLocaleString("ru-RU")}
+          {remaining.toLocaleString("en-US")} left
         </span>
       ) : model.resale_count ? (
         <span className="mt-1 block truncate text-[0.56rem] font-bold uppercase tracking-wide text-[var(--online)]">
-          с рук от {model.resale_floor_stars} ★
+          resale from {model.resale_floor_stars} ★
         </span>
       ) : (
         <span className="mt-1 block text-[0.56rem] text-transparent">·</span>

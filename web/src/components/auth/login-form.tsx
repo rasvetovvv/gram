@@ -5,23 +5,25 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { QrCode } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, isEmailAuthChallenge } from "@/lib/api";
 import { listAccounts, rememberAccount } from "@/lib/accounts";
+import type { AuthSession, EmailAuthChallenge } from "@/lib/types";
 import { useAuthStore } from "@/store/auth";
 
 import { AccountSwitcher } from "./account-switcher";
 import { AuthShell } from "./auth-shell";
+import { EmailCodeStep } from "./email-code-step";
 import { INTRO_KEY } from "./welcome-carousel";
 import styles from "./auth.module.css";
 import { FormNotice, PasswordField, SubmitButton, TextField } from "./form-controls";
 
 export const loginSchema = z.object({
-  identifier: z.string().trim().min(3, "Введите почту или юзернейм").max(254, "Слишком длинное значение"),
-  password: z.string().min(1, "Введите пароль").max(128, "Пароль слишком длинный")
+  identifier: z.string().trim().min(3, "Enter your email or username").max(254, "That value is too long"),
+  password: z.string().min(1, "Enter your password").max(128, "Password is too long")
 });
 
 type LoginValues = z.infer<typeof loginSchema>;
@@ -32,12 +34,12 @@ function safeNext(value: string | null): string {
 
 function loginError(error: unknown): string {
   if (error instanceof ApiError && error.status === 401) {
-    return "Почта, юзернейм или пароль не совпали. Проверьте данные и попробуйте снова.";
+    return "Your email, username, or password didn't match. Check your details and try again.";
   }
   if (error instanceof ApiError && error.status === 429) {
-    return "Слишком много попыток. Подождите немного и попробуйте снова.";
+    return "Too many attempts. Wait a moment and try again.";
   }
-  return error instanceof Error ? error.message : "Не удалось войти. Попробуйте ещё раз.";
+  return error instanceof Error ? error.message : "Couldn't sign in. Please try again.";
 }
 
 export function LoginScreen() {
@@ -47,6 +49,7 @@ export function LoginScreen() {
   const setUser = useAuthStore((state) => state.setUser);
   // Switching accounts lands here with the handle already chosen, so only the password is left.
   const prefill = searchParams.get("identifier") ?? "";
+  const [challenge, setChallenge] = useState<EmailAuthChallenge | null>(null);
 
   const form = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
@@ -69,28 +72,52 @@ export function LoginScreen() {
     router.replace("/welcome");
   }, [prefill, router, searchParams]);
 
+  function finishLogin(session: AuthSession) {
+    setUser(session.user);
+    rememberAccount(session.user);
+    queryClient.setQueryData(["auth", "me"], session.user);
+    queryClient.setQueryData(["me"], session.user);
+    router.replace(
+      session.user.onboarding_complete === false
+        ? "/onboarding"
+        : safeNext(searchParams.get("next"))
+    );
+  }
+
   const login = useMutation({
     mutationFn: api.login,
-    onSuccess: (session) => {
-      setUser(session.user);
-      rememberAccount(session.user);
-      queryClient.setQueryData(["auth", "me"], session.user);
-      queryClient.setQueryData(["me"], session.user);
-      router.replace(
-        session.user.onboarding_complete === false
-          ? "/onboarding"
-          : safeNext(searchParams.get("next"))
-      );
+    onSuccess: (result) => {
+      if (isEmailAuthChallenge(result)) {
+        setChallenge(result);
+        return;
+      }
+      finishLogin(result);
     }
   });
+
+  if (challenge) {
+    return (
+      <AuthShell>
+        <EmailCodeStep
+          initial={challenge}
+          onVerified={finishLogin}
+          onBack={() => {
+            setChallenge(null);
+            login.reset();
+            form.setValue("password", "");
+          }}
+        />
+      </AuthShell>
+    );
+  }
 
   return (
     <AuthShell>
       <section aria-labelledby="login-title">
         <h1 className={styles.plainTitle} id="login-title">
-          Вход
+          Sign in
         </h1>
-        <p className={styles.plainSubtitle}>Введите свои данные</p>
+        <p className={styles.plainSubtitle}>Enter your details</p>
 
         <form
           // `post`, so that if hydration has not finished the browser cannot submit the
@@ -101,10 +128,10 @@ export function LoginScreen() {
           noValidate
         >
           {login.isError ? <FormNotice kind="error">{loginError(login.error)}</FormNotice> : null}
-          {login.isSuccess ? <FormNotice kind="success">Вход выполнен. Открываем GRAM…</FormNotice> : null}
+          {login.isSuccess ? <FormNotice kind="success">Signed in. Opening GRAM…</FormNotice> : null}
 
           <TextField
-            label="Почта или юзернейм"
+            label="Email or username"
             placeholder="name@example.com"
             autoComplete="username"
             autoCapitalize="none"
@@ -113,7 +140,7 @@ export function LoginScreen() {
             {...form.register("identifier")}
           />
           <PasswordField
-            label="Пароль"
+            label="Password"
             placeholder="••••••••••••"
             autoComplete="current-password"
             error={form.formState.errors.password?.message}
@@ -121,23 +148,23 @@ export function LoginScreen() {
           />
 
           <Link className={styles.rightLink} href="/login/recover">
-            Забыли пароль?
+            Forgot your password?
           </Link>
 
-          <SubmitButton className={styles.whiteButton} pending={login.isPending} pendingLabel="Входим…">
-            Войти
+          <SubmitButton className={styles.whiteButton} pending={login.isPending} pendingLabel="Signing in…">
+            Sign in
           </SubmitButton>
 
           {/* The reference offers a QR sign-in beside the password one; ours says what it is
               rather than opening a scanner that has nothing to talk to yet. */}
           <Link className={styles.ghostButton} href="/login/qr">
             <QrCode size={20} />
-            Войти по QR-коду
+            Sign in with a QR code
           </Link>
         </form>
 
         <p className={styles.plainSwitch}>
-          Ещё нет аккаунта? <Link href="/register">Создать аккаунт</Link>
+          Don&apos;t have an account yet? <Link href="/register">Create an account</Link>
         </p>
 
         {/* Accounts this browser has used before: one tap fills the handle in. */}

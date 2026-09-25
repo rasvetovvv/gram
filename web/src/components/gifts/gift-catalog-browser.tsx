@@ -10,19 +10,19 @@ import { GiftArtCredit } from "./gift-art-credit";
 import { CatalogTile } from "./gift-catalog-tile";
 
 const SCOPES: { value: GiftCatalogScope; label: string }[] = [
-  { value: "all", label: "Все" },
-  { value: "market", label: "На маркете" },
-  { value: "limited", label: "Лимитированные" },
-  { value: "resale", label: "Есть с рук" },
-  { value: "available", label: "В наличии" }
+  { value: "all", label: "All" },
+  { value: "market", label: "On the market" },
+  { value: "limited", label: "Limited" },
+  { value: "resale", label: "Available secondhand" },
+  { value: "available", label: "In stock" }
 ];
 
 const SORTS: { value: GiftCatalogSort; label: string }[] = [
-  { value: "position", label: "По подборке" },
-  { value: "price-asc", label: "Дешевле" },
-  { value: "price-desc", label: "Дороже" },
-  { value: "rarity", label: "По редкости" },
-  { value: "supply", label: "Малый тираж" }
+  { value: "position", label: "Featured" },
+  { value: "price-asc", label: "Cheapest" },
+  { value: "price-desc", label: "Priciest" },
+  { value: "rarity", label: "By rarity" },
+  { value: "supply", label: "Low supply" }
 ];
 
 /**
@@ -89,7 +89,7 @@ export function GiftCatalogBrowser({
                 : { background: "#141419", color: "var(--dim)" }
             }
           >
-            Все категории
+            All categories
           </button>
           {categories.data.map((item) => (
             <button
@@ -116,15 +116,15 @@ export function GiftCatalogBrowser({
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Найти подарок"
-            aria-label="Поиск по каталогу"
+            placeholder="Find a gift"
+            aria-label="Search the catalog"
             className="min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-[var(--dim)]"
           />
           {query ? (
             <button
               type="button"
               onClick={() => setQuery("")}
-              aria-label="Очистить поиск"
+              aria-label="Clear search"
               className="grid size-6 flex-none place-items-center rounded-full border-0 bg-[#22222a] text-[var(--muted)]"
             >
               <X size={13} />
@@ -135,7 +135,7 @@ export function GiftCatalogBrowser({
           type="button"
           onClick={() => setSortOpen((open) => !open)}
           aria-expanded={sortOpen}
-          aria-label="Сортировка"
+          aria-label="Sort"
           className="grid size-10 flex-none place-items-center rounded-full border-0 bg-[#141419] text-[var(--muted)]"
         >
           <SlidersHorizontal size={17} />
@@ -175,17 +175,17 @@ export function GiftCatalogBrowser({
       ) : catalog.isError ? (
         <div className="empty-state">
           <RefreshCw className="mx-auto mb-3 text-[var(--danger)]" />
-          <p className="font-bold text-white">Каталог не загрузился</p>
+          <p className="font-bold text-white">Couldn&apos;t load the catalog</p>
           <p className="text-sm">{catalog.error.message}</p>
           <button className="quiet-button mt-3" onClick={() => catalog.refetch()}>
             <RefreshCw size={16} />
-            Повторить
+            Retry
           </button>
         </div>
       ) : models.length ? (
         <>
           <p className="mb-0 mt-3 px-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--faint)]">
-            {models.length} {models.length === 1 ? "дизайн" : "дизайнов"}
+            {models.length} {models.length === 1 ? "design" : "designs"}
           </p>
           <div className="mt-2 grid grid-cols-3 gap-2 sm:gap-3">
             {models.map((model, index) => (
@@ -205,7 +205,7 @@ export function GiftCatalogBrowser({
       ) : (
         <div className="empty-state">
           <GiftIcon className="mx-auto mb-3 text-[var(--stars)]" />
-          <p className="font-bold text-white">В этой подборке пока пусто</p>
+          <p className="font-bold text-white">Nothing in this collection yet</p>
           <button
             className="quiet-button mt-3"
             onClick={() => {
@@ -214,7 +214,7 @@ export function GiftCatalogBrowser({
               setQuery("");
             }}
           >
-            Показать все
+            Show all
           </button>
         </div>
       )}

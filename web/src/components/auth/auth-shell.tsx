@@ -11,7 +11,7 @@ export function AuthBrand({ compact = false }: { compact?: boolean }) {
     <Link
       className={compact ? styles.introBrand : styles.plainBrand}
       href="/login"
-      aria-label="GRAM — вход"
+      aria-label="GRAM — sign in"
     >
       {/* The same bold G the navigation uses, so the mark does not change between screens. */}
       <span className={styles.plainBrandMark} style={{ fontSize: compact ? 13 : 19 }}>
@@ -23,7 +23,7 @@ export function AuthBrand({ compact = false }: { compact?: boolean }) {
 }
 
 /**
- * The auth shell from `authref/`: flat black, one centred column, the wordmark above the
+ * The auth shell: flat black, one centred column, the wordmark above the
  * form and a © line pinned to the bottom. Deliberately plain — the screens carry no card,
  * no gradient and no marketing panel, so the form itself is the whole page.
  */
@@ -52,7 +52,15 @@ export function AuthShell({
         {children}
       </motion.div>
 
-      <p className={styles.copyright}>© GRAM</p>
+      <footer className={styles.authFooter}>
+        <nav aria-label="Rules and help">
+          <Link href="/terms">Terms</Link>
+          <Link href="/privacy">Privacy</Link>
+          <Link href="/help">Help</Link>
+          <Link href="/report">Report</Link>
+        </nav>
+        <p className={styles.copyright}>© 2026 GRAM</p>
+      </footer>
     </main>
   );
 }

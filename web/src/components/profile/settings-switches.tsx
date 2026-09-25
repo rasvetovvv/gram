@@ -1,7 +1,8 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, Lock, Smile } from "lucide-react";
+import { Crown, Eye, Lock, Smile } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import type { AccountSettings, MessagePrivacy } from "@/lib/types";
@@ -28,7 +29,7 @@ function useSettings() {
       queryClient.invalidateQueries({ queryKey: ["profile"] });
     },
     onError: (error: Error) =>
-      notify("Настройка не сохранилась", { variant: "error", detail: error.message })
+      notify("Setting didn't save", { variant: "error", detail: error.message })
   });
   return { settings: query.data, loading: query.isLoading, error: query.error, update };
 }
@@ -85,7 +86,7 @@ function Loading({ rows = 2 }: { rows?: number }) {
 }
 
 /**
- * A choice of three, where a switch would lie: "кто может мне писать" is not on-or-off.
+ * A choice of three, where a switch would lie: "who can message me" is not on-or-off.
  * The chosen row explains what it does, so the consequence is visible before it is saved.
  */
 function Choice<T extends string>({
@@ -147,48 +148,62 @@ export function PrivacySettings() {
   return (
     <div className="mt-4 grid gap-3">
       <p className="mb-0 text-[0.86rem] leading-5 text-[var(--muted)]">
-        Кто видит, что вы в сети, и кто может смотреть ваши публикации.
+        Who can see when you&apos;re online, and who can view your posts.
       </p>
       {loading || !settings ? (
         <Loading />
       ) : (
         <>
           <Toggle
-            label="Показывать, когда я в сети"
-            hint="Выключено — вместо точки и времени другие видят «был(а) недавно»."
+            label="Show when I'm online"
+            hint="Off — instead of the dot and time, others see “last seen recently”."
             checked={settings.show_online}
             disabled={update.isPending}
             onChange={(next) => update.mutate({ show_online: next })}
           />
           <Toggle
-            label="Закрытый аккаунт"
-            hint="Профиль остаётся открытым, а посты, истории и ответы видят только подписчики. Заявки на подписку приходят в уведомления."
+            label="Private account"
+            hint="Your profile stays open, but only followers see your posts, stories and replies. Follow requests arrive in notifications."
             checked={settings.private_account}
             disabled={update.isPending}
             onChange={(next) => update.mutate({ private_account: next })}
           />
           <Choice<MessagePrivacy>
-            label="Кто может мне писать"
+            label="Who can message me"
             value={settings.who_can_message}
             disabled={update.isPending}
             onChange={(next) => update.mutate({ who_can_message: next })}
             options={[
-              { value: "everyone", title: "Все", hint: "Любой может начать диалог." },
+              { value: "everyone", title: "Everyone", hint: "Anyone can start a conversation." },
               {
                 value: "following",
-                title: "Только те, кого я читаю",
-                hint: "Остальным при попытке написать скажут об этом."
+                title: "Only people I follow",
+                hint: "Others are told when they try to message you."
               },
               {
                 value: "nobody",
-                title: "Никто",
-                hint: "Новые диалоги не открываются; уже начатые продолжают работать."
+                title: "Nobody",
+                hint: "No new conversations open; existing ones keep working."
               }
             ]}
           />
+          <Toggle
+            label="Accept usernames"
+            hint="Off — nobody can transfer a username to you. It doesn't stop people from buying a username you've listed."
+            checked={settings.accept_usernames}
+            disabled={update.isPending}
+            onChange={(next) => update.mutate({ accept_usernames: next })}
+          />
+          <Toggle
+            label="Accept gifts"
+            hint="Off — no one can send you a gift from the catalog or transfer one from their collection."
+            checked={settings.accept_gifts}
+            disabled={update.isPending}
+            onChange={(next) => update.mutate({ accept_gifts: next })}
+          />
           <p className="m-0 flex items-start gap-2 rounded-[14px] bg-white/[0.04] p-3 text-[0.8rem] leading-5 text-[var(--muted)]">
             <Lock size={14} className="mt-0.5 flex-none" />
-            Заметки о других людях видны только вам — это не зависит от настроек.
+            Notes about other people are visible only to you — this doesn&apos;t depend on settings.
           </p>
         </>
       )}
@@ -199,17 +214,17 @@ export function PrivacySettings() {
 export function NotificationSettings() {
   const { settings, loading, update } = useSettings();
   const rows: { key: keyof AccountSettings; label: string; hint: string }[] = [
-    { key: "notify_likes", label: "Лайки", hint: "Когда кому-то понравился ваш пост." },
-    { key: "notify_comments", label: "Ответы и сообщества", hint: "Комментарии и события сообществ." },
-    { key: "notify_follows", label: "Новые подписчики", hint: "Когда на вас подписались." },
-    { key: "notify_messages", label: "Сообщения", hint: "Личные и групповые чаты." },
-    { key: "notify_gifts", label: "Подарки", hint: "Полученные подарки, офферы и передачи." },
-    { key: "notify_stars", label: "Звёзды и подписки", hint: "Переводы, платные подписки." }
+    { key: "notify_likes", label: "Likes", hint: "When someone likes your post." },
+    { key: "notify_comments", label: "Replies and communities", hint: "Comments and community activity." },
+    { key: "notify_follows", label: "New followers", hint: "When someone follows you." },
+    { key: "notify_messages", label: "Messages", hint: "Direct and group chats." },
+    { key: "notify_gifts", label: "Gifts", hint: "Received gifts, offers and transfers." },
+    { key: "notify_stars", label: "Stars and subscriptions", hint: "Transfers and paid subscriptions." }
   ];
   return (
     <div className="mt-4 grid gap-3">
       <p className="mb-0 text-[0.86rem] leading-5 text-[var(--muted)]">
-        Что показывать в списке уведомлений и всплывающих подсказках.
+        What to show in the notifications list and popups.
       </p>
       {loading || !settings ? (
         <Loading rows={4} />
@@ -227,7 +242,7 @@ export function NotificationSettings() {
           ))}
           <p className="m-0 flex items-start gap-2 rounded-[14px] bg-white/[0.04] p-3 text-[0.8rem] leading-5 text-[var(--muted)]">
             <Eye size={14} className="mt-0.5 flex-none" />
-            Сообщения о входе в аккаунт приходят всегда — это безопасность, а не рассылка.
+            Sign-in alerts always arrive — that&apos;s security, not a newsletter.
           </p>
         </>
       )}
@@ -238,17 +253,32 @@ export function NotificationSettings() {
 /** Emoji plus a short line, shown beside the name on the profile. */
 export function StatusSettings() {
   const { settings, loading, update } = useSettings();
+  const me = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
   const [draft, setDraft] = useState<string | null>(null);
   const text = draft ?? settings?.status_text ?? "";
+  // The emoji is Premium's; the words are anybody's. One already set keeps showing.
+  const premium = Boolean(me.data?.is_premium);
 
   if (loading || !settings) return <Loading rows={1} />;
 
   return (
     <div className="grid gap-2">
-      <span className="text-[0.98rem] font-extrabold">Статус</span>
+      <span className="text-[0.98rem] font-extrabold">Status</span>
       <span className="text-[0.82rem] leading-5 text-[var(--muted)]">
-        Эмодзи и короткая строка рядом с именем. Пустая строка убирает статус.
+        An emoji and a short line next to your name. An empty line removes the status.
       </span>
+      {premium ? null : (
+        <span className="flex items-start gap-2 rounded-[14px] bg-[var(--surface-raised)] p-3 text-[0.8rem] leading-5 text-[var(--muted)]">
+          <Crown size={15} className="mt-0.5 flex-none text-[var(--stars)]" />
+          <span>
+            The emoji next to your name is part of{" "}
+            <Link href="/premium" className="font-semibold text-[var(--link)]">
+              GRAM Premium
+            </Link>
+            . A text status is available to everyone.
+          </span>
+        </span>
+      )}
       <div className="flex flex-wrap gap-1.5">
         {STATUS_EMOJI.map((emoji) => {
           const active = settings.status_emoji === emoji;
@@ -257,7 +287,8 @@ export function StatusSettings() {
               key={emoji}
               type="button"
               aria-pressed={active}
-              aria-label={`Статус ${emoji}`}
+              aria-label={`Status ${emoji}`}
+              disabled={!premium && !active}
               onClick={() => update.mutate({ status_emoji: active ? null : emoji })}
               className="grid size-10 place-items-center rounded-[12px] text-[19px] transition active:scale-95"
               style={{
@@ -274,7 +305,7 @@ export function StatusSettings() {
           onClick={() => update.mutate({ status_emoji: null, status_text: null })}
           className="grid h-10 place-items-center rounded-[12px] bg-[var(--surface-raised)] px-3 text-[13px] text-[var(--muted)] transition active:scale-95"
         >
-          Убрать
+          Remove
         </button>
       </div>
       <div className="flex items-center gap-2">
@@ -282,8 +313,8 @@ export function StatusSettings() {
         <input
           className="field px-4"
           maxLength={40}
-          placeholder="например: сплю, в отпуске, на созвоне"
-          aria-label="Текст статуса"
+          placeholder="e.g. sleeping, on vacation, in a call"
+          aria-label="Status text"
           value={text}
           onChange={(event) => setDraft(event.target.value)}
           onBlur={() => {

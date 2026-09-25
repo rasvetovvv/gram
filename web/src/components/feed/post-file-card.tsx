@@ -21,9 +21,9 @@ const ICONS: Record<string, typeof FileText> = {
 };
 
 function readableSize(bytes: number) {
-  if (bytes < 1024) return `${bytes} Б`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} КБ`;
-  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} МБ`;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
 export function PostFileCard({
@@ -51,7 +51,7 @@ export function PostFileCard({
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[14px] font-semibold">{name}</span>
         <span className="mt-0.5 block text-[12px] uppercase tracking-wide text-[var(--dim)]">
-          {extension || "файл"}
+          {extension || "file"}
           {typeof size === "number" ? ` · ${readableSize(size)}` : ""}
         </span>
       </span>

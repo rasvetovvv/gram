@@ -80,7 +80,7 @@ export function BottomSheet({
           <div className={`relative flex-none ${headerRight ? "min-h-11" : ""}`}>
             <button
               type="button"
-              aria-label="Потяните, чтобы закрыть"
+              aria-label="Drag to close"
               /*
                * A pointer affordance only: keeping it out of the tab order stops Radix
                * autofocusing it, which painted a full-width focus ring across the sheet.

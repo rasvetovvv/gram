@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import type { GiftModel, GiftPurchaseResult } from "@/lib/types";
 import { BottomSheet } from "../ui/bottom-sheet";
 import { useToast } from "../ui/toast";
+import { TopUpButton } from "../stars/top-up-button";
 import { UserAvatar } from "../user-avatar";
 import { GiftCatalogBrowser } from "./gift-catalog-browser";
 import { GiftImage, giftArtProps } from "./gift-image";
@@ -23,7 +24,7 @@ type View =
  * Buying a gift, for someone else or for yourself.
  *
  * The reference only ever gifts outward, which leaves a collector unable to buy a limited
- * design at all unless a friend agrees to hold it. "Себе" is therefore a first-class
+ * design at all unless a friend agrees to hold it. "For myself" is therefore a first-class
  * destination here, not a fallback for a missing recipient: the same catalogue, the same
  * limited editions, minted straight into your own collection and already unwrapped.
  */
@@ -82,19 +83,19 @@ export function GiftPurchaseSheet({
       const first = result.gifts[0];
       const run = result.gifts.length;
       notify(
-        `«${first.name}»${run > 1 ? ` ×${run}` : ""} ${mode === "other" ? "отправлен" : "ваш"}`,
+        `"${first.name}"${run > 1 ? ` ×${run}` : ""} ${mode === "other" ? "sent" : "is yours"}`,
         {
           variant: "success",
           detail:
             mode === "other"
-              ? `Получатель: @${handle}`
+              ? `Recipient: @${handle}`
               : run > 1
-                ? `Списано ${result.spent_stars} ★`
-                : `Выпуск #${first.serial_number}`
+                ? `${result.spent_stars} ★ spent`
+                : `Issue #${first.serial_number}`
         }
       );
     },
-    onError: (error: Error) => notify("Подарок не куплен", { variant: "error", detail: error.message })
+    onError: (error: Error) => notify("Gift not purchased", { variant: "error", detail: error.message })
   });
 
   const balance = me.data?.stars_balance ?? 0;
@@ -116,8 +117,8 @@ export function GiftPurchaseSheet({
     <BottomSheet
       open={open}
       onOpenChange={(next) => (next ? onOpenChange(true) : close())}
-      title="Купить подарок"
-      description={recipientName ? `Подарок для ${recipientName}` : "Подарок себе в коллекцию"}
+      title="Buy a gift"
+      description={recipientName ? `A gift for ${recipientName}` : "A gift for your own collection"}
     >
       {view.kind === "design" ? (
         <GiftDesignPanel
@@ -127,11 +128,11 @@ export function GiftPurchaseSheet({
           recipientAvatar={profile.data?.avatar_url}
           balance={balance}
           allowMessage={mode === "other"}
-          actionLabel={mode === "other" ? "Отправить" : "Купить себе"}
+          actionLabel={mode === "other" ? "Send" : "Buy for myself"}
           submitting={purchase.isPending}
           errorMessage={
             purchase.error?.message ??
-            (mode === "other" && !profile.data ? "Укажите получателя в каталоге" : null)
+            (mode === "other" && !profile.data ? "Choose a recipient in the catalogue" : null)
           }
           onBack={() => setView({ kind: "catalog" })}
           onSubmit={({ message, hideMyName, quantity }) =>
@@ -155,7 +156,7 @@ export function GiftPurchaseSheet({
               type="button"
               onClick={close}
               className="icon-button !size-9 bg-[#1a1a1f] text-white"
-              aria-label="Закрыть"
+              aria-label="Close"
             >
               <X size={18} />
             </button>
@@ -167,6 +168,12 @@ export function GiftPurchaseSheet({
               <Star size={16} fill="currentColor" />
               {balance}
             </Link>
+            {/* The wallet can be topped up without leaving the purchase: the payment is a sheet
+                over this one, and what was already chosen stays chosen. */}
+            <TopUpButton
+              label="Top up"
+              className="flex min-h-9 items-center gap-1.5 rounded-full border-0 bg-[#1a1a1f] px-3 text-sm font-bold text-[var(--ink)]"
+            />
           </div>
 
           <div className="mt-2 flex items-center gap-3">
@@ -184,10 +191,10 @@ export function GiftPurchaseSheet({
             )}
             <div className="min-w-0">
               <p className="mb-0 text-xl font-extrabold leading-tight tracking-[-0.02em]">
-                Купить подарок
+                Buy a gift
               </p>
               <p className="mb-0 mt-0.5 truncate text-[15px] text-[var(--muted)]">
-                {mode === "self" ? "себе в коллекцию" : recipientName ? `для ${recipientName}` : "выберите получателя"}
+                {mode === "self" ? "for your collection" : recipientName ? `for ${recipientName}` : "choose a recipient"}
               </p>
             </div>
           </div>
@@ -209,7 +216,7 @@ export function GiftPurchaseSheet({
           />
           {!ready ? (
             <p className="mb-0 mt-3 rounded-[16px] bg-[#1a1a1f] p-3 text-sm text-[var(--muted)]">
-              Укажите получателя выше или переключитесь на «Себе».
+              Choose a recipient above or switch to &quot;For myself&quot;.
             </p>
           ) : null}
         </>
@@ -218,7 +225,7 @@ export function GiftPurchaseSheet({
   );
 }
 
-/** "Себе" or "Другому" — the choice the reference never offered. */
+/** "For myself" or "For someone" — the choice the reference never offered. */
 function RecipientSwitch({
   mode,
   setMode,
@@ -239,14 +246,14 @@ function RecipientSwitch({
   return (
     <fieldset className="mt-4 border-0 p-0">
       <legend className="mb-2 text-[13px] font-semibold uppercase tracking-[.06em] text-[var(--faint)]">
-        Кому
+        Recipient
       </legend>
       <div className="segmented-control">
         <button type="button" data-active={mode === "self"} onClick={() => setMode("self")}>
-          Себе
+          For myself
         </button>
         <button type="button" data-active={mode === "other"} onClick={() => setMode("other")}>
-          Другому
+          For someone
         </button>
       </div>
       {mode === "other" ? (
@@ -258,16 +265,16 @@ function RecipientSwitch({
               onChange={(event) => setTarget(event.target.value)}
               placeholder="username"
               autoComplete="off"
-              aria-label="Юзернейм получателя"
+              aria-label="Recipient username"
               className="min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-[var(--dim)]"
             />
             {resolved ? <Check size={17} className="flex-none text-[var(--online)]" /> : null}
           </label>
           <p className="mb-0 mt-1.5 min-h-4 px-1 text-[12px]">
             {searching ? (
-              <span className="text-[var(--muted)]">Ищем аккаунт…</span>
+              <span className="text-[var(--muted)]">Searching for the account…</span>
             ) : unknown ? (
-              <span className="text-[var(--danger)]">Такого аккаунта нет</span>
+              <span className="text-[var(--danger)]">No such account</span>
             ) : null}
           </p>
         </>
@@ -294,10 +301,10 @@ function Receipt({
       <GiftCelebration gift={lead} size={200} />
       <strong className="mt-4 block text-2xl font-extrabold tracking-[-0.02em]">
         {lead.name} #{lead.serial_number}
-        {rest.length ? ` и ещё ${rest.length}` : ""}
+        {rest.length ? ` and ${rest.length} more` : ""}
       </strong>
       <p className="mb-0 mt-1 text-[15px] text-[var(--muted)]">
-        {recipient ? `Отправлен ${recipient}` : "Добавлен в вашу коллекцию"}
+        {recipient ? `Sent to ${recipient}` : "Added to your collection"}
       </p>
       {/* A run rolled its own model and backdrop per serial, so the rest are worth showing. */}
       {rest.length ? (
@@ -322,15 +329,15 @@ function Receipt({
         </div>
       )}
       <p className="mb-0 mt-2 text-[13px] text-[var(--stars)]">
-        Списано {result.spent_stars} ★ · операция в истории
+        {result.spent_stars} ★ spent · logged in history
       </p>
       <div className="mt-4 flex w-full gap-2">
         <button type="button" className="quiet-button flex-1" onClick={onMore}>
-          Ещё подарок
+          Another gift
         </button>
         <button type="button" className="signal-button flex-1" onClick={onClose}>
           <Check size={17} />
-          Готово
+          Done
         </button>
       </div>
     </div>

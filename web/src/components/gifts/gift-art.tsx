@@ -72,13 +72,13 @@ const SPARKLE_COUNT: Record<GiftRarityName, number> = {
 function PatternLayer({
   url,
   color,
-  size
+  tile
 }: {
   url: string;
   color: string;
-  size: number;
+  /** Edge of one repeat, in pixels. */
+  tile: number;
 }) {
-  const tile = Math.max(16, Math.round(size / 4.5));
   return (
     <span
       aria-hidden
@@ -96,6 +96,51 @@ function PatternLayer({
     />
   );
 }
+
+/**
+ * A collectible's backdrop on its own, at any shape.
+ *
+ * The detail sheet needs it edge to edge, behind the artwork rather than around it: drawing the
+ * gift's own tile inside a panel that already had a gradient of its own made two backgrounds
+ * where the reference has one continuous surface. Children are laid over the backdrop.
+ */
+export function GiftBackdrop({
+  design,
+  pattern,
+  accent,
+  backdropEdge,
+  patternColor,
+  tile = 52,
+  className = "",
+  children
+}: {
+  design?: string | null;
+  pattern?: string | null;
+  accent?: string | null;
+  backdropEdge?: string | null;
+  patternColor?: string | null;
+  tile?: number;
+  className?: string;
+  children?: React.ReactNode;
+}) {
+  const symbol = pattern ? giftSymbolUrl(design ?? "", pattern) : null;
+  return (
+    <div
+      className={`relative overflow-hidden ${className}`}
+      style={{
+        background: `radial-gradient(circle at 50% 34%, ${accent || "#1c1c26"} 0%, ${
+          backdropEdge || "#08080a"
+        } 100%)`
+      }}
+    >
+      {symbol ? (
+        <PatternLayer url={symbol} color={patternColor || "#ffffff"} tile={tile} />
+      ) : null}
+      {children}
+    </div>
+  );
+}
+
 
 function Sparkles({ count, size }: { count: number; size: number }) {
   const reduceMotion = useReducedMotion();
@@ -173,7 +218,13 @@ export function GiftArt({
           : `radial-gradient(circle at 50% 38%, ${centre} 0%, ${edge} 100%)`
       }}
     >
-      {symbol ? <PatternLayer url={symbol} color={patternColor || "#ffffff"} size={size} /> : null}
+      {symbol ? (
+        <PatternLayer
+          url={symbol}
+          color={patternColor || "#ffffff"}
+          tile={Math.max(16, Math.round(size / 4.5))}
+        />
+      ) : null}
       <span className="absolute grid place-items-center" style={{ inset }}>
         {/*
           One still, mounted for the life of the tile and never swapped for another element.

@@ -37,17 +37,17 @@ export function PostLinkCard({ url, title }: { url: string; title?: string | nul
           <span className="mt-0.5 block truncate text-[13px] text-[var(--muted)]">{host}</span>
         </span>
         <span className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-[var(--dim)]">
-          Ссылка
+          Link
         </span>
       </button>
 
       <ConfirmDialog
         open={asking}
         onOpenChange={setAsking}
-        title="Переход на внешний сайт"
-        description={`Вы покидаете GRAM и открываете ${host}. Мы не отвечаем за содержимое чужих сайтов — не вводите там пароль от GRAM.`}
-        confirmLabel="Перейти"
-        cancelLabel="Остаться"
+        title="Leaving for an external site"
+        description={`You're leaving GRAM and opening ${host}. We're not responsible for the content of other sites — don't enter your GRAM password there.`}
+        confirmLabel="Continue"
+        cancelLabel="Stay"
         tone="primary"
         onConfirm={() => {
           setAsking(false);

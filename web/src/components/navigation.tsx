@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   Bell,
+  CircleHelp,
   Compass,
   Gift,
   Home,
@@ -16,6 +17,7 @@ import {
   WandSparkles,
   LogOut,
   Crown,
+  Gavel,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -29,16 +31,16 @@ import { UserAvatar } from "./user-avatar";
  * GRAM, and it used to be reachable only through the right column.
  */
 const desktopItems = [
-  { href: "/", label: "Лента", icon: Home },
-  { href: "/discover", label: "Поиск", icon: Compass },
-  { href: "/notifications", label: "Уведомления", icon: Bell },
-  { href: "/chats", label: "Сообщения", icon: MessageCircle },
-  { href: "/communities", label: "Сообщества", icon: UsersRound },
-  { href: "/market", label: "Маркет", icon: Store },
-  { href: "/gifts", label: "Подарки", icon: Gift, sheet: "gifts" as const },
-  { href: "/studio", label: "Студия", icon: WandSparkles },
-  { href: "/stars", label: "Звёзды", icon: Star },
-  { href: "/profile", label: "Профиль", icon: UserRound },
+  { href: "/", label: "Feed", icon: Home },
+  { href: "/discover", label: "Search", icon: Compass },
+  { href: "/notifications", label: "Notifications", icon: Bell },
+  { href: "/chats", label: "Messages", icon: MessageCircle },
+  { href: "/communities", label: "Communities", icon: UsersRound },
+  { href: "/market", label: "Market", icon: Store },
+  { href: "/gifts", label: "Gifts", icon: Gift, sheet: "gifts" as const },
+  { href: "/studio", label: "Studio", icon: WandSparkles },
+  { href: "/stars", label: "Stars", icon: Star },
+  { href: "/profile", label: "Profile", icon: UserRound },
 ];
 
 /** One row shape for every sidebar destination, matching the reference's 44px pills. */
@@ -86,19 +88,19 @@ export function DesktopNavigation() {
   // Only these two rows carry a live count; the rest have nothing to accumulate.
   const badges: Record<string, number> = { "/notifications": unread, "/chats": unreadChats };
   return (
-    <div className="flex h-full flex-col justify-between px-2.5 py-5 min-[1180px]:px-3.5">
-      <div>
+    <div className="sidebar-shell">
+      <div className="sidebar-scroll">
         <Link
           href="/"
           className="flex h-10 items-center justify-center gap-1.5 min-[1180px]:justify-start"
-          aria-label="GRAM — на главную"
+          aria-label="GRAM — home"
         >
           <span className="grid size-8 flex-none place-items-center rounded-lg bg-[linear-gradient(90deg,#191a1c_25%,#16171a_50%,#08090b_100%)] text-[13px] font-black leading-none text-white">
             G
           </span>
           <span className="brand-copy text-base font-extrabold">GRAM</span>
         </Link>
-        <nav className="mt-6 flex flex-col gap-1" aria-label="Основная навигация">
+        <nav className="sidebar-nav" aria-label="Main navigation">
           {desktopItems.map(({ href, label, icon: Icon, ...item }) => {
             const selected = active(pathname, href);
             const destination = href === "/profile" ? profileHref : href;
@@ -137,39 +139,51 @@ export function DesktopNavigation() {
                     style={{ background: "var(--primary)" }}
                   >
                     {count > 99 ? "99+" : count}
-                    <span className="sr-only">непрочитанных</span>
+                    <span className="sr-only">unread</span>
                   </span>
                 ) : null}
               </Link>
             );
           })}
         </nav>
-      </div>
-      <div className="flex flex-col gap-1">
-        <button
-          type="button"
-          onClick={openPremium}
-          className={`${NAV_ROW} border-0 bg-transparent text-left`}
-          style={{ color: "var(--muted)" }}
-        >
-          <Crown size={20} strokeWidth={1.9} className="text-[var(--premium)]" />
-          <span className="nav-copy">GRAM Premium</span>
-        </button>
-        <Link href="/settings" className={NAV_ROW} style={{ color: "var(--muted)" }}>
-          <Settings size={20} strokeWidth={1.9} />
-          <span className="nav-copy">Настройки</span>
-        </Link>
-        {me ? (
+        <div className="sidebar-footer">
           <button
+            type="button"
+            onClick={openPremium}
             className={`${NAV_ROW} border-0 bg-transparent text-left`}
             style={{ color: "var(--muted)" }}
-            onClick={() => logout.mutate()}
-            disabled={logout.isPending}
           >
-            <LogOut size={20} strokeWidth={1.9} />
-            <span className="nav-copy">Выйти</span>
+            <Crown size={20} strokeWidth={1.9} className="text-[var(--premium)]" />
+            <span className="nav-copy">GRAM Premium</span>
           </button>
-        ) : null}
+          {/* Staff only. Shown rather than hidden behind a memorised URL: an admin needs to see
+              the queue is waiting, and the route refuses everyone else on the server anyway. */}
+          {me?.is_admin ? (
+            <Link href="/admin" className={NAV_ROW} style={{ color: "var(--muted)" }}>
+              <Gavel size={20} strokeWidth={1.9} className="text-[var(--primary-strong)]" />
+              <span className="nav-copy">Administration</span>
+            </Link>
+          ) : null}
+          <Link href="/settings" className={NAV_ROW} style={{ color: "var(--muted)" }}>
+            <Settings size={20} strokeWidth={1.9} />
+            <span className="nav-copy">Settings</span>
+          </Link>
+          <Link href="/help" className={NAV_ROW} style={{ color: "var(--muted)" }}>
+            <CircleHelp size={20} strokeWidth={1.9} />
+            <span className="nav-copy">Help and rules</span>
+          </Link>
+          {me ? (
+            <button
+              className={`${NAV_ROW} border-0 bg-transparent text-left`}
+              style={{ color: "var(--muted)" }}
+              onClick={() => logout.mutate()}
+              disabled={logout.isPending}
+            >
+              <LogOut size={20} strokeWidth={1.9} />
+              <span className="nav-copy">Log out</span>
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -178,19 +192,21 @@ export function MobileDock() {
   const pathname = usePathname();
   const { me, unread, unreadChats } = useNavigationData();
   const items = [
-    { href: "/", label: "Главная", icon: Home },
-    { href: "/discover", label: "Обзор", icon: Compass },
-    { href: "/notifications", label: "События", icon: Bell, badge: unread },
-    { href: "/chats", label: "Чаты", icon: MessageCircle, badge: unreadChats },
-    { href: "/studio", label: "Студия", icon: WandSparkles },
+    { href: "/", label: "Home", icon: Home },
+    { href: "/discover", label: "Discover", icon: Compass },
+    { href: "/notifications", label: "Events", icon: Bell, badge: unread },
+    { href: "/chats", label: "Chats", icon: MessageCircle, badge: unreadChats },
+    /* Stars rather than the studio: the balance is checked constantly and the studio is a
+       once-in-a-while destination that the desktop rail still carries. */
+    { href: "/stars", label: "Stars", icon: Star },
     {
       href: me ? `/u/${me.username}` : "/login",
-      label: "Профиль",
+      label: "Profile",
       icon: me ? null : Settings,
     },
   ];
   return (
-    <nav className="mobile-dock" aria-label="Мобильная навигация">
+    <nav className="mobile-dock" aria-label="Mobile navigation">
       {items.map(({ href, label, icon: Icon, badge }) => {
         const selected = active(pathname, href);
         return (
@@ -235,7 +251,7 @@ export function MobileComposeButton() {
     <button
       className="mobile-compose-fab"
       onClick={openComposer}
-      aria-label="Создать запись"
+      aria-label="Create post"
     >
       <Plus size={25} />
     </button>

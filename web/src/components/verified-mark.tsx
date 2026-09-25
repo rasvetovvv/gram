@@ -31,7 +31,7 @@ function Mark({ label, size, fill }: { label: string; size: number; fill: string
 }
 
 export function VerifiedMark({
-  label = "Подтверждённый профиль",
+  label = "Verified profile",
   size = 18,
   fill = "var(--verified)"
 }: {
@@ -48,7 +48,7 @@ export function VerifiedMark({
  */
 export function VerifiedMarkExplained({
   name,
-  label = "Подтверждённый профиль",
+  label = "Verified profile",
   size = 18,
   fill = "var(--verified)"
 }: {
@@ -63,7 +63,7 @@ export function VerifiedMarkExplained({
         <button
           type="button"
           className="inline-flex shrink-0 border-0 bg-transparent p-0 align-middle transition-transform duration-150 hover:scale-110 active:scale-95"
-          aria-label={`${label} — подробнее`}
+          aria-label={`${label} — details`}
         >
           <Mark label={label} size={size} fill={fill} />
         </button>
@@ -83,7 +83,7 @@ export function VerifiedMarkExplained({
             <div className="min-w-0">
               <strong className="block text-[15px] font-bold leading-tight">{label}</strong>
               <p className="mb-0 mt-1.5 text-[13px] leading-5 text-[var(--muted)]">
-                Представители GRAM подтвердили, что {name} — официальный аккаунт.
+                GRAM representatives confirmed that {name} is an official account.
               </p>
             </div>
           </div>

@@ -13,7 +13,7 @@
  */
 /** Read per request, never at module load, so a build can never freeze the wrong origin in. */
 const upstream = () =>
-  process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "https://vexory.xyz";
 
 /** Headers worth carrying upstream: caching, and the range a video player seeks with. */
 const FORWARDED_REQUEST_HEADERS = ["range", "if-none-match", "if-modified-since", "accept"];

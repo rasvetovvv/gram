@@ -11,11 +11,11 @@ import { UserAvatar } from "../user-avatar";
 
 /** Resolved offers keep their outcome visible; a bid should never just disappear. */
 const STATUS: Record<string, { label: string; color: string }> = {
-  pending: { label: "Ожидает ответа", color: "var(--stars)" },
-  accepted: { label: "Принято", color: "var(--online)" },
-  declined: { label: "Отклонено", color: "var(--danger)" },
-  cancelled: { label: "Отозвано", color: "var(--dim)" },
-  rejected: { label: "Продан другому", color: "var(--dim)" }
+  pending: { label: "Awaiting response", color: "var(--stars)" },
+  accepted: { label: "Accepted", color: "var(--online)" },
+  declined: { label: "Declined", color: "var(--danger)" },
+  cancelled: { label: "Withdrawn", color: "var(--dim)" },
+  rejected: { label: "Sold to someone else", color: "var(--dim)" }
 };
 
 /**
@@ -49,14 +49,14 @@ export function OffersPanel() {
       await invalidate();
       notify(
         variables.action === "accept"
-          ? "Предложение принято"
+          ? "Offer accepted"
           : variables.action === "decline"
-            ? "Предложение отклонено"
-            : "Предложение отозвано",
+            ? "Offer declined"
+            : "Offer withdrawn",
         { variant: "success" }
       );
     },
-    onError: (error: Error) => notify("Не получилось", { variant: "error", detail: error.message })
+    onError: (error: Error) => notify("Something went wrong", { variant: "error", detail: error.message })
   });
 
   const waiting = incoming.data ?? [];
@@ -66,7 +66,7 @@ export function OffersPanel() {
   return (
     <section className="mx-3 mb-4 sm:mx-5">
       <h2 className="m-0 mb-2.5 px-1 text-[13px] font-semibold uppercase tracking-[0.04em] text-[var(--faint)]">
-        Предложения
+        Offers
       </h2>
       <div className="overflow-hidden rounded-[20px] bg-[var(--surface)] shadow-[inset_0_0_0_1px_var(--line)]">
         {waiting.map((offer) => (
@@ -74,14 +74,14 @@ export function OffersPanel() {
             key={offer.id}
             offer={offer}
             person={offer.buyer}
-            caption="предлагает"
+            caption="is offering"
             pending={resolve.isPending}
             actions={
               <>
                 <button
                   type="button"
                   className="grid size-9 flex-none place-items-center rounded-full border-0 bg-[var(--online)] text-black disabled:opacity-50"
-                  aria-label={`Принять ${offer.amount_stars} ★ от @${offer.buyer.username}`}
+                  aria-label={`Accept ${offer.amount_stars} ★ from @${offer.buyer.username}`}
                   disabled={resolve.isPending}
                   onClick={() => resolve.mutate({ id: offer.id, action: "accept" })}
                 >
@@ -90,7 +90,7 @@ export function OffersPanel() {
                 <button
                   type="button"
                   className="grid size-9 flex-none place-items-center rounded-full border-0 bg-[#2b2024] text-[var(--danger)] disabled:opacity-50"
-                  aria-label={`Отклонить предложение @${offer.buyer.username}`}
+                  aria-label={`Decline offer from @${offer.buyer.username}`}
                   disabled={resolve.isPending}
                   onClick={() => resolve.mutate({ id: offer.id, action: "decline" })}
                 >
@@ -113,11 +113,11 @@ export function OffersPanel() {
                 <button
                   type="button"
                   className="flex min-h-9 flex-none items-center gap-1.5 rounded-full border-0 bg-[var(--surface-raised)] px-3 text-[13px] font-bold text-[var(--muted)] disabled:opacity-50"
-                  aria-label={`Отозвать предложение ${offer.amount_stars} ★`}
+                  aria-label={`Withdraw offer of ${offer.amount_stars} ★`}
                   disabled={resolve.isPending}
                   onClick={() => resolve.mutate({ id: offer.id, action: "cancel" })}
                 >
-                  <Undo2 size={15} />Отозвать
+                  <Undo2 size={15} />Withdraw
                 </button>
               ) : null
             }

@@ -8,10 +8,10 @@ import type { ProfileBadge } from "@/lib/types";
 import { Seal, SealText, sealTone, type SealTone } from "./seal";
 
 const RARITY = {
-  common: { label: "Обычный", ring: "#27272a", from: "#8b8f98", to: "#3f3f46", text: "#c8c9d4" },
-  rare: { label: "Редкий", ring: "#2f6c93", from: "#818cf8", to: "#3730a3", text: "#b0c2ff" },
-  epic: { label: "Эпичный", ring: "#4a4bb0", from: "#60a5fa", to: "#1d4ed8", text: "#9fc6ff" },
-  legendary: { label: "Легендарный", ring: "#9a7420", from: "#fb7185", to: "#e11d48", text: "#ffb3c0" }
+  common: { label: "Common", ring: "#27272a", from: "#8b8f98", to: "#3f3f46", text: "#c8c9d4" },
+  rare: { label: "Rare", ring: "#2f6c93", from: "#818cf8", to: "#3730a3", text: "#b0c2ff" },
+  epic: { label: "Epic", ring: "#4a4bb0", from: "#60a5fa", to: "#1d4ed8", text: "#9fc6ff" },
+  legendary: { label: "Legendary", ring: "#9a7420", from: "#fb7185", to: "#e11d48", text: "#ffb3c0" }
 } as const;
 
 /** A few badges keep a bespoke rim, the way the reference gilds its OG seal. */
@@ -42,7 +42,7 @@ export function BadgeStrip({ badges, className = "" }: { badges: ProfileBadge[];
   const visible = badges.filter((badge) => badge.visible_in_profile !== false);
   if (!visible.length) return null;
   return (
-    <ul className={`m-0 flex list-none flex-wrap items-center gap-1.5 p-0 ${className}`} aria-label="Бейджи профиля">
+    <ul className={`m-0 flex list-none flex-wrap items-center gap-1.5 p-0 ${className}`} aria-label="Profile badges">
       {visible.map((badge, index) => (
         <li key={badge.id} className="flex">
           <BadgeDetailPopover badge={badge} index={index} />
@@ -113,13 +113,13 @@ export function BadgeDetailPopover({ badge, index = 0 }: { badge: ProfileBadge; 
               <div className="min-w-0 flex-1">
                 <strong className="block text-xl font-extrabold leading-tight">{badge.title}</strong>
                 <span className="mt-1 block text-[13px] font-bold" style={{ color: tone.text }}>
-                  {tone.label} · {badge.points} очк.
+                  {tone.label} · {badge.points} pts
                 </span>
               </div>
             </div>
             <p className="mb-0 mt-3 text-[15px] leading-6 text-[var(--muted)]">{badge.description}</p>
             <p className="mb-0 mt-2 text-[13px] leading-5 text-[var(--dim)]">
-              <span className="font-bold text-[var(--muted)]">За что: </span>
+              <span className="font-bold text-[var(--muted)]">Earned for: </span>
               {badge.qualification}
             </p>
             {badge.issuer || badge.issued_at ? (
@@ -133,7 +133,7 @@ export function BadgeDetailPopover({ badge, index = 0 }: { badge: ProfileBadge; 
                 {badge.issued_at ? (
                   <span className="flex items-center gap-1.5">
                     <Calendar size={13} />
-                    {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", year: "numeric" }).format(new Date(badge.issued_at))}
+                    {new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric" }).format(new Date(badge.issued_at))}
                   </span>
                 ) : null}
               </div>

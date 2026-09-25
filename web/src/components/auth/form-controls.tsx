@@ -63,7 +63,7 @@ export const PasswordField = forwardRef<HTMLInputElement, PasswordFieldProps>(fu
           className={styles.passwordToggle}
           type="button"
           onClick={() => setVisible((value) => !value)}
-          aria-label={visible ? "Скрыть пароль" : "Показать пароль"}
+          aria-label={visible ? "Hide password" : "Show password"}
           aria-pressed={visible}
         >
           {visible ? <EyeOff size={19} /> : <Eye size={19} />}
@@ -87,7 +87,7 @@ export function FormNotice({ kind, children }: { kind: "error" | "success"; chil
 
 export function SubmitButton({
   pending,
-  pendingLabel = "Сохраняем…",
+  pendingLabel = "Saving…",
   className,
   children
 }: {

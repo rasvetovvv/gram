@@ -23,14 +23,14 @@ import styles from "./studio.module.css";
 const settingsSchema = z
   .object({
     paid_subscription_enabled: z.boolean(),
-    monthly_price: z.number().int("Только целое количество").min(1).max(10000)
+    monthly_price: z.number().int("Whole number only").min(1).max(10000)
   })
   .superRefine((value, context) => {
     if (value.paid_subscription_enabled && value.monthly_price < 5) {
       context.addIssue({
         code: "custom",
         path: ["monthly_price"],
-        message: "Цена подписки — от 5 звёзд"
+        message: "Subscription price starts at 5 stars"
       });
     }
   });
@@ -39,9 +39,9 @@ type SettingsForm = z.infer<typeof settingsSchema>;
 type SeriesMetric = "views" | "followers" | "stars";
 
 const metricLabels: Record<SeriesMetric, string> = {
-  views: "Просмотры",
-  followers: "Подписчики",
-  stars: "Звёзды"
+  views: "Views",
+  followers: "Followers",
+  stars: "Stars"
 };
 
 function formatNumber(value: number) {
@@ -49,7 +49,7 @@ function formatNumber(value: number) {
 }
 
 function messageFrom(error: unknown) {
-  return error instanceof Error ? error.message : "Не удалось загрузить данные";
+  return error instanceof Error ? error.message : "Couldn't load the data";
 }
 
 function AnalyticsChart({ analytics }: { analytics: CreatorAnalytics }) {
@@ -62,12 +62,12 @@ function AnalyticsChart({ analytics }: { analytics: CreatorAnalytics }) {
     <section className={styles.dynamics} aria-labelledby="dynamics-title">
       <div className={styles.sectionHeading}>
         <div>
-          <h2 id="dynamics-title">Динамика за {analytics.period_days} дней</h2>
-          <p>Только события, зафиксированные GRAM</p>
+          <h2 id="dynamics-title">Trends over {analytics.period_days} days</h2>
+          <p>Only events recorded by GRAM</p>
         </div>
         <strong>{formatNumber(total)} <small>{metricLabels[metric].toLowerCase()}</small></strong>
       </div>
-      <div className={styles.chartTabs} role="tablist" aria-label="Показатель графика">
+      <div className={styles.chartTabs} role="tablist" aria-label="Chart metric">
         {(Object.keys(metricLabels) as SeriesMetric[]).map((key) => (
           <button
             key={key}
@@ -82,7 +82,7 @@ function AnalyticsChart({ analytics }: { analytics: CreatorAnalytics }) {
         ))}
       </div>
       {points.length ? (
-        <div className={styles.chart} role="img" aria-label={`${metricLabels[metric]} по дням`}>
+        <div className={styles.chart} role="img" aria-label={`${metricLabels[metric]} by day`}>
           {points.map((point: CreatorSeriesPoint) => {
             const value = point[metric];
             return (
@@ -96,8 +96,8 @@ function AnalyticsChart({ analytics }: { analytics: CreatorAnalytics }) {
       ) : (
         <div className={styles.chartEmpty}>
           <BarChart3 size={28} />
-          <strong>Данных пока недостаточно</strong>
-          <p>График появится после первых просмотров и подписок.</p>
+          <strong>Not enough data yet</strong>
+          <p>The chart will appear after the first views and subscriptions.</p>
         </div>
       )}
     </section>
@@ -130,12 +130,12 @@ export function CreatorStudioView() {
   const metrics = useMemo(() => {
     if (!analytics.data) return [];
     return [
-      { label: "Просмотры", value: analytics.data.views, icon: Eye, tone: "cyan" },
-      { label: "Подписчики", value: analytics.data.followers, icon: Users, tone: "mint" },
-      { label: "Заработано", value: analytics.data.earned, icon: Star, tone: "gold", suffix: "★" },
-      { label: "Вовлечённость", value: analytics.data.engagement, icon: Heart, tone: "pink", suffix: "%" },
-      { label: "Публикации", value: analytics.data.posts, icon: FileText, tone: "violet" },
-      { label: "Спонсоры", value: analytics.data.sponsors, icon: Sparkles, tone: "orange" }
+      { label: "Views", value: analytics.data.views, icon: Eye, tone: "cyan" },
+      { label: "Followers", value: analytics.data.followers, icon: Users, tone: "mint" },
+      { label: "Earned", value: analytics.data.earned, icon: Star, tone: "gold", suffix: "★" },
+      { label: "Engagement", value: analytics.data.engagement, icon: Heart, tone: "pink", suffix: "%" },
+      { label: "Posts", value: analytics.data.posts, icon: FileText, tone: "violet" },
+      { label: "Sponsors", value: analytics.data.sponsors, icon: Sparkles, tone: "orange" }
     ];
   }, [analytics.data]);
 
@@ -143,32 +143,32 @@ export function CreatorStudioView() {
     <main className={styles.page}>
       <header className={styles.header}>
         <div>
-          <h1>Студия автора</h1>
-          <p>Монетизация и аналитика вашего профиля</p>
+          <h1>Creator Studio</h1>
+          <p>Monetization and analytics for your profile</p>
         </div>
       </header>
 
       {analytics.isPending ? (
-        <section className={styles.heroLoading} aria-label="Статистика загружается"><span /><span /></section>
+        <section className={styles.heroLoading} aria-label="Statistics are loading"><span /><span /></section>
       ) : analytics.isError ? (
         <section className={styles.loadError}>
           <BarChart3 size={28} />
-          <strong>Не удалось открыть аналитику</strong>
+          <strong>Couldn&apos;t open analytics</strong>
           <p>{messageFrom(analytics.error)}</p>
-          <button type="button" onClick={() => analytics.refetch()}>Повторить</button>
+          <button type="button" onClick={() => analytics.refetch()}>Retry</button>
         </section>
       ) : (
         <>
-          <section className={styles.balanceHero} aria-label="Баланс автора">
+          <section className={styles.balanceHero} aria-label="Creator balance">
             <span className={styles.creatorMark}><Sparkles size={34} /></span>
             <div>
-              <span>Доступно автору</span>
+              <span>Available to the creator</span>
               <strong>{formatNumber(analytics.data.balance)} <small>★</small></strong>
-              <p>{formatNumber(analytics.data.earned)} ★ заработано за {analytics.data.period_days} дней</p>
+              <p>{formatNumber(analytics.data.earned)} ★ earned over {analytics.data.period_days} days</p>
             </div>
           </section>
 
-          <section className={styles.metrics} aria-label={`Обзор за ${analytics.data.period_days} дней`}>
+          <section className={styles.metrics} aria-label={`Overview over ${analytics.data.period_days} days`}>
             {metrics.map((metric) => {
               const Icon = metric.icon;
               return (
@@ -185,8 +185,8 @@ export function CreatorStudioView() {
       <section className={styles.monetization} aria-labelledby="monetization-title">
         <div className={styles.sectionHeading}>
           <div>
-            <h2 id="monetization-title">Платная подписка</h2>
-            <p>Доступ к закрытым публикациям за звёзды каждый месяц</p>
+            <h2 id="monetization-title">Paid subscription</h2>
+            <p>Access to private posts for stars every month</p>
           </div>
           <button
             type="button"
@@ -198,19 +198,19 @@ export function CreatorStudioView() {
             onClick={() => form.setValue("paid_subscription_enabled", !paidEnabled, { shouldDirty: true })}
           >
             <span />
-            <span className={styles.srOnly}>{paidEnabled ? "Выключить" : "Включить"} платную подписку</span>
+            <span className={styles.srOnly}>{paidEnabled ? "Disable" : "Enable"} paid subscription</span>
           </button>
         </div>
 
         {settings.isError ? (
           <div className={styles.inlineError}>
             <span>{messageFrom(settings.error)}</span>
-            <button type="button" onClick={() => settings.refetch()}>Повторить</button>
+            <button type="button" onClick={() => settings.refetch()}>Retry</button>
           </div>
         ) : (
           <form className={styles.settingsForm} onSubmit={form.handleSubmit((values) => updateSettings.mutate(values))}>
             <label>
-              <span>Цена в месяц</span>
+              <span>Price per month</span>
               <span className={styles.priceField} data-disabled={!paidEnabled}>
                 <input
                   type="number"
@@ -225,7 +225,7 @@ export function CreatorStudioView() {
               {form.formState.errors.monthly_price ? (
                 <small role="alert">{form.formState.errors.monthly_price.message}</small>
               ) : (
-                <small>Подписчик увидит точную сумму до подтверждения.</small>
+                <small>The subscriber will see the exact amount before confirming.</small>
               )}
             </label>
             <button
@@ -234,7 +234,7 @@ export function CreatorStudioView() {
               disabled={!form.formState.isDirty || updateSettings.isPending || settings.isPending}
             >
               <Save size={18} />
-              {updateSettings.isPending ? "Сохраняем…" : form.formState.isDirty ? "Сохранить" : "Сохранено"}
+              {updateSettings.isPending ? "Saving…" : form.formState.isDirty ? "Save" : "Saved"}
             </button>
             {updateSettings.isError ? <p className={styles.formError}>{messageFrom(updateSettings.error)}</p> : null}
           </form>
@@ -247,8 +247,8 @@ export function CreatorStudioView() {
         <section className={styles.topPosts} aria-labelledby="top-posts-title">
           <div className={styles.sectionHeading}>
             <div>
-              <h2 id="top-posts-title">Лучшие публикации</h2>
-              <p>По просмотрам за выбранный период</p>
+              <h2 id="top-posts-title">Top posts</h2>
+              <p>By views over the selected period</p>
             </div>
           </div>
           {analytics.data.top_posts.length ? (
@@ -258,8 +258,8 @@ export function CreatorStudioView() {
                   <span>{index + 1}</span>
                   <p>{post.content}</p>
                   <dl>
-                    <div><Eye size={14} /><dt className={styles.srOnly}>Просмотры</dt><dd>{formatNumber(post.views_count)}</dd></div>
-                    <div><Heart size={14} /><dt className={styles.srOnly}>Отметки нравится</dt><dd>{formatNumber(post.likes_count)}</dd></div>
+                    <div><Eye size={14} /><dt className={styles.srOnly}>Views</dt><dd>{formatNumber(post.views_count)}</dd></div>
+                    <div><Heart size={14} /><dt className={styles.srOnly}>Likes</dt><dd>{formatNumber(post.likes_count)}</dd></div>
                   </dl>
                 </li>
               ))}
@@ -267,7 +267,7 @@ export function CreatorStudioView() {
           ) : (
             <div className={styles.topPostsEmpty}>
               <WalletCards size={26} />
-              <p>Опубликуйте первый пост — его реальные показатели появятся здесь.</p>
+              <p>Publish your first post — its real metrics will appear here.</p>
             </div>
           )}
         </section>

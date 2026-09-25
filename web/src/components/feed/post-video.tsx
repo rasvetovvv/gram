@@ -55,7 +55,7 @@ export function PostVideo({ src, poster }: { src: string; poster?: string | null
   if (failed)
     return (
       <p className="mt-2 rounded-[16px] bg-[var(--surface-raised)] p-3 text-[13px] text-[var(--muted)]">
-        Видео не загрузилось. Возможно, автор его удалил.
+        This video couldn&apos;t load. The author may have deleted it.
       </p>
     );
 
@@ -86,7 +86,7 @@ export function PostVideo({ src, poster }: { src: string; poster?: string | null
         <button
           type="button"
           onClick={toggle}
-          aria-label="Воспроизвести видео"
+          aria-label="Play video"
           className="absolute inset-0 grid place-items-center bg-black/25 transition hover:bg-black/35"
         >
           <span className="grid size-14 place-items-center rounded-full bg-black/60 text-white backdrop-blur">
@@ -99,7 +99,7 @@ export function PostVideo({ src, poster }: { src: string; poster?: string | null
         <button
           type="button"
           onClick={toggle}
-          aria-label={playing ? "Пауза" : "Воспроизвести"}
+          aria-label={playing ? "Pause" : "Play"}
           className="grid size-8 flex-none place-items-center rounded-full text-white transition hover:bg-white/15 active:scale-95"
         >
           {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
@@ -110,7 +110,7 @@ export function PostVideo({ src, poster }: { src: string; poster?: string | null
           max={Number.isFinite(duration) && duration > 0 ? duration : Math.max(progress, 0.1)}
           step={0.1}
           value={progress}
-          aria-label="Позиция видео"
+          aria-label="Video position"
           onChange={(event) => {
             const node = video.current;
             if (!node) return;
@@ -146,7 +146,7 @@ export function PostVideo({ src, poster }: { src: string; poster?: string | null
             node.muted = !node.muted;
             setMuted(node.muted);
           }}
-          aria-label={muted ? "Включить звук" : "Выключить звук"}
+          aria-label={muted ? "Unmute" : "Mute"}
           className="grid size-8 flex-none place-items-center rounded-full text-white transition hover:bg-white/15 active:scale-95"
         >
           {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
@@ -154,7 +154,7 @@ export function PostVideo({ src, poster }: { src: string; poster?: string | null
         <button
           type="button"
           onClick={() => void video.current?.requestFullscreen?.()}
-          aria-label="На весь экран"
+          aria-label="Fullscreen"
           className="grid size-8 flex-none place-items-center rounded-full text-white transition hover:bg-white/15 active:scale-95"
         >
           <Maximize2 size={15} />

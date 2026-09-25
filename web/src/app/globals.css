@@ -84,6 +84,23 @@
   textarea,
   select { font: inherit; }
 
+  /*
+   * Safari zooms the page whenever a focused field's text is under 16px, and it never zooms back
+   * out. That is what "the page zooms in when I type" is: not a layout bug, a browser rule.
+   * Every field therefore renders at 16px on small screens, whatever utility class it carries —
+   * the design's 13–15px sizes are kept for wide viewports where no zoom rule exists.
+   *
+   * `@media (max-width: 1023px)` rather than a touch query: an iPad in landscape reports hover
+   * capability and still zooms.
+   */
+  @media (max-width: 1023px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+    textarea,
+    select {
+      font-size: 16px !important;
+    }
+  }
+
   button,
   a { -webkit-tap-highlight-color: transparent; }
 
@@ -170,6 +187,27 @@
   color: var(--ink);
   cursor: pointer;
   transition: background-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-standard);
+}
+
+/*
+ * A 36px control is comfortable under a mouse and a coin-flip under a thumb. On touch the visible
+ * circle is left alone and the *hit area* is grown to 44px with a pseudo-element, which is the
+ * smallest target people press reliably — the WCAG 2.2 minimum and Apple's own guidance.
+ */
+@media (hover: none) {
+  .icon-button {
+    position: relative;
+  }
+
+  .icon-button::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    content: "";
+    transform: translate(-50%, -50%);
+  }
 }
 
 .icon-button:hover { background: var(--hover); color: var(--ink); }
@@ -349,7 +387,23 @@
   font-size: 0.9375rem;
   font-weight: 500;
   cursor: pointer;
+  /*
+   * Switching a tab used to snap. Animating background, colour and the inset ring makes the pill
+   * appear to travel between the segments rather than blink from one to the next — the cheapest
+   * possible version of the moving-indicator pattern, with no extra element to keep in sync.
+   *
+   * Only paint properties, so this cannot cause layout work while a list is scrolling under it.
+   */
+  transition:
+    background-color var(--dur-base) var(--ease-out),
+    color var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    transform var(--dur-fast) var(--ease-standard);
 }
+
+/* A tap needs an acknowledgement of its own; the pill arriving is not fast enough to feel like one. */
+.segmented-control > button:active,
+.segmented-control > [role="tab"]:active { transform: scale(0.97); }
 
 .segmented-control > [aria-selected="true"],
 .segmented-control > [data-state="active"],
@@ -403,8 +457,16 @@
   border-radius: 16px;
   background: transparent;
   color: #a1a1aa;
-  transition: color var(--dur-fast) var(--ease-standard);
+  /* Background as well as colour: the active pill used to appear instantly while the icon faded,
+     which read as two separate things happening. */
+  transition:
+    color var(--dur-base) var(--ease-out),
+    background-color var(--dur-base) var(--ease-out),
+    transform var(--dur-fast) var(--ease-standard);
 }
+
+/* A dock is thumbed, not clicked. The press needs to be felt. */
+.dock-link:active { transform: scale(0.92); }
 
 .dock-link[data-active="true"] {
   background: rgba(255, 255, 255, 0.1);
@@ -413,6 +475,15 @@
 }
 
 .dock-link[data-active="true"] svg { color: white; }
+
+/* The icon of the destination you just arrived at gives one small nod. Scoped to the dock and under
+   a quarter of a second, so it registers without becoming a mannerism. */
+.dock-link[data-active="true"] svg { animation: dockPop var(--dur-base) var(--ease-spring); }
+
+@keyframes dockPop {
+  from { transform: scale(0.82); }
+  to { transform: scale(1); }
+}
 
 .mobile-compose-fab {
   position: fixed;
@@ -433,7 +504,78 @@
 .app-grid:has([data-active-chat="true"]) .mobile-dock,
 .app-grid:has([data-active-chat="true"]) .mobile-compose-fab { display: none; }
 
+/*
+ * An open conversation owns the visible screen, and nothing else scrolls.
+ *
+ * This is the fix for "the composer is at the very top, everything below is black". Two separate iOS behaviours were
+ * behind it. The first is that `100vh` is 60–120px taller than the visible area on a phone, so a
+ * pane sized that way hangs below the screen. The second is the one that actually produced the
+ * reported picture: focusing the composer makes Safari scroll the *layout* viewport up by the height
+ * of the keyboard, and a pane anchored at document top goes up with it — its bottom edge, the
+ * composer, ends up at the top of the screen and the page background fills the rest.
+ *
+ * So the pane is taken out of the document flow entirely: `position: fixed`, `--chat-vh` tall (the
+ * visual viewport's own height) and translated down by `--chat-offset` (how far Safari has scrolled).
+ * Both values are published by `useVisualViewportHeight` on every viewport event, so the pane tracks
+ * the keyboard opening and closing instead of guessing.
+ */
+.chat-shell {
+  position: fixed;
+  z-index: 30;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: var(--chat-vh, 100dvh);
+  /* The offset keeps it over the visible window when the layout viewport has been scrolled. */
+  transform: translateY(var(--chat-offset, 0px));
+  background: var(--canvas);
+}
+
+/* From the width where the desktop rail appears there is no on-screen keyboard and a centred column
+   to respect, so the pane goes back to being an ordinary block inside the grid. The breakpoint
+   matches `.app-grid`'s own at 900px — a fixed pane inside a centred grid would ignore the rail. */
+@media (min-width: 900px) {
+  .chat-shell {
+    position: relative;
+    z-index: auto;
+    height: 100%;
+    transform: none;
+  }
+}
+
+.app-grid:has([data-chat-shell="true"]) {
+  height: var(--chat-vh, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-grid:has([data-chat-shell="true"]) .main-channel {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The conversation reaches the bottom edge; the list keeps room for the dock above it. */
 .app-grid:has([data-active-chat="true"]) .main-channel { padding-bottom: 0; }
+
+.app-grid:has([data-chat-shell="true"]) .channel-frame {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Written onto <html> by the conversation while it is open, so the page behind cannot scroll —
+   `:has()` cannot reach the document element from here. */
+html[data-chat-open="true"],
+html[data-chat-open="true"] body {
+  height: var(--chat-vh, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+  /* iOS keeps a rubber-band scroll on the document even at zero height without this. */
+  overscroll-behavior: none;
+  /* And it will still scroll the document to reveal a focused field unless the body is anchored. */
+  position: relative;
+}
 
 .unread-badge {
   display: inline-grid;
@@ -452,6 +594,9 @@
   padding: 64px 24px;
   text-align: center;
   color: var(--muted);
+  /* An empty state is what replaces a skeleton, and the swap used to be a hard cut that read as a
+     failure. Rising in says the answer arrived and the answer is "nothing here yet". */
+  animation: riseIn var(--dur-base) var(--ease-out) both;
 }
 
 .skeleton {
@@ -566,6 +711,39 @@
   backdrop-filter: blur(8px);
 }
 
+/*
+ * "typing…", drawn as the bubble that is about to arrive.
+ *
+ * Three dots on one keyframe track, offset by delay — the whole thing is two rules and no
+ * JavaScript, so it costs nothing while it waits and the reduced-motion rule stops it dead.
+ * `translateY` only: the dots move, the row they sit in does not, so nothing reflows under them.
+ */
+.typing-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 15px 15px 15px 5px;
+  background: var(--bubble-in);
+}
+
+.typing-bubble > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: typingDot 1.15s var(--ease-standard) infinite;
+}
+
+.typing-bubble > span:nth-child(2) { animation-delay: 0.15s; }
+.typing-bubble > span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes typingDot {
+  0%, 60%, 100% { opacity: 0.35; transform: none; }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+
 .chat-composer-shell {
   position: relative;
   display: flex;
@@ -660,7 +838,53 @@
     position: sticky;
     top: 0;
     display: block;
-    height: 100vh;
+    /* dvh, not vh: browser chrome and a zoomed page make 100vh taller than the visible area, and
+       the rail's last row — "Log out" — went under the bottom edge with no way to reach it. */
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
+  }
+
+  /*
+   * The rail is a column that cannot outgrow the viewport: the destinations scroll if they must,
+   * and the account block (Premium, admin, settings, help, log out) stays pinned above the bottom
+   * edge. Previously the whole rail was one unscrollable box, so every extra row — the staff-only
+   * admin link, a shorter laptop screen — pushed "Log out" off-screen.
+   */
+  .sidebar-shell {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+    padding: 20px 10px;
+  }
+
+  .sidebar-scroll {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+  }
+
+  .sidebar-scroll::-webkit-scrollbar { display: none; }
+
+  .sidebar-nav {
+    display: flex;
+    margin-top: 24px;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .sidebar-footer {
+    display: flex;
+    /* Holds the account rows at the bottom while the list above absorbs the slack. */
+    margin-top: auto;
+    padding-top: 14px;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .main-channel { padding-bottom: 0; }
@@ -693,6 +917,7 @@
 
 @media (min-width: 1180px) {
   .app-grid { grid-template-columns: 228px minmax(0, 600px); }
+  .sidebar-shell { padding-inline: 14px; }
   .desktop-sidebar .nav-copy,
   .desktop-sidebar .brand-copy,
   .desktop-sidebar .account-copy,
@@ -760,6 +985,106 @@
   from { opacity: 0; transform: translate3d(0, -100%, 0); }
   to { opacity: 1; transform: translateZ(0); }
 }
+
+/*
+ * "N new posts": the feed's own way of standing still.
+ *
+ * A list that swaps itself in while somebody reads three screens down moves the words under
+ * their eyes, which is what makes a feed feel like it has to be reloaded. Fresh posts wait
+ * behind this pill instead, and it sticks below the topbar so it is reachable from anywhere.
+ */
+.feed-fresh-anchor {
+  position: sticky;
+  z-index: 30;
+  top: 8px;
+  display: flex;
+  height: 0;
+  justify-content: center;
+  overflow: visible;
+}
+
+.feed-fresh-pill {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #ffffff;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 26px -8px rgba(0, 0, 0, 0.75);
+  transition: background-color var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-standard);
+}
+
+.feed-fresh-pill:hover { background: var(--primary-strong); }
+.feed-fresh-pill:active { transform: scale(0.96); }
+
+/* A live comment lands with a short highlight so the eye finds it without a jump. */
+.comment-arrived {
+  animation: commentArrive 1.5s var(--ease-out);
+}
+
+@keyframes commentArrive {
+  0% { background: rgba(109, 95, 196, 0.16); }
+  100% { background: transparent; }
+}
+
+/*
+ * The one full-screen media viewer, used by a post's gallery, a chat bubble and the "Media" shelf.
+ *
+ * `100dvh` rather than `100vh`: on a phone the visual viewport is shorter than the layout one, and
+ * a `100vh` overlay puts its close button behind the browser's own chrome.
+ */
+.media-viewer {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: flex;
+  /* The visual viewport when it is known, so the top bar is not behind the browser's own chrome. */
+  height: var(--chat-vh, 100dvh);
+  flex-direction: column;
+  /* Opaque, not 96%: at any transparency the conversation behind bled through and the viewer's own
+     top bar read as part of the chat header. A picture deserves a black room. */
+  background: #000000;
+  overscroll-behavior: contain;
+}
+
+.media-viewer-action {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+
+.media-viewer-action:hover { background: rgba(255, 255, 255, 0.2); }
+
+.media-viewer-arrow {
+  position: absolute;
+  z-index: 10;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+
+.media-viewer-arrow:hover { background: rgba(255, 255, 255, 0.2); }
 
 /*
  * Collectible gift artwork. Every design is drawn as SVG and animated in CSS rather than
@@ -887,12 +1212,100 @@
   }
 }
 
+/*
+ * The cross-fade between routes, driven by `PageTransition`.
+ *
+ * Opacity and nothing else. A `transform` here would make every `position: fixed` descendant — the
+ * conversation pane, the media viewer, every sheet — position itself against this element instead of
+ * the viewport, which is a far worse bug than a plain navigation is boring.
+ */
+.page-enter {
+  animation: pageEnter var(--dur-base) var(--ease-out);
+}
+
+@keyframes pageEnter {
+  from { opacity: 0.4; }
+  to { opacity: 1; }
+}
+
+/*
+ * A card, a row or a sheet that lifts slightly under the pointer, and gives way under a thumb.
+ * Applied by class rather than to every button, because a control that moves when it is not
+ * interactive is noise.
+ */
+.lift {
+  transition:
+    transform var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-base) var(--ease-out),
+    background-color var(--dur-base) var(--ease-out);
+}
+
+.lift:active { transform: scale(0.985); }
+
+@media (hover: hover) {
+  .lift:hover { background: var(--surface-raised); }
+}
+
+/*
+ * ─── Entrances ──────────────────────────────────────────────────────────────────
+ *
+ * Two of them, and both are about continuity rather than decoration: a panel that
+ * replaces another says where it came from, and a block that arrives says it is new
+ * rather than something the reader missed.
+ *
+ * CSS animations on mount, not Framer transitions, for three reasons. They run on the
+ * compositor while a list is scrolling; they cost nothing until an element is actually
+ * created, so a re-render of a list that is already on screen animates only the rows
+ * that were added; and the reduced-motion rule below neutralises every one of them in
+ * a single place.
+ *
+ * Every `to` step ends at `transform: none` on purpose. `translateY(0)` would leave a
+ * containing block behind for good, and any `position: fixed` descendant would then
+ * position itself against the card instead of the viewport.
+ */
+.panel-enter {
+  animation: panelEnter var(--dur-base) var(--ease-out) both;
+}
+
+@keyframes panelEnter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.rise-in {
+  animation: riseIn var(--dur-base) var(--ease-out) both;
+}
+
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/*
+ * A group that arrives together, one after another. Six steps of 40ms and no more: past
+ * that the cascade stops reading as orchestration and starts reading as a slow list, and
+ * a seventh card would be a third of a second late for no reason anybody can see.
+ */
+.stagger-in > * {
+  animation: riseIn var(--dur-base) var(--ease-out) both;
+}
+
+.stagger-in > *:nth-child(2) { animation-delay: 40ms; }
+.stagger-in > *:nth-child(3) { animation-delay: 80ms; }
+.stagger-in > *:nth-child(4) { animation-delay: 120ms; }
+.stagger-in > *:nth-child(5) { animation-delay: 160ms; }
+.stagger-in > *:nth-child(n + 6) { animation-delay: 200ms; }
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
+    /* Without this a staggered group would sit invisible for its delay and then snap in:
+       `both` fill holds the opacity-0 step, and shortening the duration does not shorten
+       the wait before it starts. */
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
@@ -901,7 +1314,7 @@
 }
 
 /* ─── Site appearance ────────────────────────────────────────────────────────────
-   Chosen in «Настройки сайта» and written onto <html> as data attributes, so the
+   Chosen in "Site appearance" and written onto <html> as data attributes, so the
    mapping from choice to colour lives here rather than in component props. */
 
 html[data-chat-accent="blue"] { --chat-accent: #2f80ed; }
@@ -929,6 +1342,29 @@ html[data-chat-wallpaper="ink"] .chat-wallpaper {
 
 html[data-chat-wallpaper="plain"] .chat-wallpaper {
   background: var(--canvas);
+}
+
+html[data-chat-wallpaper="midnight"] .chat-wallpaper {
+  background:
+    radial-gradient(circle at 22% 15%, rgba(42, 111, 170, 0.78) 0%, transparent 38%),
+    radial-gradient(circle at 78% 86%, rgba(88, 62, 151, 0.48) 0%, transparent 42%),
+    linear-gradient(155deg, #07111e 0%, #111a31 62%, #241c3b 100%);
+}
+
+html[data-chat-wallpaper="neon"] .chat-wallpaper {
+  background:
+    radial-gradient(circle at 78% 18%, rgba(22, 184, 177, 0.8) 0%, transparent 30%),
+    radial-gradient(circle at 18% 82%, rgba(140, 60, 255, 0.82) 0%, transparent 38%),
+    linear-gradient(150deg, #080914 0%, #151126 58%, #071d24 100%);
+}
+
+html[data-chat-wallpaper="constellation"] .chat-wallpaper {
+  background:
+    radial-gradient(circle at 28% 24%, rgba(196, 217, 255, 0.95) 0 1px, transparent 2px),
+    radial-gradient(circle at 72% 68%, rgba(173, 140, 255, 0.95) 0 1px, transparent 2px),
+    radial-gradient(circle at 48% 46%, rgba(255, 255, 255, 0.55) 0 1px, transparent 1.8px),
+    linear-gradient(160deg, #080d1b 0%, #19122e 100%);
+  background-size: 86px 86px, 112px 112px, 64px 64px, auto;
 }
 
 html[data-chat-pattern="off"] .chat-wallpaper::after { display: none; }

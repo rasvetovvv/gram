@@ -29,7 +29,7 @@ export function PostPoll({ post, poll }: { post: Post; poll: PollShape }) {
       ]);
     },
     onError: (error: Error) =>
-      notify("Голос не учтён", { variant: "error", detail: error.message })
+      notify("Vote not counted", { variant: "error", detail: error.message })
   });
 
   const total = poll.total_votes;
@@ -73,9 +73,9 @@ export function PostPoll({ post, poll }: { post: Post; poll: PollShape }) {
       })}
       <span className="text-[13px] text-[var(--dim)]">
         {total
-          ? `${total} ${plural(total, "голос", "голоса", "голосов")}`
-          : "Ещё никто не ответил"}
-        {answered ? " · ваш голос учтён" : ""}
+          ? `${total} ${plural(total, "vote", "votes", "votes")}`
+          : "No one has voted yet"}
+        {answered ? " · your vote is counted" : ""}
       </span>
     </div>
   );

@@ -6,6 +6,7 @@ import {
   Bell,
   Camera,
   Check,
+  Crown,
   Hand,
   ImagePlus,
   Palette,
@@ -23,6 +24,7 @@ import { useEffect, useRef, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 import { API_URL, api } from "@/lib/api";
+import { isVideoUrl } from "@/lib/utils";
 import { AccountSwitcher, MAX_DEVICE_ACCOUNTS } from "../auth/account-switcher";
 import { useLogout } from "../auth/use-logout";
 import { PROFILE_THEMES } from "@/lib/profile-color";
@@ -31,38 +33,40 @@ import { UserAvatar } from "../user-avatar";
 import { NotificationSettings, PrivacySettings, StatusSettings } from "./settings-switches";
 
 const TABS = [
-  { value: "account", label: "Аккаунт", icon: UserRound },
-  { value: "accounts", label: "Аккаунты", icon: Users },
-  { value: "appearance", label: "Оформление", icon: Palette },
-  { value: "integrations", label: "Интеграции", icon: Plug },
-  { value: "security", label: "Безопасность", icon: Shield },
-  { value: "privacy", label: "Приватность", icon: Hand },
-  { value: "notifications", label: "Уведомления", icon: Bell },
+  { value: "account", label: "Account", icon: UserRound },
+  { value: "accounts", label: "Accounts", icon: Users },
+  { value: "appearance", label: "Appearance", icon: Palette },
+  { value: "integrations", label: "Integrations", icon: Plug },
+  { value: "security", label: "Security", icon: Shield },
+  { value: "privacy", label: "Privacy", icon: Hand },
+  { value: "notifications", label: "Notifications", icon: Bell },
 ] as const;
 
 const schema = z.object({
   display_name: z
     .string()
     .trim()
-    .min(2, "Укажите имя")
-    .max(80, "Не больше 80 символов"),
+    .min(2, "Enter a name")
+    .max(80, "No more than 80 characters"),
   username: z
     .string()
     .trim()
     .toLowerCase()
-    .regex(/^[a-z][a-z0-9_]{3,31}$/, "a–z, 0–9 и _, минимум 4 символа"),
-  bio: z.string().trim().max(280, "Не больше 280 символов"),
-  location: z.string().trim().max(80, "Не больше 80 символов"),
-  role_title: z.string().trim().max(100, "Не больше 100 символов"),
-  interests: z.string().max(240, "Слишком длинный список"),
+    .regex(/^[a-z][a-z0-9_]{3,31}$/, "a–z, 0–9, and _, at least 4 characters"),
+  // Premium doubles this; the server refuses the difference for everybody else, so the form
+  // accepts the larger number and the hint under the field says whose it is.
+  bio: z.string().trim().max(560, "No more than 560 characters"),
+  location: z.string().trim().max(80, "No more than 80 characters"),
+  role_title: z.string().trim().max(100, "No more than 100 characters"),
+  interests: z.string().max(240, "That list is too long"),
   profile_color: z.string(),
-  website_url: z.string().trim().max(500, "Ссылка слишком длинная"),
+  website_url: z.string().trim().max(500, "That link is too long"),
   birthday: z.string().max(10),
-  github_url: z.string().trim().max(500, "Ссылка слишком длинная"),
-  telegram_url: z.string().trim().max(500, "Ссылка слишком длинная"),
-  profile_song_title: z.string().trim().max(120, "Не больше 120 символов"),
-  profile_song_artist: z.string().trim().max(120, "Не больше 120 символов"),
-  profile_song_url: z.string().trim().max(500, "Ссылка слишком длинная"),
+  github_url: z.string().trim().max(500, "That link is too long"),
+  telegram_url: z.string().trim().max(500, "That link is too long"),
+  profile_song_title: z.string().trim().max(120, "No more than 120 characters"),
+  profile_song_artist: z.string().trim().max(120, "No more than 120 characters"),
+  profile_song_url: z.string().trim().max(500, "That link is too long"),
   // Comma-joined slugs and handles: the pickers below are the only things that write them.
   featured_communities: z.string(),
   visible_usernames: z.string(),
@@ -81,7 +85,7 @@ function splitHandles(value: string) {
 /**
  * A grid of things to put on the profile — communities, handles — that toggles on tap.
  *
- * A `<select>` could only ever hold one, which is what made "поставить пару сообществ"
+ * A `<select>` could only ever hold one, which is what made "featuring a couple of communities"
  * impossible. The count is capped, and the cap is stated rather than silently enforced.
  */
 function ChoiceGrid({
@@ -95,11 +99,17 @@ function ChoiceGrid({
   max: number;
   onChange: (next: string[]) => void;
 }) {
-  const full = selected.length >= max;
+  /* What the grid can actually show as chosen. A value with no row of its own used to survive every
+     toggle — `selected.filter(…)` kept it, and it went back to the server on save — so anything
+     selected but not offered could not be switched off by any means the owner had. Narrowing here
+     makes the rule "what you see is what is saved" true even when the two lists disagree. */
+  const offered = new Set(options.map((option) => option.value));
+  const picked = selected.filter((item) => offered.has(item));
+  const full = picked.length >= max;
   return (
     <div className="grid gap-1.5">
       {options.map((option) => {
-        const active = selected.includes(option.value);
+        const active = picked.includes(option.value);
         return (
           <button
             key={option.value}
@@ -110,8 +120,8 @@ function ChoiceGrid({
             onClick={() =>
               onChange(
                 active
-                  ? selected.filter((item) => item !== option.value)
-                  : [...selected, option.value]
+                  ? picked.filter((item) => item !== option.value)
+                  : [...picked, option.value]
               )
             }
             className="flex items-center gap-3 rounded-[14px] bg-[var(--surface-raised)] p-2 text-left transition hover:brightness-110 disabled:opacity-45"
@@ -145,7 +155,7 @@ function ChoiceGrid({
         );
       })}
       <p className="m-0 text-[12px] text-[var(--muted)]">
-        Выбрано {selected.length} из {max}.
+        {picked.length} of {max} selected.
       </p>
     </div>
   );
@@ -207,9 +217,29 @@ export function ProfileEditSheet({
     },
   });
   const profile = me.data;
+  /* The ceiling the server enforces, and how much of it is used. Read from the profile rather than
+     hardcoded, so the picker and the API can never disagree about how many handles are allowed —
+     they did, and the form silently capped at twelve while the server accepted twenty. */
+  const maxHandles = profile?.max_usernames ?? 20;
+  const ownedCount = profile?.owned_usernames?.length ?? ownedHandles.length + 1;
+
+  /* Which account the form currently holds, so it is seeded once per opening.
+   *
+   * `me.data` is a fresh object on every refetch, and this effect used to depend on it directly: any
+   * background refresh of the profile — a presence tick, a save elsewhere, the window regaining
+   * focus — called `reset` and threw away whatever had not been saved yet. Unticking a handle and
+   * pressing “Save” a moment later saved the list as it was before the tick, so the handle
+   * came back and the form looked like it had ignored the change. It had: it never had it. */
+  const seededFor = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!profile) return;
+    if (!open) {
+      // Re-seed on the next opening, so a sheet reopened after a save shows what was saved.
+      seededFor.current = null;
+      return;
+    }
+    if (!profile || seededFor.current === profile.id) return;
+    seededFor.current = profile.id;
     form.reset({
       display_name: profile.display_name,
       username: profile.username,
@@ -231,7 +261,7 @@ export function ProfileEditSheet({
       ).join(","),
       visible_usernames: (profile.related_usernames ?? []).join(","),
     });
-  }, [form, profile]);
+  }, [form, open, profile]);
 
   const chosenCommunities = useWatch({ control: form.control, name: "featured_communities" });
   const chosenHandles = useWatch({ control: form.control, name: "visible_usernames" });
@@ -267,7 +297,7 @@ export function ProfileEditSheet({
           queryKey: ["profile", updated.username],
         }),
       ]);
-      setFeedback("Профиль сохранён");
+      setFeedback("Profile saved");
     },
   });
 
@@ -279,10 +309,16 @@ export function ProfileEditSheet({
       file: File;
       kind: "avatar" | "cover";
     }) => {
-      if (!file.type.match(/^image\/(png|jpeg|webp)$/))
-        throw new Error("Поддерживаются PNG, JPG и WEBP");
-      if (file.size > 5 * 1024 * 1024)
-        throw new Error("Файл должен быть не больше 5 МБ");
+      // A clip is allowed too: an avatar or a cover can be alive, and the API keeps whichever
+      // arrived. The two limits differ because a video is heavier by nature.
+      const video = file.type.startsWith("video/");
+      if (!video && !file.type.match(/^image\/(png|jpeg|webp)$/))
+        throw new Error("PNG, JPG, WEBP, or MP4 / WEBM video are supported");
+      if (video && !file.type.match(/^video\/(mp4|webm|quicktime)$/))
+        throw new Error("A live photo can be MP4 or WEBM");
+      const limit = video ? 20 : 5;
+      if (file.size > limit * 1024 * 1024)
+        throw new Error(`The file must be no larger than ${limit} MB`);
       return kind === "avatar" ? api.uploadAvatar(file) : api.uploadCover(file);
     },
     onSuccess: async (_, variables) => {
@@ -293,12 +329,14 @@ export function ProfileEditSheet({
         }),
       ]);
       setFeedback(
-        variables.kind === "avatar" ? "Аватар обновлён" : "Обложка обновлена",
+        variables.kind === "avatar" ? "Avatar updated" : "Cover updated",
       );
     },
   });
 
   const color = useWatch({ control: form.control, name: "profile_color" });
+  // What Premium unlocks on this sheet: a name colour, and twice the description.
+  const premium = Boolean(me.data?.is_premium);
   const error = save.error?.message || upload.error?.message;
 
   return (
@@ -308,8 +346,8 @@ export function ProfileEditSheet({
         onOpenChange(next);
         if (!next) setFeedback("");
       }}
-      title="Редактирование профиля"
-      description="Аккаунт, оформление, интеграции, безопасность, приватность и уведомления."
+      title="Edit profile"
+      description="Account, appearance, integrations, security, privacy, and notifications."
       footer={
         <>
           <p className="mb-2 min-h-5 text-center text-xs" aria-live="polite">
@@ -324,14 +362,14 @@ export function ProfileEditSheet({
             onClick={form.handleSubmit((values) => save.mutate(values))}
             disabled={save.isPending || upload.isPending}
           >
-            {save.isPending ? "Сохраняем…" : "Сохранить"}
+            {save.isPending ? "Saving…" : "Save"}
           </button>
           <button
             className="mt-2.5 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-full border-0 bg-[#17171d] text-[0.95rem] font-extrabold text-[var(--danger)]"
             onClick={() => logout.mutate()}
             disabled={logout.isPending}
           >
-            Выйти из аккаунта
+            Log out
           </button>
         </>
       }
@@ -341,7 +379,7 @@ export function ProfileEditSheet({
           <div
             className="flex items-center gap-1.5 overflow-x-auto px-3 pb-3 [scrollbar-width:none]"
             role="tablist"
-            aria-label="Разделы настроек"
+            aria-label="Settings sections"
           >
             {TABS.map(({ value, label, icon: Icon }) => (
               <button
@@ -365,7 +403,7 @@ export function ProfileEditSheet({
               type="button"
               onClick={() => onOpenChange(false)}
               className="icon-button ml-auto flex-none bg-[#17171d]"
-              aria-label="Закрыть"
+              aria-label="Close"
             >
               <X size={19} />
             </button>
@@ -380,7 +418,9 @@ export function ProfileEditSheet({
               <div className="skeleton h-24 rounded-[20px]" />
             </div>
           ) : (
-            <>
+            /* Keyed by the section, so moving between “Account”, “Appearance” and the rest fades the
+               body instead of replacing a tall form with another one under a fixed heading. */
+            <div key={tab} className="panel-enter">
               <h2 className="m-0 text-[1.3rem] font-extrabold">
                 {TABS.find((item) => item.value === tab)?.label}
               </h2>
@@ -394,7 +434,19 @@ export function ProfileEditSheet({
                       disabled={upload.isPending}
                       className="relative flex h-[132px] w-full items-center justify-center overflow-hidden rounded-[20px] border-0 bg-[#17171d] text-sm font-bold text-[var(--muted)]"
                     >
-                      {profile.cover_url ? (
+                      {isVideoUrl(profile.cover_url) ? (
+                        /* Live cover: shown the same way it will appear on the profile. */
+                        <video
+                          src={profile.cover_url ?? undefined}
+                          autoPlay
+                          muted
+                          loop
+                          playsInline
+                          preload="metadata"
+                          aria-hidden
+                          className="absolute inset-0 h-full w-full object-cover"
+                        />
+                      ) : profile.cover_url ? (
                         <Image
                           src={profile.cover_url}
                           alt=""
@@ -406,7 +458,7 @@ export function ProfileEditSheet({
                       ) : null}
                       <span className="relative flex items-center gap-2 rounded-full bg-black/55 px-3 py-1.5 backdrop-blur-sm">
                         <ImagePlus size={16} />
-                        Обложка профиля
+                        Profile cover
                       </span>
                     </button>
                     <div className="absolute -bottom-6 left-4 rounded-full bg-[#121216] p-[3px]">
@@ -421,15 +473,18 @@ export function ProfileEditSheet({
                       type="button"
                       onClick={() => avatarInput.current?.click()}
                       disabled={upload.isPending}
-                      aria-label="Загрузить аватар"
+                      aria-label="Upload avatar"
                       className="absolute -bottom-2 left-[76px] grid size-9 place-items-center rounded-full border-0 bg-[var(--primary)] text-white"
                     >
                       <Camera size={17} />
                     </button>
+                    <p className="absolute -bottom-5 right-1 m-0 text-[11px] text-[var(--dim)]">
+                      Photo or video — live avatar and cover
+                    </p>
                     <input
                       ref={coverInput}
                       type="file"
-                      accept="image/png,image/jpeg,image/webp"
+                      accept="image/png,image/jpeg,image/webp,video/mp4,video/webm"
                       className="hidden"
                       onChange={(event) => {
                         const file = event.target.files?.[0];
@@ -440,7 +495,7 @@ export function ProfileEditSheet({
                     <input
                       ref={avatarInput}
                       type="file"
-                      accept="image/png,image/jpeg,image/webp"
+                      accept="image/png,image/jpeg,image/webp,video/mp4,video/webm"
                       className="hidden"
                       onChange={(event) => {
                         const file = event.target.files?.[0];
@@ -451,8 +506,8 @@ export function ProfileEditSheet({
                   </div>
                   <div className="mt-7 grid gap-5">
                     <Field
-                      label="Имя"
-                      hint="Ваше отображаемое имя"
+                      label="Name"
+                      hint="Your display name"
                       error={form.formState.errors.display_name?.message}
                     >
                       <input
@@ -462,7 +517,7 @@ export function ProfileEditSheet({
                     </Field>
                     <Field
                       label="Username"
-                      hint="Уникальный идентификатор. Допустимые символы: a–z, 0–9 и _. Минимальная длина — 4 символа."
+                      hint="A unique identifier. Allowed characters: a–z, 0–9, and _. Minimum length is 4 characters."
                       error={form.formState.errors.username?.message}
                     >
                       <input
@@ -473,8 +528,8 @@ export function ProfileEditSheet({
                       />
                     </Field>
                     <Field
-                      label="О себе"
-                      hint="Расскажите немного о себе"
+                      label="About"
+                      hint="Tell people a little about yourself"
                       error={form.formState.errors.bio?.message}
                     >
                       <textarea
@@ -484,19 +539,19 @@ export function ProfileEditSheet({
                       />
                     </Field>
                     <Field
-                      label="Город"
-                      hint="Где вы находитесь"
+                      label="City"
+                      hint="Where you’re based"
                       error={form.formState.errors.location?.message}
                     >
                       <input
                         className="field px-4"
-                        placeholder="Например, Киев"
+                        placeholder="For example, Kyiv"
                         {...form.register("location")}
                       />
                     </Field>
                     <Field
-                      label="Роль"
-                      hint="Короткая подпись под именем"
+                      label="Role"
+                      hint="A short caption under your name"
                       error={form.formState.errors.role_title?.message}
                     >
                       <input
@@ -506,17 +561,17 @@ export function ProfileEditSheet({
                       />
                     </Field>
                     <Field
-                      label="Интересы"
-                      hint="Через запятую — до 12 тем"
+                      label="Interests"
+                      hint="Comma-separated — up to 12 topics"
                       error={form.formState.errors.interests?.message}
                     >
                       <input
                         className="field px-4"
-                        placeholder="дизайн, музыка, коллекции"
+                        placeholder="design, music, collections"
                         {...form.register("interests")}
                       />
                     </Field>
-                    <Field label="Дата рождения" hint="Показывается в профиле">
+                    <Field label="Birthday" hint="Shown on your profile">
                       <input
                         className="field px-4"
                         type="date"
@@ -533,14 +588,29 @@ export function ProfileEditSheet({
               {tab === "appearance" ? (
                 <div className="mt-4 grid gap-4">
                   <p className="mb-0 text-[0.86rem] leading-5 text-[var(--muted)]">
-                    Цветовая схема профиля — имя, акценты и активные элементы
-                    вашей страницы.
+                    Your profile color scheme — your name, accents, and the active elements
+                    of your page.
                   </p>
+                  {/* The palette is Premium's. A colour already chosen keeps working, so the lock
+                      is on choosing a new one — which is what the subscription actually buys. */}
+                  {premium ? null : (
+                    <p className="m-0 flex items-start gap-2 rounded-[14px] bg-[var(--surface-raised)] p-3 text-[0.82rem] leading-5 text-[var(--muted)]">
+                      <Crown size={15} className="mt-0.5 flex-none text-[var(--stars)]" />
+                      <span>
+                        A name color unlocks{" "}
+                        <Link href="/premium" className="font-semibold text-[var(--link)]">
+                          GRAM Premium
+                        </Link>
+                        . The color you choose stays with you even after the subscription ends.
+                      </span>
+                    </p>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     {PROFILE_THEMES.map((option) => (
                       <button
                         key={option.slug}
                         type="button"
+                        disabled={!premium && option.slug !== "default"}
                         onClick={() =>
                           form.setValue("profile_color", option.slug, {
                             shouldDirty: true,
@@ -580,8 +650,8 @@ export function ProfileEditSheet({
                     ))}
                   </div>
                   <Field
-                    label="Сообщества в профиле"
-                    hint="До трёх своих сообществ — карточками под шапкой. Чужие поставить нельзя."
+                    label="Communities on your profile"
+                    hint="Up to three of your own communities — as cards under the header. You can’t add others’."
                   >
                     {mine.data?.length ? (
                       <ChoiceGrid
@@ -601,36 +671,43 @@ export function ProfileEditSheet({
                       />
                     ) : (
                       <p className="m-0 text-[13px] text-[var(--muted)]">
-                        У вас пока нет своего сообщества.{" "}
+                        You don’t have a community of your own yet.{" "}
                         <Link href="/communities" className="font-semibold text-[var(--link)]">
-                          Создать
+                          Create
                         </Link>
                       </p>
                     )}
                   </Field>
                   <Field
-                    label="Юзернеймы в профиле"
-                    hint="Выберите, какие из ваших имён увидят другие. Основное имя показывается всегда."
+                    label="Usernames on your profile"
+                    hint={
+                      ownedHandles.length
+                        ? `Choose which of your names others will see. Your primary name is always shown. ${ownedCount} of ${maxHandles} used.`
+                        : "Choose which of your names others will see. Your primary name is always shown."
+                    }
                   >
                     {ownedHandles.length ? (
                       <ChoiceGrid
                         options={ownedHandles.map((handle) => ({
                           value: handle,
                           title: `@${handle}`,
-                          subtitle: "ваш юзернейм",
+                          subtitle: "your username",
                           imageUrl: null
                         }))}
                         selected={splitHandles(chosenHandles ?? "")}
-                        max={12}
+                        /* The cap the account actually has, so the picker can never refuse a handle
+                           the profile is allowed to show. It used to be hardcoded at 12 while the
+                           server accepted 20. */
+                        max={maxHandles}
                         onChange={(next) =>
                           form.setValue("visible_usernames", next.join(","), { shouldDirty: true })
                         }
                       />
                     ) : (
                       <p className="m-0 text-[13px] text-[var(--muted)]">
-                        Дополнительных имён пока нет.{" "}
+                        No additional names yet.{" "}
                         <Link href="/market" className="font-semibold text-[var(--link)]">
-                          Купить в маркете
+                          Buy on the market
                         </Link>
                       </p>
                     )}
@@ -641,8 +718,8 @@ export function ProfileEditSheet({
               {tab === "integrations" ? (
                 <div className="mt-4 grid gap-5">
                   <Field
-                    label="Сайт"
-                    hint="Ссылка в шапке профиля"
+                    label="Website"
+                    hint="A link in your profile header"
                     error={form.formState.errors.website_url?.message}
                   >
                     <input
@@ -675,18 +752,18 @@ export function ProfileEditSheet({
                     />
                   </Field>
                   <Field
-                    label="Песня профиля"
-                    hint="Название, исполнитель и ссылка на аудио"
+                    label="Profile song"
+                    hint="Title, artist, and a link to the audio"
                   >
                     <input
                       className="field px-4"
-                      placeholder="Название"
+                      placeholder="Title"
                       {...form.register("profile_song_title")}
                     />
                   </Field>
                   <input
                     className="field px-4"
-                    placeholder="Исполнитель"
+                    placeholder="Artist"
                     {...form.register("profile_song_artist")}
                   />
                   <input
@@ -705,9 +782,9 @@ export function ProfileEditSheet({
               {tab === "accounts" ? (
                 <div className="mt-4 grid gap-4">
                   <p className="mb-0 text-[0.86rem] leading-5 text-[var(--muted)]">
-                    До {MAX_DEVICE_ACCOUNTS} аккаунтов на этом устройстве. Переключение
-                    мгновенное: у каждого своя сессия в httpOnly-cookie, пароль повторно не
-                    нужен. Пароли здесь не хранятся.
+                    Up to {MAX_DEVICE_ACCOUNTS} accounts on this device. Switching is
+                    instant: each has its own session in an httpOnly cookie, and no password is
+                    needed again. Passwords are not stored here.
                   </p>
                   <AccountSwitcher variant="app" />
                 </div>
@@ -716,7 +793,7 @@ export function ProfileEditSheet({
               {tab === "privacy" ? <PrivacySettings /> : null}
 
               {tab === "notifications" ? <NotificationSettings /> : null}
-            </>
+            </div>
           )}
         </div>
       </div>
@@ -765,14 +842,14 @@ function SecurityTab({ onFeedback }: { onFeedback: (text: string) => void }) {
       setCurrent("");
       setNext("");
       await queryClient.invalidateQueries({ queryKey: ["auth-sessions"] });
-      onFeedback("Пароль изменён, другие устройства отключены");
+      onFeedback("Password changed; other devices have been logged out");
     },
   });
   const revoke = useMutation({
     mutationFn: api.revokeOtherSessions,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["auth-sessions"] });
-      onFeedback("Другие сессии отключены");
+      onFeedback("Other sessions have been logged out");
     },
   });
 
@@ -780,14 +857,14 @@ function SecurityTab({ onFeedback }: { onFeedback: (text: string) => void }) {
     <div className="mt-4 grid gap-5">
       <div className="grid gap-3">
         <Field
-          label="Смена пароля"
-          hint="Минимум 10 символов. Другие устройства выйдут автоматически."
+          label="Change password"
+          hint="At least 10 characters. Other devices will be logged out automatically."
         >
           <input
             className="field px-4"
             type="password"
             autoComplete="current-password"
-            placeholder="Текущий пароль"
+            placeholder="Current password"
             value={current}
             onChange={(event) => setCurrent(event.target.value)}
           />
@@ -796,7 +873,7 @@ function SecurityTab({ onFeedback }: { onFeedback: (text: string) => void }) {
           className="field px-4"
           type="password"
           autoComplete="new-password"
-          placeholder="Новый пароль"
+          placeholder="New password"
           value={next}
           onChange={(event) => setNext(event.target.value)}
         />
@@ -805,7 +882,7 @@ function SecurityTab({ onFeedback }: { onFeedback: (text: string) => void }) {
           onClick={() => change.mutate()}
           disabled={change.isPending || current.length < 1 || next.length < 10}
         >
-          {change.isPending ? "Меняем…" : "Изменить пароль"}
+          {change.isPending ? "Changing…" : "Change password"}
         </button>
         {change.error ? (
           <p className="mb-0 text-xs text-[var(--danger)]">
@@ -816,13 +893,13 @@ function SecurityTab({ onFeedback }: { onFeedback: (text: string) => void }) {
 
       <div>
         <div className="mb-2 flex items-center justify-between gap-3">
-          <strong className="text-[0.98rem]">Активные сессии</strong>
+          <strong className="text-[0.98rem]">Active sessions</strong>
           <button
             className="quiet-button !min-h-9 !px-3 text-xs"
             onClick={() => revoke.mutate()}
             disabled={revoke.isPending}
           >
-            Отключить другие
+            Log out others
           </button>
         </div>
         {sessions.isLoading ? (
@@ -830,7 +907,7 @@ function SecurityTab({ onFeedback }: { onFeedback: (text: string) => void }) {
         ) : sessions.isError ? (
           <button className="quiet-button" onClick={() => sessions.refetch()}>
             <RefreshCw size={16} />
-            Повторить
+            Retry
           </button>
         ) : (
           <div className="overflow-hidden rounded-[18px] bg-[#121216] shadow-[inset_0_0_0_1px_var(--line)]">
@@ -841,16 +918,16 @@ function SecurityTab({ onFeedback }: { onFeedback: (text: string) => void }) {
               >
                 <div className="flex items-center gap-2">
                   <strong className="truncate text-[0.88rem]">
-                    {item.user_agent ?? "Неизвестное устройство"}
+                    {item.user_agent ?? "Unknown device"}
                   </strong>
                   {item.current ? (
                     <span className="rounded-full bg-[#12231a] px-2 py-0.5 text-[0.58rem] font-extrabold uppercase tracking-[.1em] text-[var(--online)]">
-                      это устройство
+                      this device
                     </span>
                   ) : null}
                 </div>
                 <span className="text-xs text-[var(--muted)]">
-                  {item.ip_address ?? "IP скрыт"} · вход{" "}
+                  {item.ip_address ?? "IP hidden"} · signed in{" "}
                   {new Intl.DateTimeFormat("ru-RU", {
                     day: "numeric",
                     month: "short",
@@ -878,11 +955,11 @@ function DangerZone() {
   return (
     <div className="mt-3 rounded-[18px] bg-[#1e1214] p-3.5 shadow-[inset_0_0_0_1px_#3a1c22]">
       <strong className="text-[0.92rem] text-[var(--danger)]">
-        Опасная зона
+        Danger zone
       </strong>
       <p className="mb-0 mt-1 text-[0.8rem] leading-5 text-[#e0b4bb]">
-        Удаление аккаунта необратимо: профиль, посты, сообщения, подписки и
-        подарки будут удалены навсегда.
+        Deleting your account is irreversible: your profile, posts, messages, subscriptions, and
+        gifts will be permanently deleted.
       </p>
       {open ? (
         <div className="mt-2.5 grid gap-2">
@@ -890,7 +967,7 @@ function DangerZone() {
             className="field px-4"
             type="password"
             autoComplete="current-password"
-            placeholder="Пароль для подтверждения"
+            placeholder="Password to confirm"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
           />
@@ -902,14 +979,14 @@ function DangerZone() {
                 setPassword("");
               }}
             >
-              Отмена
+              Cancel
             </button>
             <button
               className="flex min-h-[46px] flex-1 items-center justify-center rounded-full border-0 bg-[#7a1f2b] px-4 text-sm font-extrabold text-white"
               onClick={() => remove.mutate()}
               disabled={remove.isPending || password.length < 1}
             >
-              {remove.isPending ? "Удаляем…" : "Удалить навсегда"}
+              {remove.isPending ? "Deleting…" : "Delete permanently"}
             </button>
           </div>
           {remove.error ? (
@@ -923,7 +1000,7 @@ function DangerZone() {
           className="mt-2.5 min-h-11 w-full rounded-full border-0 bg-transparent text-sm font-extrabold text-[var(--danger)]"
           onClick={() => setOpen(true)}
         >
-          Удалить аккаунт
+          Delete account
         </button>
       )}
     </div>

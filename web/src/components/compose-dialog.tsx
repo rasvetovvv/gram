@@ -9,7 +9,7 @@ import { useUiStore } from "@/store/ui";
 import { PostComposer } from "./feed/post-composer";
 
 /**
- * «Новая запись» — the same composer the feed shows, in a sheet.
+ * New post — the same composer the feed shows, in a sheet.
  *
  * It used to be a second, poorer composer: an image field that only took a URL, disabled emoji
  * and media buttons, and a desktop card that kept its `translateX(-50%)` on phones, which put
@@ -49,14 +49,14 @@ export function ComposeDialog() {
                 <div className="mb-3 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <PenLine size={18} className="text-[var(--primary-strong)]" />
-                    <Dialog.Title className="font-bold">Новая запись</Dialog.Title>
+                    <Dialog.Title className="font-bold">New post</Dialog.Title>
                   </div>
-                  <Dialog.Close className="icon-button" aria-label="Закрыть">
+                  <Dialog.Close className="icon-button" aria-label="Close">
                     <X size={20} />
                   </Dialog.Close>
                 </div>
                 <Dialog.Description className="sr-only">
-                  Текст, фотографии и ссылка на музыку — всё в одной записи.
+                  Text, photos and a music link — all in one post.
                 </Dialog.Description>
                 <PostComposer
                   avatarUrl={me?.avatar_url}
