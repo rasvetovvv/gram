@@ -100,6 +100,7 @@ from app.gifts import (
 )
 from app.models import (
     AdminAction,
+    AnonymousNumber,
     AuthIdentity,
     Chat,
     ChatFolder,
@@ -153,6 +154,7 @@ from app.models import (
     UsernameAsset,
     UsernameOffer,
     UsernameOwnershipEvent,
+    NumberOwnershipEvent,
     UsernameStatus,
     UserPreferences,
     UserProfileDetails,
@@ -202,9 +204,14 @@ from app.schemas import (
     MAX_OWNED_USERNAMES,
     MAX_POST_IMAGES,
     MIN_POLL_OPTIONS,
+    ANONYMOUS_NUMBER_BODY_DIGITS,
+    ANONYMOUS_NUMBER_FLOOR_STARS,
+    ANONYMOUS_NUMBER_PREFIX,
     AccountDeleteRequest,
     AccountSlot,
     AdminCryptoPaidIn,
+    AnonymousNumberOut,
+    AnonymousNumberPurchase,
     AuthResponse,
     AuthSessionOut,
     BadgeOffer,
@@ -338,6 +345,8 @@ from app.schemas import (
     UsernameAssetOut,
     UsernameHistoryOut,
     UsernameListingUpdate,
+    NumberHistoryEvent,
+    NumberListingUpdate,
     UsernameOfferCreate,
     UsernameOfferOut,
     UsernameReserve,
@@ -1149,6 +1158,14 @@ async def render_profile(
             .order_by(UsernameAsset.username)
         )
     ).all()
+    # The anonymous +888 number this account holds, if any. One per account (the buy path
+    # enforces it), so a single scalar is enough; formatted for display right here.
+    held_number = await session.scalar(
+        select(AnonymousNumber.number).where(
+            AnonymousNumber.owner_id == user.id,
+            AnonymousNumber.status != UsernameStatus.AVAILABLE,
+        )
+    )
     # Every handle this account holds, channel addresses included. `owned_handles` above is the
     # personal collection — what the automatic list offers and what the cap counts — while this is
     # the wider set that says whether a handle is *allowed* on the profile at all.
@@ -1283,6 +1300,7 @@ async def render_profile(
             else None
         ),
         is_premium=is_premium,
+        anonymous_number=format_anonymous_number(held_number) if held_number else None,
     )
 
 
@@ -12137,6 +12155,365 @@ async def release_username(
     await session.commit()
     await session.refresh(asset)
     return await render_username(session, asset, None, me)
+
+
+# ── Anonymous +888 numbers ───────────────────────────────────────────────────────────────────
+#
+# A collectible identifier market that mirrors the handle market: a curated showcase sells at a
+# fixed floor, and any valid, unheld +888 number can be bought on demand. One held number per
+# account. The pool is virtual — a row exists only for the curated showcase and for numbers
+# somebody actually bought — so there is no 100-million-row seed anywhere.
+
+
+def normalize_anonymous_number(raw: str) -> str:
+    """
+    Reduce any accepted spelling of a +888 number to its bare eight body digits.
+
+    Accepts "+888 8888 8888", "8888888888", "888 88888888" and so on. Returns the eight digits
+    after the 888 country code. Raises 422 for anything that is not a valid +888 number, so a
+    caller can never buy a malformed or non-888 identifier.
+    """
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if digits.startswith(ANONYMOUS_NUMBER_PREFIX):
+        body = digits[len(ANONYMOUS_NUMBER_PREFIX):]
+    else:
+        body = digits
+    if len(body) != ANONYMOUS_NUMBER_BODY_DIGITS or not body.isdigit():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Некорректный номер: +888 и восемь цифр, например +888 8888 8888",
+        )
+    return body
+
+
+def format_anonymous_number(body: str) -> str:
+    """Bare body digits to the printed form, e.g. "88888888" → "+888 8888 8888"."""
+    return f"+{ANONYMOUS_NUMBER_PREFIX} {body[:4]} {body[4:]}"
+
+
+async def _held_number(session: AsyncSession, user_id: uuid.UUID) -> AnonymousNumber | None:
+    """The number this account currently holds, if any (available rows are nobody's)."""
+    return await session.scalar(
+        select(AnonymousNumber).where(
+            AnonymousNumber.owner_id == user_id,
+            AnonymousNumber.status != UsernameStatus.AVAILABLE,
+        )
+    )
+
+
+async def _refuse_second_number(session: AsyncSession, user_id: uuid.UUID) -> None:
+    """A person may hold exactly one number; a second purchase is refused before stars move."""
+    if await _held_number(session, user_id) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="У аккаунта может быть только один номер +888 — освободите или продайте текущий",
+        )
+
+
+async def render_number(
+    session: AsyncSession, number: AnonymousNumber, owner: User | None, me: User
+) -> AnonymousNumberOut:
+    last_event = await session.scalar(
+        select(NumberOwnershipEvent)
+        .where(NumberOwnershipEvent.number_id == number.id)
+        .order_by(NumberOwnershipEvent.created_at.desc())
+        .limit(1)
+    )
+    return AnonymousNumberOut(
+        id=number.id,
+        number=number.number,
+        formatted=format_anonymous_number(number.number),
+        owner=compact_user(owner) if owner else None,
+        owner_username=owner.username if owner else "",
+        status=number.status,
+        price=int(number.price) if number.price is not None else None,
+        currency=number.currency,
+        curated=number.curated,
+        is_owned_by_me=number.owner_id == me.id,
+        created_at=number.created_at,
+        acquired_at=number.reserved_at or number.created_at,
+        listed_at=number.listed_at,
+        last_action=last_event.action if last_event else None,
+        last_action_at=last_event.created_at if last_event else None,
+    )
+
+
+@app.get("/api/numbers", response_model=list[AnonymousNumberOut], tags=["numbers"])
+async def read_numbers(
+    session: SessionDep,
+    me: CurrentUser,
+    status_filter: Annotated[UsernameStatus | None, Query(alias="status")] = None,
+) -> list[AnonymousNumberOut]:
+    """The showcase and every traded number: curated lots, listings and the ones people hold."""
+    query = (
+        select(AnonymousNumber, User)
+        .outerjoin(User, AnonymousNumber.owner_id == User.id)
+        .order_by(AnonymousNumber.status, AnonymousNumber.number)
+    )
+    if status_filter is not None:
+        query = query.where(AnonymousNumber.status == status_filter)
+    rows = (await session.execute(query)).all()
+    return [await render_number(session, number, owner, me) for number, owner in rows]
+
+
+@app.get("/api/numbers/check", response_model=dict[str, Any], tags=["numbers"])
+async def check_number(
+    session: SessionDep,
+    me: CurrentUser,
+    number: Annotated[str, Query(min_length=1, max_length=20)],
+) -> dict[str, Any]:
+    """Is this +888 number free to buy? Validates the format and reports the floor price."""
+    body = normalize_anonymous_number(number)
+    existing = await session.scalar(
+        select(AnonymousNumber).where(AnonymousNumber.number == body)
+    )
+    available = existing is None or (
+        existing.owner_id is None and existing.status == UsernameStatus.AVAILABLE
+    )
+    return {
+        "number": body,
+        "formatted": format_anonymous_number(body),
+        "available": available,
+        "price": ANONYMOUS_NUMBER_FLOOR_STARS if available else None,
+    }
+
+
+async def _settle_number_purchase(
+    session: AsyncSession,
+    number: AnonymousNumber,
+    *,
+    buyer: User,
+    seller: User | None,
+    price: int,
+    action: str,
+) -> None:
+    """Move a number and its stars in one transaction, writing both ledger sides."""
+    correlation = uuid.uuid4()
+    buyer_wallet = await _wallet_for_update(session, buyer.id)
+    _ledger_change(
+        session,
+        buyer_wallet,
+        -price,
+        kind="number_purchase",
+        description=f"Покупка номера {format_anonymous_number(number.number)}",
+        correlation_id=correlation,
+        counterparty_id=seller.id if seller else None,
+        entity_type="number",
+        entity_id=str(number.id),
+    )
+    if seller is not None:
+        seller_wallet = await _wallet_for_update(session, seller.id)
+        _ledger_change(
+            session,
+            seller_wallet,
+            price,
+            kind="number_sale",
+            description=f"Продажа номера {format_anonymous_number(number.number)}",
+            correlation_id=correlation,
+            counterparty_id=buyer.id,
+            entity_type="number",
+            entity_id=str(number.id),
+        )
+    number.owner_id = buyer.id
+    number.status = UsernameStatus.RESERVED
+    number.price = None
+    number.listed_at = None
+    number.reserved_at = utcnow()
+    session.add(
+        NumberOwnershipEvent(
+            number_id=number.id,
+            from_user_id=seller.id if seller else None,
+            to_user_id=buyer.id,
+            action=action,
+            price_stars=price,
+        )
+    )
+
+
+@app.post(
+    "/api/numbers/buy",
+    response_model=AnonymousNumberOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["numbers"],
+)
+async def buy_number(
+    payload: AnonymousNumberPurchase, session: SessionDep, me: CurrentUser
+) -> AnonymousNumberOut:
+    """
+    Buy a +888 number at the floor: either a curated showcase lot or any valid unheld number.
+
+    Refused if the account already holds one, if the number is a live listing owned by somebody
+    else (that goes through /buy-listed so the seller is paid), or if the format is invalid.
+    """
+    body = normalize_anonymous_number(payload.number)
+    await _refuse_second_number(session, me.id)
+    number = await session.scalar(
+        select(AnonymousNumber).where(AnonymousNumber.number == body).with_for_update()
+    )
+    if number is not None and number.owner_id is not None and number.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Этот номер уже занят",
+        )
+    now = utcnow()
+    if number is None:
+        # Buy-any-valid: create the row on demand and charge the platform floor.
+        number = AnonymousNumber(
+            number=body,
+            owner_id=None,
+            status=UsernameStatus.AVAILABLE,
+            price=ANONYMOUS_NUMBER_FLOOR_STARS,
+            currency="STARS",
+            curated=False,
+            created_at=now,
+        )
+        session.add(number)
+        await session.flush()
+    price = int(number.price) if number.price is not None else ANONYMOUS_NUMBER_FLOOR_STARS
+    await _settle_number_purchase(session, number, buyer=me, seller=None, price=price, action="acquired")
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Этот номер уже занят"
+        ) from exc
+    await session.refresh(number)
+    return await render_number(session, number, me, me)
+
+
+@app.post("/api/numbers/{number_id}/buy-listed", response_model=AnonymousNumberOut, tags=["numbers"])
+async def buy_listed_number(
+    number_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> AnonymousNumberOut:
+    """Buy a number another account has listed for resale; the seller is paid their asking price."""
+    number = await session.scalar(
+        select(AnonymousNumber).where(AnonymousNumber.id == number_id).with_for_update()
+    )
+    if number is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Номер не найден")
+    if number.owner_id == me.id:
+        return await render_number(session, number, me, me)
+    if number.status != UsernameStatus.LISTED or number.owner_id is None or number.price is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Номер не выставлен на продажу"
+        )
+    await _refuse_second_number(session, me.id)
+    seller = await session.get(User, number.owner_id)
+    if seller is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Владелец недоступен")
+    price = int(number.price)
+    formatted = format_anonymous_number(number.number)
+    await _settle_number_purchase(
+        session, number, buyer=me, seller=seller, price=price, action="acquired"
+    )
+    _notify_market(
+        session,
+        seller.id,
+        f"Номер {formatted} продан за {price} ★ — покупатель {me.display_name}",
+        actor_id=me.id,
+        entity_id=str(number.id),
+    )
+    await session.commit()
+    await session.refresh(number)
+    return await render_number(session, number, me, me)
+
+
+@app.patch("/api/numbers/{number_id}/listing", response_model=AnonymousNumberOut, tags=["numbers"])
+async def update_number_listing(
+    number_id: uuid.UUID, payload: NumberListingUpdate, session: SessionDep, me: CurrentUser
+) -> AnonymousNumberOut:
+    """List the held number for resale at or above the floor, or take it off the market."""
+    number = await session.scalar(
+        select(AnonymousNumber).where(AnonymousNumber.id == number_id).with_for_update()
+    )
+    if number is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Номер не найден")
+    if number.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим номером"
+        )
+    if payload.for_sale and payload.price is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Укажите цену"
+        )
+    number.status = UsernameStatus.LISTED if payload.for_sale else UsernameStatus.RESERVED
+    number.price = payload.price if payload.for_sale else None
+    number.currency = "STARS"
+    number.listed_at = utcnow() if payload.for_sale else None
+    session.add(
+        NumberOwnershipEvent(
+            number_id=number.id,
+            from_user_id=me.id,
+            to_user_id=me.id,
+            action="listed" if payload.for_sale else "unlisted",
+            price_stars=payload.price,
+        )
+    )
+    await session.commit()
+    await session.refresh(number)
+    return await render_number(session, number, me, me)
+
+
+@app.delete("/api/numbers/{number_id}", response_model=AnonymousNumberOut, tags=["numbers"])
+async def release_number(
+    number_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> AnonymousNumberOut:
+    """Give the number up. It returns to the pool; a curated lot goes back on the showcase."""
+    number = await session.scalar(
+        select(AnonymousNumber).where(AnonymousNumber.id == number_id).with_for_update()
+    )
+    if number is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Номер не найден")
+    if number.owner_id != me.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Вы не владеете этим номером"
+        )
+    number.owner_id = None
+    number.status = UsernameStatus.AVAILABLE
+    # A curated lot returns to the showcase at its floor; a bought-any number just goes free.
+    number.price = ANONYMOUS_NUMBER_FLOOR_STARS if number.curated else None
+    number.listed_at = None
+    number.reserved_at = None
+    session.add(
+        NumberOwnershipEvent(number_id=number.id, from_user_id=me.id, action="released")
+    )
+    await session.commit()
+    await session.refresh(number)
+    return await render_number(session, number, None, me)
+
+
+@app.get("/api/numbers/{number_id}/history", response_model=list[NumberHistoryEvent], tags=["numbers"])
+async def number_history(
+    number_id: uuid.UUID, session: SessionDep, me: CurrentUser
+) -> list[NumberHistoryEvent]:
+    rows = (
+        await session.execute(
+            select(NumberOwnershipEvent)
+            .where(NumberOwnershipEvent.number_id == number_id)
+            .order_by(NumberOwnershipEvent.created_at.desc())
+        )
+    ).scalars().all()
+    if not rows:
+        return []
+    user_ids = {row.from_user_id for row in rows} | {row.to_user_id for row in rows}
+    user_ids.discard(None)
+    names: dict[uuid.UUID, str] = {}
+    if user_ids:
+        found = (
+            await session.execute(select(User.id, User.username).where(User.id.in_(user_ids)))
+        ).all()
+        names = {uid: uname for uid, uname in found}
+    return [
+        NumberHistoryEvent(
+            action=row.action,
+            price_stars=row.price_stars,
+            from_username=names.get(row.from_user_id) if row.from_user_id else None,
+            to_username=names.get(row.to_user_id) if row.to_user_id else None,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
 
 
 async def catalog_metrics(session: AsyncSession) -> tuple[dict[str, int], dict[str, list[int]]]:

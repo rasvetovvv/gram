@@ -79,3 +79,20 @@ export function themeGradient(slug?: string | null): string {
   const theme = profileTheme(slug);
   return `linear-gradient(to right, ${theme.from}, ${theme.to})`;
 }
+
+/**
+ * Pill style for the anonymous +888 number shown above the username. The number's colour follows
+ * the profile colour: a themed profile tints the pill with its gradient (dark text on the accent),
+ * while a default profile keeps a neutral graphite chip so it never looks accidentally coloured.
+ */
+export function numberBadgeStyle(slug?: string | null): CSSProperties {
+  const theme = profileTheme(slug);
+  if (theme.slug === "default") {
+    return { background: "#27272a", color: "#e7e9ea", boxShadow: "inset 0 0 0 1px var(--line)" };
+  }
+  return {
+    backgroundImage: `linear-gradient(to right, ${theme.from}, ${theme.to})`,
+    color: theme.onAccent,
+    boxShadow: `0 0 16px ${theme.to}55`
+  };
+}

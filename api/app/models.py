@@ -1305,6 +1305,58 @@ class UsernameOwnershipEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AnonymousNumber(Base):
+    """
+    A collectible anonymous +888 number, in the spirit of Telegram's anonymous numbers.
+
+    A number is a scarce identifier in a shared pool of every valid +888 XXXX XXXX. Rows are
+    created lazily — the pool is virtual, so only a curated showcase and any number somebody
+    actually buys ever exist here. `number` is the twelve digits after the country code,
+    stored without spaces or the leading +888 (e.g. "88888888"), and is globally unique.
+
+    Only one number may be *held* by an account at a time (enforced in the API, not the schema,
+    because a released or sold row keeps its history with owner_id cleared). Status mirrors the
+    handle market: available (curated, nobody owns it), reserved (owned, kept) and listed
+    (owned, on sale).
+    """
+
+    __tablename__ = "anonymous_numbers"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    number: Mapped[str] = mapped_column(String(15), unique=True, index=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[UsernameStatus] = mapped_column(
+        Enum(UsernameStatus, native_enum=False, length=20), default=UsernameStatus.AVAILABLE
+    )
+    price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    currency: Mapped[str] = mapped_column(String(12), default="STARS")
+    # Whether the number is one of the curated showcase lots the platform sells at its floor.
+    curated: Mapped[bool] = mapped_column(Boolean, default=False)
+    reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    listed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class NumberOwnershipEvent(Base):
+    __tablename__ = "number_ownership_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    number_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("anonymous_numbers.id", ondelete="CASCADE"), index=True
+    )
+    from_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    to_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    action: Mapped[str] = mapped_column(String(30))
+    price_stars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Gift(Base):
     __tablename__ = "gifts"
 

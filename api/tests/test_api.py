@@ -5667,3 +5667,109 @@ async def test_admin_panel_decides_refunds_and_reads_the_money_log(
     # Everybody means everybody, the sender included.
     notices = (await client.get("/api/notifications")).json()
     assert any("Выводы звёзд" in item["text"] for item in notices)
+
+
+@pytest.mark.asyncio
+async def test_anonymous_number_buy_one_per_account_and_shows_on_profile(
+    client: AsyncClient,
+) -> None:
+    # A fresh account (the demo user already holds a seeded number).
+    registered = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "numowner@gram.local",
+            "password": "NumOwner!2026",
+            "username": "numowner",
+            "display_name": "Number Owner",
+        },
+    )
+    assert registered.status_code == 201, registered.text
+    await client.post("/api/stars/top-up", json={"amount": 5000})
+
+    # A valid but unheld number can be bought on demand at the floor.
+    check = await client.get("/api/numbers/check", params={"number": "+888 4444 5555"})
+    assert check.status_code == 200, check.text
+    assert check.json()["available"] is True
+    assert check.json()["price"] == 1000
+
+    bought = await client.post("/api/numbers/buy", json={"number": "+888 4444 5555"})
+    assert bought.status_code == 201, bought.text
+    assert bought.json()["number"] == "44445555"
+    assert bought.json()["formatted"] == "+888 4444 5555"
+    assert bought.json()["is_owned_by_me"] is True
+
+    # It now shows on the owner's profile, above the username.
+    me_profile = await client.get("/api/users/me")
+    assert me_profile.json()["anonymous_number"] == "+888 4444 5555"
+
+    # One per account: a second purchase is refused before any stars move.
+    second = await client.post("/api/numbers/buy", json={"number": "+888 1212 3434"})
+    assert second.status_code == 409, second.text
+    assert "один номер" in second.json()["detail"]
+
+    # A malformed / non-888 number is rejected.
+    bad = await client.post("/api/numbers/buy", json={"number": "+7 900 000 0000"})
+    assert bad.status_code == 422, bad.text
+    short = await client.get("/api/numbers/check", params={"number": "+888 123"})
+    assert short.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_anonymous_number_resale_pays_the_seller(client: AsyncClient) -> None:
+    # Seller is a fresh account (the demo user already holds a seeded number).
+    seller_reg = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "numseller@gram.local",
+            "password": "NumSeller!2026",
+            "username": "numseller",
+            "display_name": "Number Seller",
+        },
+    )
+    assert seller_reg.status_code == 201, seller_reg.text
+    await client.post("/api/stars/top-up", json={"amount": 5000})
+    bought = await client.post("/api/numbers/buy", json={"number": "+888 7777 0000"})
+    assert bought.status_code == 201, bought.text
+    number_id = bought.json()["id"]
+    listed = await client.patch(
+        f"/api/numbers/{number_id}/listing", json={"for_sale": True, "price": 2500}
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["status"] == "listed"
+    assert listed.json()["price"] == 2500
+    seller_before = (await client.get("/api/stars/wallet")).json()["balance"]
+
+    # A listing below the floor is rejected by the schema.
+    too_cheap = await client.patch(
+        f"/api/numbers/{number_id}/listing", json={"for_sale": True, "price": 10}
+    )
+    assert too_cheap.status_code == 422
+
+    # A second account buys the listing; the seller is paid.
+    await client.post("/api/auth/logout")
+    buyer = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "numbuyer@gram.local",
+            "password": "NumBuyer!2026",
+            "username": "numbuyer",
+            "display_name": "Number Buyer",
+        },
+    )
+    assert buyer.status_code == 201, buyer.text
+    await client.post("/api/stars/top-up", json={"amount": 5000})
+    purchased = await client.post(f"/api/numbers/{number_id}/buy-listed")
+    assert purchased.status_code == 200, purchased.text
+    assert purchased.json()["is_owned_by_me"] is True
+    history = await client.get(f"/api/numbers/{number_id}/history")
+    assert history.json()[0]["action"] == "acquired"
+
+    # The seller's wallet grew by the sale price.
+    await client.post("/api/auth/logout")
+    await client.post(
+        "/api/auth/login", json={"identifier": "numseller", "password": "NumSeller!2026"}
+    )
+    seller_after = (await client.get("/api/stars/wallet")).json()["balance"]
+    assert seller_after == seller_before + 2500
+    # And the seller no longer holds it, so they can buy another.
+    assert (await client.get("/api/users/me")).json()["anonymous_number"] is None

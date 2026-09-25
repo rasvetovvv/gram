@@ -227,6 +227,10 @@ class UserProfile(UserCompact):
     paid_subscription_enabled: bool = False
     subscription_price_stars: int | None = None
     is_premium: bool = False
+    # The anonymous +888 number the account holds, if any. Shown above the username on the
+    # profile, formatted for display (e.g. "+888 8888 8888"). Its colour is derived on the
+    # client from profile_color, so nothing about the colour needs to travel here.
+    anonymous_number: str | None = None
 
 
 class UserSettingsOut(ApiModel):
@@ -1902,6 +1906,55 @@ class UsernameTransfer(BaseModel):
     """Hand a handle to somebody without a price, the way a gift is handed over."""
 
     to_username: UsernameInput
+
+
+# The anonymous-number floor and the shape of a valid +888 number.
+#
+# Every number is +888 followed by eight digits (matching Telegram's anonymous-number format
+# +888 XXXX XXXX). The floor keeps the market from being flooded with throwaway lots and matches
+# the curated showcase price.
+ANONYMOUS_NUMBER_PREFIX = "888"
+ANONYMOUS_NUMBER_BODY_DIGITS = 8
+ANONYMOUS_NUMBER_FLOOR_STARS = 1000
+
+
+class AnonymousNumberOut(ApiModel):
+    id: uuid.UUID
+    # Bare digits after the country code, e.g. "88888888".
+    number: str
+    # Ready to print, e.g. "+888 8888 8888".
+    formatted: str
+    owner: UserCompact | None
+    owner_username: str
+    status: UsernameStatus
+    price: int | None
+    currency: str
+    curated: bool = False
+    is_owned_by_me: bool
+    created_at: datetime
+    acquired_at: datetime
+    listed_at: datetime | None = None
+    last_action: str | None = None
+    last_action_at: datetime | None = None
+
+
+class AnonymousNumberPurchase(BaseModel):
+    """Buy a specific valid +888 number that nobody holds yet (the buy-any-valid path)."""
+
+    number: Annotated[str, Field(min_length=1, max_length=20)]
+
+
+class NumberListingUpdate(BaseModel):
+    for_sale: bool
+    price: Annotated[int | None, Field(default=None, ge=ANONYMOUS_NUMBER_FLOOR_STARS, le=100_000_000)]
+
+
+class NumberHistoryEvent(ApiModel):
+    action: str
+    price_stars: int | None = None
+    from_username: str | None = None
+    to_username: str | None = None
+    created_at: datetime
 
 
 class CommunityUsernameAttach(BaseModel):

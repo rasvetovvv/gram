@@ -1368,3 +1368,37 @@ html[data-chat-wallpaper="constellation"] .chat-wallpaper {
 }
 
 html[data-chat-pattern="off"] .chat-wallpaper::after { display: none; }
+
+/* ─── Anonymous +888 number badge ────────────────────────────────────────────────
+   The number pill above a username. Digits are tabular so a themed gradient does not
+   make them jitter, and a slow sheen sweeps across a themed pill once on mount to make
+   a bought number feel like the collectible it is. Neutral (default-theme) pills stay
+   still — a graphite chip that shimmered would read as a loading skeleton. */
+.number-badge {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .number-badge[data-themed="true"] {
+    position: relative;
+    overflow: hidden;
+  }
+  .number-badge[data-themed="true"]::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      120deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.45) 50%,
+      transparent 100%
+    );
+    transform: translateX(-120%);
+    animation: numberSheen 2.6s var(--ease-out) 0.4s;
+  }
+}
+
+@keyframes numberSheen {
+  to { transform: translateX(120%); }
+}
