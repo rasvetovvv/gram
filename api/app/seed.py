@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import giftart
 from app.config import DEMO_EMAIL, DEMO_PASSWORD, DEMO_USERNAME, FOUNDING_ADMINS
+from app.schemas import ANONYMOUS_NUMBER_FLOOR_STARS
 from app.gifts import (
     DESIGN_BY_SLUG,
     DESIGNS,
@@ -40,6 +41,8 @@ from app.models import (
     StarLedger,
     StarWallet,
     User,
+    AnonymousNumber,
+    NumberOwnershipEvent,
     UsernameAsset,
     UsernameOwnershipEvent,
     UsernameStatus,
@@ -674,7 +677,47 @@ async def _seed_assets(session: AsyncSession, users: dict[str, User], now: datet
         else:
             asset.currency = "STARS"
 
-# A demo item needs a design, a serial, an owner and a price if it is listed. Its model,
+    # A curated showcase of "nice" +888 numbers at the platform floor. The pool is virtual, so
+    # this handful is the only seed; every other valid number is bought on demand. One is put in
+    # a demo account's hands so a profile shows a held number, one is listed for resale.
+    number_specs = [
+        ("88888888", None, UsernameStatus.AVAILABLE, ANONYMOUS_NUMBER_FLOOR_STARS, None),
+        ("80000008", None, UsernameStatus.AVAILABLE, ANONYMOUS_NUMBER_FLOOR_STARS, None),
+        ("12341234", None, UsernameStatus.AVAILABLE, ANONYMOUS_NUMBER_FLOOR_STARS, None),
+        ("70007000", None, UsernameStatus.AVAILABLE, ANONYMOUS_NUMBER_FLOOR_STARS, None),
+        ("13371337", "leon", UsernameStatus.RESERVED, None, None),
+        ("20002000", "artem", UsernameStatus.LISTED, None, 4200),
+    ]
+    for number, owner_name, state, floor, sale_price in number_specs:
+        existing = await session.scalar(
+            select(AnonymousNumber).where(AnonymousNumber.number == number)
+        )
+        if existing is not None:
+            continue
+        row = AnonymousNumber(
+            id=demo_id(f"number:{number}"),
+            number=number,
+            owner_id=users[owner_name].id if owner_name else None,
+            status=state,
+            price=(sale_price if state == UsernameStatus.LISTED else floor),
+            currency="STARS",
+            curated=True,
+            reserved_at=now - timedelta(days=30) if owner_name else None,
+            listed_at=now - timedelta(days=2) if state == UsernameStatus.LISTED else None,
+        )
+        session.add(row)
+        await session.flush()
+        if owner_name:
+            session.add(
+                NumberOwnershipEvent(
+                    number_id=row.id,
+                    to_user_id=users[owner_name].id,
+                    action="acquired",
+                    created_at=row.reserved_at or now,
+                )
+            )
+
+
 # backdrop and symbol are drawn from the design's real pools by `_pick`, so no invented variant
 # name can end up in the database and the demo set stays valid as the catalogue is re-imported.
 # (key, design slug, serial, owner, value, days held, price if listed)

@@ -10,6 +10,9 @@ import type {
   AdminPayout,
   AdminRefund,
   AdminStarOrder,
+  AnonymousNumber,
+  NumberCheck,
+  NumberHistoryEvent,
   AdminUser,
   ApiErrorShape,
   AuthSession,
@@ -856,6 +859,26 @@ export const api = {
     }),
   usernameHistory: (id: string) =>
     request<UsernameHistoryEvent[]>(`/api/usernames/${id}/history`),
+  // Anonymous +888 numbers: a market that mirrors usernames.
+  numbers: () => request<AnonymousNumber[]>("/api/numbers"),
+  checkNumber: (number: string) =>
+    request<NumberCheck>(`/api/numbers/check?number=${encodeURIComponent(number)}`),
+  buyNumber: (number: string) =>
+    request<AnonymousNumber>("/api/numbers/buy", {
+      method: "POST",
+      body: JSON.stringify({ number })
+    }),
+  buyListedNumber: (id: string) =>
+    request<AnonymousNumber>(`/api/numbers/${id}/buy-listed`, { method: "POST" }),
+  updateNumberListing: (id: string, forSale: boolean, price?: number) =>
+    request<AnonymousNumber>(`/api/numbers/${id}/listing`, {
+      method: "PATCH",
+      body: JSON.stringify({ for_sale: forSale, price })
+    }),
+  releaseNumber: (id: string) =>
+    request<AnonymousNumber>(`/api/numbers/${id}`, { method: "DELETE" }),
+  numberHistory: (id: string) =>
+    request<NumberHistoryEvent[]>(`/api/numbers/${id}/history`),
   purchaseUsername: (id: string) =>
     request<UsernameAsset>(`/api/usernames/${id}/purchase`, { method: "POST" }),
   /** Say once that a handle is not for sale — and refuse the bids already standing on it. */

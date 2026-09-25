@@ -108,6 +108,8 @@ export type User = {
   follow_requested?: boolean;
   /** Only on my own profile: how many people are waiting for an answer. */
   follow_requests_count?: number;
+  /** The anonymous +888 number the account holds, formatted (e.g. "+888 8888 8888"). */
+  anonymous_number?: string | null;
 };
 
 
@@ -457,6 +459,41 @@ export type UsernameAsset = {
 };
 
 /** A bid on a handle. The stars are held from the moment it is made. */
+export type AnonymousNumber = {
+  id: string;
+  /** Bare body digits after the country code, e.g. "88888888". */
+  number: string;
+  /** Ready to print, e.g. "+888 8888 8888". */
+  formatted: string;
+  owner_username: string;
+  owner?: User | null;
+  status: "available" | "reserved" | "listed";
+  price?: number | null;
+  currency?: string;
+  curated?: boolean;
+  is_owned_by_me?: boolean;
+  created_at: string;
+  acquired_at: string;
+  listed_at?: string | null;
+  last_action?: string | null;
+  last_action_at?: string | null;
+};
+
+export type NumberHistoryEvent = {
+  action: string;
+  price_stars?: number | null;
+  from_username?: string | null;
+  to_username?: string | null;
+  created_at: string;
+};
+
+export type NumberCheck = {
+  number: string;
+  formatted: string;
+  available: boolean;
+  price: number | null;
+};
+
 export type UsernameOffer = {
   id: string;
   asset_id: string;
