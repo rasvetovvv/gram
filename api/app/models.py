@@ -1561,3 +1561,71 @@ class AdminAction(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
+
+
+# ─── End-to-end encryption key directory ─────────────────────────────────────────────────────
+#
+# The server is a blind key directory and ciphertext relay for E2EE (secret) chats. Every column
+# below holds a PUBLIC key or opaque ciphertext. No private key and no plaintext ever reaches
+# these tables — that is the whole point: a database dump reveals who has a device and their
+# public keys, never anything readable. Compare to `Message.content`, which stays plaintext for
+# ordinary chats where server search, moderation and the bot must keep working.
+
+
+class DeviceIdentity(Base):
+    """One end-to-end encryption device belonging to a user.
+
+    A user may have several (one per browser/device). The identity DH key and the Ed25519 signing
+    key are long-lived public halves; the private halves live only on the device. `signed_prekey`
+    is rotated periodically and signed by the signing key so a fetcher can trust it.
+    """
+
+    __tablename__ = "e2ee_devices"
+    __table_args__ = (
+        UniqueConstraint("user_id", "device_public_id", name="uq_e2ee_device"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # A client-chosen stable id for this device, so re-publishing updates rather than duplicates.
+    device_public_id: Mapped[str] = mapped_column(String(64))
+    # Base64 X25519 identity public key used in the X3DH DH combinations.
+    identity_dh_public: Mapped[str] = mapped_column(String(64))
+    # Base64 Ed25519 public key that signs this device's prekey bundle.
+    identity_signing_public: Mapped[str] = mapped_column(String(64))
+    signed_prekey_id: Mapped[int] = mapped_column(Integer)
+    signed_prekey_public: Mapped[str] = mapped_column(String(64))
+    signed_prekey_signature: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class OneTimePreKey(Base):
+    """A single-use X25519 prekey (public half only), consumed atomically by one initiator.
+
+    The pool lets someone start a secret chat with an offline device while retaining strong
+    forward secrecy. `claimed_by` / `claimed_at` mark consumption; the row is kept (not deleted)
+    so a replay of the same first message is detectably re-using a spent key rather than silently
+    succeeding.
+    """
+
+    __tablename__ = "e2ee_one_time_prekeys"
+    __table_args__ = (
+        UniqueConstraint("device_id", "prekey_id", name="uq_e2ee_otk"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("e2ee_devices.id", ondelete="CASCADE"), index=True
+    )
+    prekey_id: Mapped[int] = mapped_column(Integer)
+    prekey_public: Mapped[str] = mapped_column(String(64))
+    claimed_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

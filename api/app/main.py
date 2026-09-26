@@ -93,6 +93,16 @@ from app.email_auth import (
     new_email_code,
     send_auth_code,
 )
+from app.e2ee import (
+    DeviceBundleList,
+    DeviceBundleUpload,
+    PreKeyCount,
+    PreKeyReplenish,
+    fetch_and_consume_bundles,
+    prekey_counts,
+    publish_device_bundle,
+    replenish_one_time_prekeys,
+)
 from app.gifts import (
     CATEGORIES,
     CATEGORY_LABELS,
@@ -6684,6 +6694,70 @@ async def create_secret_chat(username: str, session: SessionDep, me: CurrentUser
     return await render_chat_summary(session, chat, me)
 
 
+# ─── End-to-end encryption key directory (blind server) ──────────────────────────────────────
+#
+# These routes let a device publish its PUBLIC prekey bundle and let an initiator fetch-and-consume
+# a peer's bundle to start a Signal-style (X3DH + Double Ratchet) session. The server stores and
+# relays only public keys; it never sees a private key or any plaintext. Secret-chat message bodies
+# travel as ordinary `content` — but that content is ciphertext the client produced, and the server
+# has no key to read it.
+
+
+@app.put("/api/e2ee/devices", response_model=DetailResponse, tags=["e2ee"])
+async def publish_e2ee_bundle(
+    payload: DeviceBundleUpload, session: SessionDep, me: CurrentUser
+) -> DetailResponse:
+    """Publish or update this device's public prekey bundle (idempotent per device id)."""
+    try:
+        await publish_device_bundle(session, me.id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return DetailResponse(detail="ok")
+
+
+@app.post("/api/e2ee/devices/{device_public_id}/prekeys", response_model=PreKeyCount, tags=["e2ee"])
+async def replenish_e2ee_prekeys(
+    device_public_id: str, payload: PreKeyReplenish, session: SessionDep, me: CurrentUser
+) -> PreKeyCount:
+    """Top up this device's one-time prekey pool as it is consumed by other users."""
+    try:
+        available = await replenish_one_time_prekeys(
+            session, me.id, device_public_id, payload.one_time_prekeys
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Устройство не найдено") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return PreKeyCount(device_public_id=device_public_id, available_one_time_prekeys=available)
+
+
+@app.get("/api/e2ee/prekeys", response_model=list[PreKeyCount], tags=["e2ee"])
+async def my_e2ee_prekey_counts(session: SessionDep, me: CurrentUser) -> list[PreKeyCount]:
+    """How many unclaimed one-time prekeys each of my devices still has (top-up signal)."""
+    return await prekey_counts(session, me.id)
+
+
+@app.post("/api/e2ee/sessions/{username}", response_model=DeviceBundleList, tags=["e2ee"])
+async def start_e2ee_session(username: str, session: SessionDep, me: CurrentUser) -> DeviceBundleList:
+    """Fetch a peer's device bundles, consuming one one-time prekey per device.
+
+    This is a mutating call by design: each returned one-time prekey is atomically marked consumed
+    so no two initiators ever receive the same one. The response contains only public key material.
+    """
+    target = await resolve_user(session, username)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+    if await _blocked_between(session, me.id, target.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=BLOCKED_CHAT_DETAIL)
+    bundles = await fetch_and_consume_bundles(session, target.id, me.id)
+    if not bundles:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="У пользователя нет устройства с ключами шифрования",
+        )
+    return DeviceBundleList(devices=bundles)
+
+
 @app.post("/api/chats/saved", response_model=ChatSummary, tags=["chats"])
 async def open_saved_chat(session: SessionDep, me: CurrentUser) -> ChatSummary:
     """Избранное is a chat with oneself, so saving a note needs no second participant."""
@@ -7542,6 +7616,10 @@ async def create_chat_message(  # noqa: C901, PLR0913
         # Whatever has outlived the window goes before the new message arrives, so the thread
         # is never briefly longer than the chat's own rule allows.
         await purge_expired_messages(session, chat)
+    # A secret chat is end-to-end encrypted: `content` is opaque ciphertext the server cannot read,
+    # so it must never leak into a notification preview, a search index or the bot. The preview is
+    # replaced with a neutral marker while the ciphertext is still stored and delivered verbatim.
+    is_secret = chat is not None and chat.kind == "secret"
     message = Message(
         id=uuid.uuid4(),
         chat_id=chat_id,
@@ -7583,12 +7661,15 @@ async def create_chat_message(  # noqa: C901, PLR0913
     else:
         wordless = ""
     for recipient_id in recipients:
+        # A secret-chat body is ciphertext; showing it in a notification would both be useless and
+        # defeat the point. The preview says only that an encrypted message arrived.
+        preview = "Зашифрованное сообщение" if is_secret else (content[:120] or wordless)
         session.add(
             Notification(
                 user_id=recipient_id,
                 actor_id=me.id,
                 kind=NotificationKind.MESSAGE,
-                text=f"{me.display_name}: {content[:120] or wordless}",
+                text=f"{me.display_name}: {preview}",
                 entity_id=str(chat_id),
             )
         )
