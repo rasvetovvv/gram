@@ -1366,3 +1366,37 @@ export type AdminDesign = {
   backdrops_count?: number;
   symbols_count?: number;
 };
+
+// ─── End-to-end encryption (secret chats) ───────────────────────────────────
+// The server sees only these PUBLIC values; private keys never leave the device.
+export type E2eePreKey = {
+  id: number;
+  public_key: string;
+};
+
+export type E2eeBundleUpload = {
+  device_public_id: string;
+  identity_dh_public: string;
+  identity_signing_public: string;
+  signed_prekey_id: number;
+  signed_prekey_public: string;
+  signed_prekey_signature: string;
+  one_time_prekeys: E2eePreKey[];
+};
+
+export type E2eePreKeyCount = {
+  device_public_id: string;
+  available_one_time_prekeys: number;
+};
+
+export type E2eeFetchedBundle = {
+  user_id: string;
+  device_public_id: string;
+  identity_dh_public: string;
+  identity_signing_public: string;
+  signed_prekey_id: number;
+  signed_prekey_public: string;
+  signed_prekey_signature: string;
+  one_time_prekey_id: number | null;
+  one_time_prekey_public: string | null;
+};

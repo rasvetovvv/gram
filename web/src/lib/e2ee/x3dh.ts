@@ -18,7 +18,7 @@ import {
   sign,
   verify,
   type KeyPair
-} from "./primitives.js";
+} from "./primitives";
 
 const X3DH_INFO = new TextEncoder().encode("GRAM-E2EE-v1/x3dh");
 // A 32-byte 0xFF prefix on the DH concatenation domain-separates X25519 output from any other

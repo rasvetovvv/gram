@@ -7,17 +7,18 @@ import {
   generateDhKeyPair,
   hkdfSha256,
   secureRandom
-} from "./primitives.js";
-import { createDevice, consumeOneTimePreKey, publishableBundle } from "./device.js";
-import { InitiatorSession, ResponderSession } from "./session.js";
+} from "./primitives";
+import { createDevice, consumeOneTimePreKey, publishableBundle } from "./device";
+import { InitiatorSession, ResponderSession } from "./session";
+import type { InitiatorSessionState, ResponderSessionState } from "./session";
 import {
   createSenderKey,
   distributionFor,
   encryptGroupMessage,
   decryptGroupMessage,
   importDistribution
-} from "./group.js";
-import type { KeyPair } from "./primitives.js";
+} from "./group";
+import type { KeyPair } from "./primitives";
 
 describe("e2ee primitives", () => {
   it("agrees on the same X25519 shared secret from both sides", () => {
@@ -127,6 +128,23 @@ describe("1:1 X3DH + Double Ratchet session", () => {
     const first = initiator.encrypt("private");
     const resolveOtk = (id: number): KeyPair | null => consumeOneTimePreKey(mallory, id);
     expect(() => ResponderSession.accept(mallory.material, first, resolveOtk)).toThrow();
+  });
+
+  it("survives serialize/restore of both sessions (page reload)", () => {
+    const { bob, initiator, resolveOtk } = pair();
+    const first = initiator.encrypt("before reload");
+    const { session: responder } = ResponderSession.accept(bob.material, first, resolveOtk);
+
+    // Round-trip both sessions through their persisted state, as a reload would.
+    const initiatorState: InitiatorSessionState = initiator.serialize();
+    const responderState: ResponderSessionState = responder.serialize();
+    const initiator2 = InitiatorSession.restore(initiatorState);
+    const responder2 = ResponderSession.restore(responderState);
+
+    const afterA = initiator2.encrypt("after reload a");
+    expect(responder2.decrypt(afterA)).toBe("after reload a");
+    const afterB = responder2.encrypt("after reload b");
+    expect(initiator2.decrypt(afterB)).toBe("after reload b");
   });
 
   it("works without any one-time prekey (empty pool)", () => {

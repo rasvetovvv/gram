@@ -11,8 +11,8 @@ import {
   generateSigningKeyPair,
   toBase64,
   type KeyPair
-} from "./primitives.js";
-import { buildBundle, signPreKey, type DeviceKeyMaterial, type PublishedBundle } from "./x3dh.js";
+} from "./primitives";
+import { buildBundle, signPreKey, type DeviceKeyMaterial, type PublishedBundle } from "./x3dh";
 
 export interface OneTimePreKey {
   readonly id: number;

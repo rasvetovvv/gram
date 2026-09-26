@@ -16,16 +16,38 @@ import {
   aeadSeal,
   concatBytes,
   diffieHellman,
+  fromBase64 as unb64,
   generateDhKeyPair,
   hkdfSha256,
   hmacSha256,
+  toBase64 as b64,
   type KeyPair
-} from "./primitives.js";
+} from "./primitives";
 
 const ROOT_INFO = new TextEncoder().encode("GRAM-E2EE-v1/root");
 const MESSAGE_KEY_SEED = new Uint8Array([0x01]);
 const CHAIN_KEY_SEED = new Uint8Array([0x02]);
 const MAX_SKIP = 1000; // hard cap on skipped message keys retained per chain (DoS guard)
+
+interface SerializedChain {
+  key: string;
+  index: number;
+}
+
+/** Full serialized ratchet state. SECRET — device-local encrypted storage only, never the server. */
+export interface RatchetState {
+  rootKey: string;
+  selfPrivate: string;
+  selfPublic: string;
+  remotePublic: string | null;
+  sendingChain: SerializedChain | null;
+  receivingChain: SerializedChain | null;
+  sentCount: number;
+  receivedCount: number;
+  previousSendingChainLength: number;
+  associatedData: string;
+  skipped: Record<string, string>;
+}
 
 export interface RatchetHeader {
   readonly dhPublic: Uint8Array; // sender's current ratchet public key
@@ -222,5 +244,52 @@ export class DoubleRatchet {
     const [rootAfterSend, sendingChainKey] = this.kdfRoot(sendDh);
     this.rootKey = rootAfterSend;
     this.sendingChain = { key: sendingChainKey, index: 0 };
+  }
+
+  /**
+   * Serialize the full mutable ratchet state so a session survives a page reload. Every value is
+   * base64. This is SECRET state (it contains live chain keys and the self private key) and must
+   * only ever be written to device-local encrypted-at-rest storage, never sent to the server.
+   */
+  serialize(): RatchetState {
+    const skipped: Record<string, string> = {};
+    for (const [id, key] of this.skipped) skipped[id] = b64(key);
+    return {
+      rootKey: b64(this.rootKey),
+      selfPrivate: b64(this.selfKeyPair.privateKey),
+      selfPublic: b64(this.selfKeyPair.publicKey),
+      remotePublic: this.remotePublic ? b64(this.remotePublic) : null,
+      sendingChain: this.sendingChain
+        ? { key: b64(this.sendingChain.key), index: this.sendingChain.index }
+        : null,
+      receivingChain: this.receivingChain
+        ? { key: b64(this.receivingChain.key), index: this.receivingChain.index }
+        : null,
+      sentCount: this.sentCount,
+      receivedCount: this.receivedCount,
+      previousSendingChainLength: this.previousSendingChainLength,
+      associatedData: b64(this.associatedData),
+      skipped
+    };
+  }
+
+  static deserialize(state: RatchetState): DoubleRatchet {
+    const ratchet = new DoubleRatchet(
+      unb64(state.rootKey),
+      { privateKey: unb64(state.selfPrivate), publicKey: unb64(state.selfPublic) },
+      state.remotePublic ? unb64(state.remotePublic) : null,
+      unb64(state.associatedData)
+    );
+    ratchet.sendingChain = state.sendingChain
+      ? { key: unb64(state.sendingChain.key), index: state.sendingChain.index }
+      : null;
+    ratchet.receivingChain = state.receivingChain
+      ? { key: unb64(state.receivingChain.key), index: state.receivingChain.index }
+      : null;
+    ratchet.sentCount = state.sentCount;
+    ratchet.receivedCount = state.receivedCount;
+    ratchet.previousSendingChainLength = state.previousSendingChainLength;
+    for (const [id, key] of Object.entries(state.skipped)) ratchet.skipped.set(id, unb64(key));
+    return ratchet;
   }
 }

@@ -30,7 +30,7 @@ import {
   fromBase64,
   verify,
   type KeyPair
-} from "./primitives.js";
+} from "./primitives";
 
 const CHAIN_ADVANCE_SEED = new Uint8Array([0x02]);
 const MESSAGE_KEY_SEED = new Uint8Array([0x01]);

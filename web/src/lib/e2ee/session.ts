@@ -5,16 +5,31 @@
 // server can decrypt. The FIRST message additionally carries the initiator's X3DH prelude so the
 // responder can complete the handshake with no prior round trip.
 
-import { DoubleRatchet, type RatchetMessage } from "./ratchet.js";
+import { DoubleRatchet, type RatchetMessage, type RatchetState } from "./ratchet";
 import {
   initiateX3DH,
   respondX3DH,
   type FetchedBundle,
   type DeviceKeyMaterial
-} from "./x3dh.js";
-import { fromBase64, toBase64, type KeyPair } from "./primitives.js";
+} from "./x3dh";
+import { fromBase64, toBase64, type KeyPair } from "./primitives";
 
 export const E2EE_WIRE_VERSION = 1;
+
+/** SECRET persisted session state (contains live ratchet keys). Device-local storage only. */
+export interface InitiatorSessionState {
+  role: "initiator";
+  ratchet: RatchetState;
+  preludeSent: boolean;
+  prelude: Prelude;
+}
+
+export interface ResponderSessionState {
+  role: "responder";
+  ratchet: RatchetState;
+}
+
+export type SessionState = InitiatorSessionState | ResponderSessionState;
 
 /** X3DH prelude present only on the first ciphertext of a session. */
 interface Prelude {
@@ -62,9 +77,9 @@ const textDecoder = new TextDecoder();
 
 /** Initiator session — created once the initiator has fetched-and-consumed the peer bundle. */
 export class InitiatorSession {
-  private readonly ratchet: DoubleRatchet;
+  private ratchet: DoubleRatchet;
   private preludeSent = false;
-  private readonly prelude: Prelude;
+  private prelude: Prelude;
 
   constructor(ownIdentityDh: KeyPair, ownIdentitySigningPublic: Uint8Array, bundle: FetchedBundle) {
     const x3dh = initiateX3DH(ownIdentityDh, ownIdentitySigningPublic, bundle);
@@ -90,6 +105,19 @@ export class InitiatorSession {
 
   decrypt(envelope: EncryptedEnvelope): string {
     return textDecoder.decode(this.ratchet.decrypt(deserialize(envelope)));
+  }
+
+  /** SECRET session state for device-local persistence. Never send to the server. */
+  serialize(): InitiatorSessionState {
+    return { role: "initiator", ratchet: this.ratchet.serialize(), preludeSent: this.preludeSent, prelude: this.prelude };
+  }
+
+  static restore(state: InitiatorSessionState): InitiatorSession {
+    const session: InitiatorSession = Object.create(InitiatorSession.prototype);
+    session.ratchet = DoubleRatchet.deserialize(state.ratchet);
+    session.preludeSent = state.preludeSent;
+    session.prelude = state.prelude;
+    return session;
   }
 }
 
@@ -143,5 +171,14 @@ export class ResponderSession {
 
   decrypt(envelope: EncryptedEnvelope): string {
     return textDecoder.decode(this.ratchet.decrypt(deserialize(envelope)));
+  }
+
+  /** SECRET session state for device-local persistence. Never send to the server. */
+  serialize(): ResponderSessionState {
+    return { role: "responder", ratchet: this.ratchet.serialize() };
+  }
+
+  static restore(state: ResponderSessionState): ResponderSession {
+    return new ResponderSession(DoubleRatchet.deserialize(state.ratchet));
   }
 }
