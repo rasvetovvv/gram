@@ -703,6 +703,11 @@ class Chat(Base):
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # A secret group is end-to-end encrypted with per-member sender keys: its message bodies are
+    # ciphertext the server cannot read. `kind` stays "group" so every existing group query and
+    # view keeps working; this flag only gates the no-plaintext-preview path and the client's
+    # sender-key fan-out. Non-group chats carry their secrecy in `kind == "secret"` instead.
+    is_secret: Mapped[bool] = mapped_column(Boolean, default=False)
     # A public group is one anybody with its link may walk into; a private one is entered only by
     # the owner's invitation. The code *is* the link, so clearing it closes the door on every
     # link already sent.

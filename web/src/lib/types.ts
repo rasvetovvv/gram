@@ -284,6 +284,9 @@ export type Chat = {
   title?: string | null;
   is_group?: boolean;
   kind?: ChatKind;
+  // Groups only: whether the group is end-to-end encrypted (per-member sender keys). A 1:1 secret
+  // chat carries its secrecy in `kind === "secret"` instead.
+  is_secret?: boolean;
   avatar_url?: string | null;
   members_count?: number;
   last_message: string;

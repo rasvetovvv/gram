@@ -6259,6 +6259,7 @@ async def render_chat_summary(session: AsyncSession, chat: Chat, me: User) -> Ch
         title=title,
         is_group=chat.is_group,
         kind=kind,
+        is_secret=bool(chat.is_secret),
         avatar_url=chat.avatar_url,
         members_count=len(members),
         participant=compact_user(peer, is_premium=peer.id in peer_premium) if peer else None,
@@ -6792,12 +6793,20 @@ async def create_group_chat(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Добавьте хотя бы одного участника"
         )
+    # A secret group has a fixed membership to distribute sender keys to, so it cannot also be an
+    # open-link public group — the two are mutually exclusive by construction.
+    if payload.is_secret and payload.is_public:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Секретная группа не может быть публичной",
+        )
     chat = Chat(
         is_group=True,
         kind="group",
         title=payload.title,
         avatar_url=payload.avatar_url,
         owner_id=me.id,
+        is_secret=payload.is_secret,
         is_public=payload.is_public,
         # A public group is only public because of its link, so it is minted with one.
         invite_code=_new_invite_code() if payload.is_public else None,
@@ -6812,7 +6821,9 @@ async def create_group_chat(
             chat_id=chat.id,
             sender_id=me.id,
             content=(
-                f"Группа «{payload.title}» создана"
+                f"Секретная группа «{payload.title}» создана — сквозное шифрование"
+                if payload.is_secret
+                else f"Группа «{payload.title}» создана"
                 if not payload.is_public
                 else f"Публичная группа «{payload.title}» создана — вход по ссылке"
             ),
@@ -7619,7 +7630,8 @@ async def create_chat_message(  # noqa: C901, PLR0913
     # A secret chat is end-to-end encrypted: `content` is opaque ciphertext the server cannot read,
     # so it must never leak into a notification preview, a search index or the bot. The preview is
     # replaced with a neutral marker while the ciphertext is still stored and delivered verbatim.
-    is_secret = chat is not None and chat.kind == "secret"
+    # Both a 1:1 secret chat (kind == "secret") and a secret group (is_secret) qualify.
+    is_secret = chat is not None and (chat.kind == "secret" or bool(chat.is_secret))
     message = Message(
         id=uuid.uuid4(),
         chat_id=chat_id,

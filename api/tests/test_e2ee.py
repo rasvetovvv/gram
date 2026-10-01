@@ -154,6 +154,45 @@ async def test_secret_chat_stores_ciphertext_verbatim_and_no_plaintext_preview(
 
 
 @pytest.mark.asyncio
+async def test_secret_group_hides_plaintext_preview_and_sets_flag(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    await _login(client, "leon")
+    created = await client.post(
+        "/api/chats/groups",
+        json={"title": "Тайный круг", "members": ["artem"], "is_secret": True},
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["is_secret"] is True
+    assert body["is_group"] is True
+    chat_id = body["id"]
+
+    ciphertext = base64.b64encode(b"group-ciphertext-blob").decode()
+    sent = await client.post(f"/api/chats/{chat_id}/messages", json={"content": ciphertext})
+    assert sent.status_code == 201, sent.text
+    assert sent.json()["content"] == ciphertext  # relayed verbatim
+
+    async with session_factory() as session:
+        note = await session.scalar(
+            select(Notification).where(Notification.kind == NotificationKind.MESSAGE)
+        )
+        assert note is not None
+        assert ciphertext not in note.text
+        assert "Зашифрованное сообщение" in note.text
+
+
+@pytest.mark.asyncio
+async def test_secret_group_cannot_be_public(client: AsyncClient) -> None:
+    await _login(client, "leon")
+    response = await client.post(
+        "/api/chats/groups",
+        json={"title": "x", "members": ["artem"], "is_secret": True, "is_public": True},
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_bundle_rejects_non_base64_key_material(
     client: AsyncClient,
 ) -> None:

@@ -683,10 +683,10 @@ export const api = {
       method: "POST"
     }),
   savedChat: () => request<Chat>("/api/chats/saved", { method: "POST" }),
-  createGroupChat: (title: string, members: string[], isPublic = false) =>
+  createGroupChat: (title: string, members: string[], isPublic = false, isSecret = false) =>
     request<Chat>("/api/chats/groups", {
       method: "POST",
-      body: JSON.stringify({ title, members, is_public: isPublic })
+      body: JSON.stringify({ title, members, is_public: isPublic, is_secret: isSecret })
     }),
   /** Open a group to its link, or close it — the link dies with the group's privacy. */
   updateGroupAccess: (chatId: string, isPublic: boolean) =>
