@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Chat, Message } from "@/lib/types";
 import { e2eeManager } from "@/lib/e2ee/manager";
+import type { VerificationStatus } from "@/lib/e2ee/fingerprint";
 
 /**
  * Wires a secret chat to the E2EE engine. For a chat whose `kind` is `secret`, message bodies on
@@ -27,6 +28,10 @@ export function useSecretChat(
   // The safety number for this chat, recomputed whenever a session first appears or its keys change.
   const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
   const [safetyQr, setSafetyQr] = useState<string | null>(null);
+  // Whether the user confirmed the peer's key, and whether it still matches ("changed" = warn).
+  const [verification, setVerification] = useState<VerificationStatus>("unverified");
+  // Bumped by markVerified/reVerify so the status effect re-reads the persisted trust state.
+  const [verifyEpoch, setVerifyEpoch] = useState(0);
 
   // Ensure this browser has a published device as soon as a secret chat is opened.
   useEffect(() => {
@@ -79,30 +84,34 @@ export function useSecretChat(
         if (!cancelled) {
           setSafetyNumber(null);
           setSafetyQr(null);
+          setVerification("unverified");
         }
         return;
       }
       const manager = e2eeManager(currentUserId);
       try {
-        const [number, qr] = await Promise.all([
+        const [number, qr, status] = await Promise.all([
           manager.safetyNumber(chatId),
-          manager.safetyNumberQr(chatId)
+          manager.safetyNumberQr(chatId),
+          manager.verificationStatus(chatId)
         ]);
         if (!cancelled) {
           setSafetyNumber(number);
           setSafetyQr(qr);
+          setVerification(status);
         }
       } catch {
         if (!cancelled) {
           setSafetyNumber(null);
           setSafetyQr(null);
+          setVerification("unverified");
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [isSecret, currentUserId, chatId, messages]);
+  }, [isSecret, currentUserId, chatId, messages, verifyEpoch]);
 
   // Replace ciphertext with the decrypted body for rendering, leaving service messages untouched.
   const displayMessages = useMemo(() => {
@@ -123,5 +132,28 @@ export function useSecretChat(
     [isSecret, currentUserId, chatId, peerUsername]
   );
 
-  return { isSecret, displayMessages, encryptForSend, safetyNumber, safetyQr };
+  /** Confirm the peer's current key as verified (the safety number matched out of band). */
+  const markVerified = useCallback(async () => {
+    if (!currentUserId || !chatId) return;
+    await e2eeManager(currentUserId).markVerified(chatId);
+    setVerifyEpoch((epoch) => epoch + 1);
+  }, [currentUserId, chatId]);
+
+  /** Drop a previous verification so the user can re-confirm (e.g. after a key change). */
+  const reVerify = useCallback(async () => {
+    if (!currentUserId || !chatId) return;
+    await e2eeManager(currentUserId).clearVerification(chatId);
+    setVerifyEpoch((epoch) => epoch + 1);
+  }, [currentUserId, chatId]);
+
+  return {
+    isSecret,
+    displayMessages,
+    encryptForSend,
+    safetyNumber,
+    safetyQr,
+    verification,
+    markVerified,
+    reVerify
+  };
 }

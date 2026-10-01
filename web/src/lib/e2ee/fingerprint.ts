@@ -88,4 +88,22 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length;
 }
 
+/**
+ * Trust state of a secret chat's peer key:
+ *   - "unverified": the user has never confirmed this peer's key out of band;
+ *   - "verified":   the user confirmed it and the current key still matches;
+ *   - "changed":    the user confirmed a key before, but the peer's key is now DIFFERENT — a new
+ *                   device, a re-install, or a man-in-the-middle. This is the state to warn about.
+ * All inputs are base64 identity public keys (public values); nothing secret is compared here.
+ */
+export type VerificationStatus = "unverified" | "verified" | "changed";
+
+export function verificationStatus(
+  verifiedPeerKeyB64: string | null,
+  currentPeerKeyB64: string
+): VerificationStatus {
+  if (!verifiedPeerKeyB64) return "unverified";
+  return verifiedPeerKeyB64 === currentPeerKeyB64 ? "verified" : "changed";
+}
+
 export type { KeyPair };

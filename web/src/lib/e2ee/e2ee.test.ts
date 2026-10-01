@@ -6,7 +6,8 @@ import {
   diffieHellman,
   generateDhKeyPair,
   hkdfSha256,
-  secureRandom
+  secureRandom,
+  toBase64
 } from "./primitives";
 import { createDevice, consumeOneTimePreKey, publishableBundle } from "./device";
 import { InitiatorSession, ResponderSession } from "./session";
@@ -21,7 +22,8 @@ import {
 import {
   computeSafetyNumber,
   formatSafetyNumber,
-  safetyNumberQrPayload
+  safetyNumberQrPayload,
+  verificationStatus
 } from "./fingerprint";
 import type { KeyPair } from "./primitives";
 
@@ -243,5 +245,17 @@ describe("safety numbers (key fingerprints)", () => {
     const fromBob = safetyNumberQrPayload(bob.publicKey, alice.publicKey);
     expect(fromAlice).toBe(fromBob);
     expect(fromAlice.startsWith("GRAM-SN:v1:")).toBe(true);
+  });
+
+  it("tracks verification state: unverified, verified, then changed", () => {
+    const bob = generateDhKeyPair();
+    const bobKey = toBase64(bob.publicKey);
+    // Never confirmed anything yet.
+    expect(verificationStatus(null, bobKey)).toBe("unverified");
+    // Confirmed bob's key and it still matches.
+    expect(verificationStatus(bobKey, bobKey)).toBe("verified");
+    // Confirmed bob's key but the current key is now someone else's — a change to warn about.
+    const mallory = generateDhKeyPair();
+    expect(verificationStatus(bobKey, toBase64(mallory.publicKey))).toBe("changed");
   });
 });

@@ -20,7 +20,7 @@ import {
   type DeviceState
 } from "./device";
 import { fromBase64, toBase64, type KeyPair } from "./primitives";
-import { computeSafetyNumber, safetyNumberQrPayload } from "./fingerprint";
+import { computeSafetyNumber, safetyNumberQrPayload, verificationStatus, type VerificationStatus } from "./fingerprint";
 import {
   InitiatorSession,
   ResponderSession,
@@ -30,7 +30,7 @@ import {
   type SessionState
 } from "./session";
 import type { DeviceKeyMaterial } from "./x3dh";
-import { VAULT_KEYS, vaultGet, vaultPut } from "./vault";
+import { VAULT_KEYS, vaultDelete, vaultGet, vaultPut } from "./vault";
 
 const ONE_TIME_PREKEY_TARGET = 50;
 const REPLENISH_THRESHOLD = 10;
@@ -307,6 +307,40 @@ export class E2eeManager {
     const { local, peer } = session.identities();
     if (local.length === 0 || peer.length === 0) return null;
     return safetyNumberQrPayload(local, peer);
+  }
+
+  /**
+   * The verification state of a secret chat's peer key: whether the user has confirmed it out of
+   * band and whether the key currently in the session still matches that confirmed value.
+   * Returns "unverified" when no session exists yet (nothing to compare).
+   */
+  async verificationStatus(chatId: string): Promise<VerificationStatus> {
+    await this.restoreSession(chatId);
+    const session = this.sessions.get(chatId);
+    if (!session) return "unverified";
+    const { peer } = session.identities();
+    if (peer.length === 0) return "unverified";
+    const confirmed = await vaultGet<string>(VAULT_KEYS.verification(this.userId, chatId));
+    return verificationStatus(confirmed, toBase64(peer));
+  }
+
+  /**
+   * Record the current peer identity key as verified — called when the user confirms the safety
+   * number matches out of band. Persists only the PUBLIC peer key so a later key change is
+   * detectable as a "changed" state.
+   */
+  async markVerified(chatId: string): Promise<void> {
+    await this.restoreSession(chatId);
+    const session = this.sessions.get(chatId);
+    if (!session) return;
+    const { peer } = session.identities();
+    if (peer.length === 0) return;
+    await vaultPut(VAULT_KEYS.verification(this.userId, chatId), toBase64(peer));
+  }
+
+  /** Clear a previously recorded verification (e.g. the user chooses to re-verify). */
+  async clearVerification(chatId: string): Promise<void> {
+    await vaultDelete(VAULT_KEYS.verification(this.userId, chatId));
   }
 }
 

@@ -1,9 +1,9 @@
 "use client";
 
 import { QRCodeCanvas } from "qrcode.react";
-import { Check, Copy, QrCode, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Check, Copy, QrCode, ShieldCheck } from "lucide-react";
 import { useState } from "react";
-import { formatSafetyNumber } from "@/lib/e2ee/fingerprint";
+import { formatSafetyNumber, type VerificationStatus } from "@/lib/e2ee/fingerprint";
 import { BottomSheet } from "../ui/bottom-sheet";
 import { useToast } from "../ui/toast";
 
@@ -15,6 +15,9 @@ import { useToast } from "../ui/toast";
  * one swapped a key in the middle. The number changes if either identity key changes — a new
  * device, a re-install, or an attacker — which is the whole signal to look for.
  *
+ * The user can mark the key as verified once they have compared it; the trust state persists on
+ * the device and surfaces again as a warning if the peer's key later changes.
+ *
  * `peerName` is only a label; the guarantee comes from the digits, never from the name.
  */
 export function SafetyNumberSheet({
@@ -22,16 +25,23 @@ export function SafetyNumberSheet({
   onOpenChange,
   peerName,
   safetyNumber,
-  safetyQr
+  safetyQr,
+  verification,
+  onMarkVerified,
+  onReVerify
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   peerName: string;
   safetyNumber: string | null;
   safetyQr: string | null;
+  verification: VerificationStatus;
+  onMarkVerified: () => Promise<void> | void;
+  onReVerify: () => Promise<void> | void;
 }) {
   const { notify } = useToast();
   const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
   const formatted = safetyNumber ? formatSafetyNumber(safetyNumber) : null;
 
   const copy = async () => {
@@ -46,6 +56,25 @@ export function SafetyNumberSheet({
     }
   };
 
+  const verify = async () => {
+    setBusy(true);
+    try {
+      await onMarkVerified();
+      notify("Собеседник отмечен как проверенный", { variant: "success" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reVerify = async () => {
+    setBusy(true);
+    try {
+      await onReVerify();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <BottomSheet
       open={open}
@@ -55,15 +84,39 @@ export function SafetyNumberSheet({
     >
       <div className="pb-4">
         <div className="flex flex-col items-center gap-2 pb-5 text-center">
-          <span className="grid size-12 place-items-center rounded-full bg-emerald-500/15 text-emerald-400">
-            <ShieldCheck size={24} />
-          </span>
+          {verification === "changed" ? (
+            <span className="grid size-12 place-items-center rounded-full bg-amber-500/15 text-amber-400">
+              <AlertTriangle size={24} />
+            </span>
+          ) : (
+            <span className="grid size-12 place-items-center rounded-full bg-emerald-500/15 text-emerald-400">
+              <ShieldCheck size={24} />
+            </span>
+          )}
           <h2 className="m-0 text-[19px] font-bold">Код безопасности</h2>
           <p className="m-0 max-w-[42ch] text-[13px] leading-5 text-[var(--muted)]">
             Этот код одинаков у вас и у {peerName}. Сверьте его при личной встрече или по другому
             каналу — если он совпадает, переписку никто не перехватывает.
           </p>
         </div>
+
+        {verification === "changed" ? (
+          <div className="mx-auto mb-5 max-w-[380px] rounded-[16px] bg-amber-500/10 px-4 py-3 text-left shadow-[inset_0_0_0_1px_rgba(251,191,36,.25)]">
+            <p className="m-0 flex items-start gap-2 text-[13px] leading-5 text-amber-300">
+              <AlertTriangle size={16} className="mt-0.5 flex-none" />
+              Ключ собеседника изменился с момента последней проверки. Это бывает после смены
+              устройства или переустановки — но также может означать перехват. Сверьте код заново,
+              прежде чем доверять переписке.
+            </p>
+          </div>
+        ) : null}
+
+        {verification === "verified" ? (
+          <div className="mx-auto mb-5 flex max-w-[380px] items-center justify-center gap-2 rounded-full bg-emerald-500/15 px-4 py-2 text-[13px] font-semibold text-emerald-400">
+            <Check size={16} />
+            Собеседник проверен
+          </div>
+        ) : null}
 
         {formatted ? (
           <>
@@ -88,14 +141,37 @@ export function SafetyNumberSheet({
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={() => void copy()}
-              className="mx-auto mt-4 flex items-center justify-center gap-2 rounded-full bg-white/[0.06] px-4 py-2.5 text-[14px] font-semibold transition active:scale-95"
-            >
-              {copied ? <Check size={17} className="text-emerald-400" /> : <Copy size={17} />}
-              {copied ? "Скопировано" : "Скопировать код"}
-            </button>
+            <div className="mx-auto mt-4 flex max-w-[360px] flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => void copy()}
+                className="flex items-center justify-center gap-2 rounded-full bg-white/[0.06] px-4 py-2.5 text-[14px] font-semibold transition active:scale-95"
+              >
+                {copied ? <Check size={17} className="text-emerald-400" /> : <Copy size={17} />}
+                {copied ? "Скопировано" : "Скопировать код"}
+              </button>
+
+              {verification === "verified" ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void reVerify()}
+                  className="flex items-center justify-center gap-2 rounded-full bg-white/[0.04] px-4 py-2.5 text-[14px] font-semibold text-[var(--muted)] transition active:scale-95 disabled:opacity-50"
+                >
+                  Снять отметку о проверке
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void verify()}
+                  className="flex items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2.5 text-[14px] font-semibold text-white transition active:scale-95 disabled:opacity-50"
+                >
+                  <ShieldCheck size={17} />
+                  {verification === "changed" ? "Код совпадает — подтвердить" : "Отметить как проверенный"}
+                </button>
+              )}
+            </div>
 
             <p className="mx-auto mt-5 flex max-w-[42ch] items-start gap-2 text-[12px] leading-5 text-[var(--faint)]">
               <QrCode size={15} className="mt-0.5 flex-none" />

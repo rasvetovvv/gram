@@ -96,7 +96,7 @@ export function ChatView() {
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
   // Secret chats: decrypt inbound bodies for display and encrypt outbound before send. For any
   // other chat this is a transparent pass-through (isSecret === false).
-  const { isSecret, displayMessages, encryptForSend, safetyNumber, safetyQr } = useSecretChat(activeChat, me?.id, messages);
+  const { isSecret, displayMessages, encryptForSend, safetyNumber, safetyQr, verification, markVerified, reVerify } = useSecretChat(activeChat, me?.id, messages);
   const reduceMotion = useReducedMotion();
 
   /**
@@ -553,8 +553,12 @@ export function ChatView() {
           : activeChat.kind === "saved"
             ? "for your eyes only"
             : activeChat.kind === "secret"
-              ? // A secret chat is end-to-end encrypted; say so where presence would normally sit.
-                "🔒 сквозное шифрование"
+              ? // A secret chat is end-to-end encrypted; the line also reflects key-verification state.
+                verification === "changed"
+                ? "⚠️ ключ собеседника изменился"
+                : verification === "verified"
+                  ? "🔒 проверено · сквозное шифрование"
+                  : "🔒 сквозное шифрование"
               : // A closed conversation is the next thing worth knowing about it.
                 activeChat.peer_blocked
                 ? "blocked"
@@ -898,6 +902,9 @@ export function ChatView() {
                 peerName={activeChat.participant?.display_name ?? `@${activeChat.participant?.username ?? ""}`}
                 safetyNumber={safetyNumber}
                 safetyQr={safetyQr}
+                verification={verification}
+                onMarkVerified={markVerified}
+                onReVerify={reVerify}
               />
             ) : null}
             <ChatAppearanceSheet
