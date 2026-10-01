@@ -885,6 +885,7 @@ export function ChatView() {
                 onClearAttachment={clearAttachment}
                 editing={Boolean(editing)}
                 pending={send.isPending}
+                allowAttachments={!encryptsOutbound}
                 onTyping={notifyTyping}
               />
             )}
