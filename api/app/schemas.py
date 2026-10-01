@@ -933,12 +933,16 @@ class ChatMessage(ApiModel):
 
 
 class MessageCreate(BaseModel):
-    content: Annotated[str, Field(min_length=1, max_length=2000)]
+    # The plaintext a user types is bounded on the client (composer maxLength); the stored body may
+    # be far larger because a secret chat sends a base64 ciphertext ENVELOPE here, not the text —
+    # a 2000-char message encrypts to roughly 5.5 KB. The cap is sized for that envelope while still
+    # bounding abuse. The DB column is TEXT, so this is the only limit that matters.
+    content: Annotated[str, Field(min_length=1, max_length=16000)]
     reply_to_id: uuid.UUID | None = None
 
 
 class MessageEdit(BaseModel):
-    content: Annotated[str, Field(min_length=1, max_length=2000)]
+    content: Annotated[str, Field(min_length=1, max_length=16000)]
 
     @field_validator("content")
     @classmethod
