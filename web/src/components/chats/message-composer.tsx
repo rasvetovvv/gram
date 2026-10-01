@@ -89,6 +89,12 @@ export const MessageComposer = forwardRef<ComposerHandle, {
   editing: boolean;
   pending: boolean;
   /**
+   * Whether file attachments are offered. Off for secret chats: file uploads go through the plain
+   * media endpoint and are NOT end-to-end encrypted, so offering them in a secret chat would
+   * silently leak the file to the server. Hidden until encrypted attachments exist.
+   */
+  allowAttachments?: boolean;
+  /**
    * Called as the field is typed into, so the other side can be told.
    *
    * Passed in rather than sent from here because the socket belongs to the screen; the throttling
@@ -96,7 +102,7 @@ export const MessageComposer = forwardRef<ComposerHandle, {
    */
   onTyping?: () => void;
 }>(function MessageComposer(
-  { onSubmit: submit, onPickFile, attachment, onClearAttachment, editing, pending, onTyping },
+  { onSubmit: submit, onPickFile, attachment, onClearAttachment, editing, pending, allowAttachments = true, onTyping },
   handle
 ) {
   const [value, onChange] = useState("");
@@ -347,14 +353,18 @@ export const MessageComposer = forwardRef<ComposerHandle, {
               if (file) onPickFile(file);
             }}
           />
-          <button
-            type="button"
-            className="mb-px inline-flex size-9 shrink-0 items-center justify-center rounded-full text-[var(--muted)] transition hover:bg-white/10 hover:text-[var(--ink)]"
-            aria-label="Attachment"
-            onClick={() => picker.current?.click()}
-          >
-            <Paperclip size={22} />
-          </button>
+          {/* No attachment button in a secret chat: files are not yet end-to-end encrypted, so
+              offering one would quietly send the file to the server in the clear. */}
+          {allowAttachments ? (
+            <button
+              type="button"
+              className="mb-px inline-flex size-9 shrink-0 items-center justify-center rounded-full text-[var(--muted)] transition hover:bg-white/10 hover:text-[var(--ink)]"
+              aria-label="Attachment"
+              onClick={() => picker.current?.click()}
+            >
+              <Paperclip size={22} />
+            </button>
+          ) : null}
         </div>
         {/* One round action: the microphone until there is something to send. */}
         <button

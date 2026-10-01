@@ -43,6 +43,10 @@ import type {
   LegalReportInput,
   LegalReportReceipt,
   LoginInput,
+  E2eeBundleUpload,
+  E2eeFetchedBundle,
+  E2eePreKey,
+  E2eePreKeyCount,
   Message,
   MyBadges,
   Notification,
@@ -658,11 +662,31 @@ export const api = {
     request<Chat>(`/api/chats/direct/${userPath(username)}`, { method: "POST" }),
   secretChat: (username: string) =>
     request<Chat>(`/api/chats/secret/${userPath(username)}`, { method: "POST" }),
+  // ─── End-to-end encryption key directory (public material only) ───
+  /** Publish or update this device's public prekey bundle. Private keys never leave the device. */
+  publishE2eeBundle: (payload: E2eeBundleUpload) =>
+    request<{ detail: string }>("/api/e2ee/devices", {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    }),
+  /** Top up this device's one-time prekey pool as peers consume it. */
+  replenishE2eePrekeys: (devicePublicId: string, oneTimePrekeys: E2eePreKey[]) =>
+    request<E2eePreKeyCount>(
+      `/api/e2ee/devices/${encodeURIComponent(devicePublicId)}/prekeys`,
+      { method: "POST", body: JSON.stringify({ one_time_prekeys: oneTimePrekeys }) }
+    ),
+  /** How many unclaimed one-time prekeys each of my devices still has. */
+  myE2eePrekeyCounts: () => request<E2eePreKeyCount[]>("/api/e2ee/prekeys"),
+  /** Fetch a peer's device bundles, consuming one one-time prekey per device (mutating). */
+  startE2eeSession: (username: string) =>
+    request<{ devices: E2eeFetchedBundle[] }>(`/api/e2ee/sessions/${userPath(username)}`, {
+      method: "POST"
+    }),
   savedChat: () => request<Chat>("/api/chats/saved", { method: "POST" }),
-  createGroupChat: (title: string, members: string[], isPublic = false) =>
+  createGroupChat: (title: string, members: string[], isPublic = false, isSecret = false) =>
     request<Chat>("/api/chats/groups", {
       method: "POST",
-      body: JSON.stringify({ title, members, is_public: isPublic })
+      body: JSON.stringify({ title, members, is_public: isPublic, is_secret: isSecret })
     }),
   /** Open a group to its link, or close it — the link dies with the group's privacy. */
   updateGroupAccess: (chatId: string, isPublic: boolean) =>

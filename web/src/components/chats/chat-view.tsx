@@ -38,6 +38,9 @@ import { ForwardPicker } from "./forward-picker";
 import { MessageThread } from "./message-thread";
 import { MessageComposer, type ComposerHandle } from "./message-composer";
 import { useChatSocket, mergeMessage } from "./use-chat-socket";
+import { useSecretChat } from "./use-secret-chat";
+import { useSecretGroup } from "./use-secret-group";
+import { SafetyNumberSheet } from "./safety-number-sheet";
 import { useVisualViewportHeight } from "./use-visual-viewport";
 
 export function ChatView() {
@@ -92,6 +95,20 @@ export function ChatView() {
   const { typing, notifyTyping, markRead } = useChatSocket(activeId);
   // Needed to author an optimistic bubble before the server has answered.
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
+  // Secret chats: decrypt inbound bodies for display and encrypt outbound before send. For any
+  // other chat this is a transparent pass-through (isSecret === false).
+  const secret1to1 = useSecretChat(activeChat, me?.id, messages);
+  const secretGroup = useSecretGroup(activeChat, me?.id, messages);
+  // A chat is either a 1:1 secret chat or a secret group, never both — pick whichever is active.
+  const { isSecret, safetyNumber, safetyQr, verification, markVerified, reVerify, keyHealth } =
+    secret1to1;
+  const isSecretGroup = secretGroup.isSecretGroup;
+  const encryptForSend = isSecretGroup ? secretGroup.encryptForSend : secret1to1.encryptForSend;
+  const displayMessages = isSecretGroup
+    ? secretGroup.displayMessages
+    : secret1to1.displayMessages;
+  // Whether the composer must encrypt before sending — true for either secret mode.
+  const encryptsOutbound = isSecret || isSecretGroup;
   const reduceMotion = useReducedMotion();
 
   /**
@@ -192,12 +209,15 @@ export function ChatView() {
   const send = useMutation({
     /* The text arrives as the mutation's variable rather than from state up here — that is the
        whole point of the composer owning its field. */
-    mutationFn: (text: string) =>
-      editing
-        ? api.editMessage(activeId!, editing.id, text.trim())
-        : attachment
-          ? api.sendMessageMedia(activeId!, attachment.file, text.trim(), replyTo?.id)
-          : api.sendMessage(activeId!, text.trim(), replyTo?.id),
+    mutationFn: async (text: string) => {
+      if (editing) return api.editMessage(activeId!, editing.id, text.trim());
+      if (attachment) {
+        return api.sendMessageMedia(activeId!, attachment.file, text.trim(), replyTo?.id);
+      }
+      // Secret chats: the body sent to the server is a ciphertext envelope, never the plaintext.
+      const wire = encryptsOutbound ? await encryptForSend(text.trim()) : text.trim();
+      return api.sendMessage(activeId!, wire, replyTo?.id);
+    },
     /**
      * A sent message appears in the thread immediately, before the server answers.
      *
@@ -281,6 +301,7 @@ export function ChatView() {
     search: string;
     appearance: boolean;
     wallpaper: boolean;
+    verifyKeys: boolean;
     selecting: boolean;
     picked: string[];
     forwarding: boolean;
@@ -290,6 +311,7 @@ export function ChatView() {
     search: "",
     appearance: false,
     wallpaper: false,
+    verifyKeys: false,
     selecting: false,
     picked: [],
     forwarding: false
@@ -303,6 +325,7 @@ export function ChatView() {
           search: "",
           appearance: false,
           wallpaper: false,
+          verifyKeys: false,
           selecting: false,
           picked: [] as string[],
           forwarding: false
@@ -382,7 +405,7 @@ export function ChatView() {
   });
 
   async function copyPicked() {
-    const text = messages
+    const text = displayMessages
       .filter((item) => ui.picked.includes(item.id))
       .map((item) => item.content)
       .join("\n\n");
@@ -398,13 +421,20 @@ export function ChatView() {
     }
   }
 
-  // Search narrows what is already loaded; the API has no message search yet.
+  // Search narrows what is already loaded; the API has no message search yet. For secret chats
+  // this searches the decrypted plaintext held on the device, never the ciphertext.
   const grouped = useMemo(() => {
     const needle = ui.search.trim().toLowerCase();
-    return needle ? messages.filter((item) => item.content.toLowerCase().includes(needle)) : messages;
-  }, [messages, ui.search]);
-  // Only one message is pinned per chat, so the bar takes the first it finds.
-  const pinnedMessage = useMemo(() => messages.find((item) => item.pinned), [messages]);
+    return needle
+      ? displayMessages.filter((item) => item.content.toLowerCase().includes(needle))
+      : displayMessages;
+  }, [displayMessages, ui.search]);
+  // Only one message is pinned per chat, so the bar takes the first it finds. Uses the decrypted
+  // view so a pinned secret message shows its plaintext in the pin bar rather than ciphertext.
+  const pinnedMessage = useMemo(
+    () => displayMessages.find((item) => item.pinned),
+    [displayMessages]
+  );
 
   /**
    * Scroll position drives both the jump button and its count of messages missed while away.
@@ -531,19 +561,28 @@ export function ChatView() {
       ? "blocked by administration"
       : (typingLabel ??
         (activeChat.is_group
-          ? `${activeChat.members_count ?? 0} ${plural(activeChat.members_count ?? 0, "member", "members", "members")}`
+          ? activeChat.is_secret
+            ? `🔒 ${activeChat.members_count ?? 0} ${plural(activeChat.members_count ?? 0, "member", "members", "members")} · сквозное шифрование`
+            : `${activeChat.members_count ?? 0} ${plural(activeChat.members_count ?? 0, "member", "members", "members")}`
           : activeChat.kind === "saved"
             ? "for your eyes only"
-            : // A closed conversation is the next thing worth knowing about it.
-              activeChat.peer_blocked
-              ? "blocked"
-              : activeChat.blocked_by_peer
-                ? "you are blocked"
-                : activeChat.participant?.is_official
-                  ? (activeChat.participant.role_title ?? "service notifications").toLowerCase()
-                  : // Presence, worded once in `lib/presence` and reused by the profile.
-                    presenceShort(activeChat.participant ?? { is_online: false }) ||
-                    `@${activeChat.participant?.username ?? ""}`));
+            : activeChat.kind === "secret"
+              ? // A secret chat is end-to-end encrypted; the line also reflects key-verification state.
+                verification === "changed"
+                ? "⚠️ ключ собеседника изменился"
+                : verification === "verified"
+                  ? "🔒 проверено · сквозное шифрование"
+                  : "🔒 сквозное шифрование"
+              : // A closed conversation is the next thing worth knowing about it.
+                activeChat.peer_blocked
+                ? "blocked"
+                : activeChat.blocked_by_peer
+                  ? "you are blocked"
+                  : activeChat.participant?.is_official
+                    ? (activeChat.participant.role_title ?? "service notifications").toLowerCase()
+                    : // Presence, worded once in `lib/presence` and reused by the profile.
+                      presenceShort(activeChat.participant ?? { is_online: false }) ||
+                      `@${activeChat.participant?.username ?? ""}`));
 
   return (
     <div
@@ -654,6 +693,7 @@ export function ChatView() {
                   onOpenInfo={() => setUi({ info: true })}
                   onAppearance={() => setUi({ appearance: true })}
                   onWallpaper={() => setUi({ wallpaper: true })}
+                  onVerifyKeys={() => setUi({ verifyKeys: true })}
                   onReport={() => setReport({ open: true, messageId: undefined })}
                 />
               </div>
@@ -845,6 +885,7 @@ export function ChatView() {
                 onClearAttachment={clearAttachment}
                 editing={Boolean(editing)}
                 pending={send.isPending}
+                allowAttachments={!encryptsOutbound}
                 onTyping={notifyTyping}
               />
             )}
@@ -867,7 +908,21 @@ export function ChatView() {
               open={ui.info}
               onClose={() => setUi({ info: false })}
               onSendGift={() => setGiftOpen(true)}
+              onVerifyKeys={() => setUi({ info: false, verifyKeys: true })}
             />
+            {isSecret ? (
+              <SafetyNumberSheet
+                open={ui.verifyKeys}
+                onOpenChange={(open) => setUi({ verifyKeys: open })}
+                peerName={activeChat.participant?.display_name ?? `@${activeChat.participant?.username ?? ""}`}
+                safetyNumber={safetyNumber}
+                safetyQr={safetyQr}
+                verification={verification}
+                onMarkVerified={markVerified}
+                onReVerify={reVerify}
+                keyHealth={keyHealth}
+              />
+            ) : null}
             <ChatAppearanceSheet
               open={ui.appearance}
               onOpenChange={(open) => setUi({ appearance: open })}

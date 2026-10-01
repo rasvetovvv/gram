@@ -933,12 +933,16 @@ class ChatMessage(ApiModel):
 
 
 class MessageCreate(BaseModel):
-    content: Annotated[str, Field(min_length=1, max_length=2000)]
+    # The plaintext a user types is bounded on the client (composer maxLength); the stored body may
+    # be far larger because a secret chat sends a base64 ciphertext ENVELOPE here, not the text —
+    # a 2000-char message encrypts to roughly 5.5 KB. The cap is sized for that envelope while still
+    # bounding abuse. The DB column is TEXT, so this is the only limit that matters.
+    content: Annotated[str, Field(min_length=1, max_length=16000)]
     reply_to_id: uuid.UUID | None = None
 
 
 class MessageEdit(BaseModel):
-    content: Annotated[str, Field(min_length=1, max_length=2000)]
+    content: Annotated[str, Field(min_length=1, max_length=16000)]
 
     @field_validator("content")
     @classmethod
@@ -957,6 +961,9 @@ class ChatSummary(ApiModel):
     title: str
     is_group: bool
     kind: Literal["direct", "group", "secret", "saved"] = "direct"
+    # Groups only: whether the group is end-to-end encrypted (per-member sender keys). A 1:1 secret
+    # chat uses kind == "secret" instead; this flag lets a group be secret while keeping kind.
+    is_secret: bool = False
     avatar_url: str | None = None
     members_count: int = 2
     participant: UserCompact | None
@@ -1029,6 +1036,10 @@ class GroupCreate(BaseModel):
     avatar_url: Annotated[str | None, Field(max_length=300)] = None
     # A public group gets a link anybody may walk in through; a private one is invitation-only.
     is_public: bool = False
+    # A secret group is end-to-end encrypted (per-member sender keys). It cannot also be public:
+    # an open-link group has no fixed membership to distribute keys to, so the two are mutually
+    # exclusive and the endpoint rejects the combination.
+    is_secret: bool = False
 
     @field_validator("title")
     @classmethod

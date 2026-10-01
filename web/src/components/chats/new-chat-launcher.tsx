@@ -26,8 +26,9 @@ export function NewChatLauncher() {
   const [step, setStep] = useState<Step>("closed");
   const [members, setMembers] = useState<User[]>([]);
   const [groupTitle, setGroupTitle] = useState("");
-  // Closed by default: it's easier to hand out a group link later than to revoke one.
-  const [groupPublic, setGroupPublic] = useState(false);
+  // Who can enter and whether it is encrypted. Private by default: it's easier to hand out a link
+  // later than to revoke one, and a secret group is a deliberate choice.
+  const [groupAccess, setGroupAccess] = useState<"private" | "public" | "secret">("private");
 
   useEffect(() => {
     if (step !== "menu") return;
@@ -55,18 +56,30 @@ export function NewChatLauncher() {
       api.createGroupChat(
         groupTitle.trim(),
         members.map((user) => user.username),
-        groupPublic
+        groupAccess === "public",
+        groupAccess === "secret"
       ),
     onSuccess: async (chat) => {
       setStep("closed");
       setMembers([]);
       setGroupTitle("");
-      setGroupPublic(false);
+      setGroupAccess("private");
       await queryClient.invalidateQueries({ queryKey: ["chats"] });
-      notify(chat.is_public ? "Public group created" : "Group created", {
-        variant: "success",
-        detail: chat.is_public ? "The link is in “About group”" : undefined
-      });
+      notify(
+        chat.is_secret
+          ? "Secret group created"
+          : chat.is_public
+            ? "Public group created"
+            : "Group created",
+        {
+          variant: "success",
+          detail: chat.is_secret
+            ? "End-to-end encrypted — keys are shared with members"
+            : chat.is_public
+              ? "The link is in “About group”"
+              : undefined
+        }
+      );
       router.push(`/chats?chat=${chat.id}`);
     },
     onError: (error: Error) =>
@@ -220,38 +233,46 @@ export function NewChatLauncher() {
                 />
               </div>
               <p className="mt-6 text-[13px] text-[var(--muted)]">{members.length} members</p>
-              {/* Who can enter. A public group gets a link right away; a closed one is invite-only
-                  by the owner, as in Telegram. */}
+              {/* Who can enter and whether it is encrypted. A public group gets a link right away;
+                  a private one is invite-only; a secret one is end-to-end encrypted and cannot be
+                  public (its membership is fixed so keys can be shared). */}
               <div className="mt-5 grid gap-2">
-                {[
-                  {
-                    value: false,
-                    label: "Private group",
-                    hint: "Only the owner adds members"
-                  },
-                  {
-                    value: true,
-                    label: "Public group",
-                    hint: "Join via link — you can forward it to anyone"
-                  }
-                ].map((option) => (
+                {(
+                  [
+                    {
+                      value: "private",
+                      label: "Private group",
+                      hint: "Only the owner adds members"
+                    },
+                    {
+                      value: "public",
+                      label: "Public group",
+                      hint: "Join via link — you can forward it to anyone"
+                    },
+                    {
+                      value: "secret",
+                      label: "Secret group",
+                      hint: "End-to-end encrypted — no link, invite-only"
+                    }
+                  ] as const
+                ).map((option) => (
                   <button
-                    key={String(option.value)}
+                    key={option.value}
                     type="button"
-                    aria-pressed={groupPublic === option.value}
-                    onClick={() => setGroupPublic(option.value)}
+                    aria-pressed={groupAccess === option.value}
+                    onClick={() => setGroupAccess(option.value)}
                     className="flex items-center gap-3 rounded-[14px] border-0 bg-white/[0.06] px-3 py-2.5 text-left transition hover:bg-white/[0.1]"
                   >
                     <span
                       aria-hidden
                       className="inline-flex size-5 flex-none items-center justify-center rounded-full border"
                       style={
-                        groupPublic === option.value
+                        groupAccess === option.value
                           ? { borderColor: PICK_ACCENT, background: PICK_ACCENT, color: "#fff" }
                           : { borderColor: "rgba(255,255,255,.28)" }
                       }
                     >
-                      {groupPublic === option.value ? <Check size={13} /> : null}
+                      {groupAccess === option.value ? <Check size={13} /> : null}
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-[15px] font-semibold">{option.label}</span>
