@@ -25,6 +25,7 @@ import {
   safetyNumberQrPayload,
   verificationStatus
 } from "./fingerprint";
+import { GroupSession } from "./group-session";
 import type { KeyPair } from "./primitives";
 
 describe("e2ee primitives", () => {
@@ -293,5 +294,68 @@ describe("safety numbers (key fingerprints)", () => {
     // Confirmed bob's key but the current key is now someone else's — a change to warn about.
     const mallory = generateDhKeyPair();
     expect(verificationStatus(bobKey, toBase64(mallory.publicKey))).toBe("changed");
+  });
+});
+
+describe("GroupSession (multi-member sender-key engine)", () => {
+  // A small helper: wire three members so each holds the other two's sender keys.
+  function trio() {
+    const alice = GroupSession.create();
+    const bob = GroupSession.create();
+    const carol = GroupSession.create();
+    // Each distributes its own key to the other two (over the pairwise channel, mocked as a copy).
+    bob.acceptDistribution("alice", alice.ownDistribution());
+    carol.acceptDistribution("alice", alice.ownDistribution());
+    alice.acceptDistribution("bob", bob.ownDistribution());
+    carol.acceptDistribution("bob", bob.ownDistribution());
+    alice.acceptDistribution("carol", carol.ownDistribution());
+    bob.acceptDistribution("carol", carol.ownDistribution());
+    return { alice, bob, carol };
+  }
+
+  it("fans one ciphertext out: both other members decrypt it", () => {
+    const { alice, bob, carol } = trio();
+    const message = alice.encrypt("hi group");
+    expect(bob.decrypt("alice", message)).toBe("hi group");
+    expect(carol.decrypt("alice", message)).toBe("hi group");
+  });
+
+  it("decrypts each sender under their own key, in and out of order", () => {
+    const { alice, bob, carol } = trio();
+    const a0 = alice.encrypt("a0");
+    const a1 = alice.encrypt("a1");
+    const b0 = bob.encrypt("b0");
+    expect(carol.decrypt("alice", a1)).toBe("a1");
+    expect(carol.decrypt("alice", a0)).toBe("a0");
+    expect(carol.decrypt("bob", b0)).toBe("b0");
+  });
+
+  it("refuses to decrypt a sender whose key was never imported", () => {
+    const alice = GroupSession.create();
+    const outsider = GroupSession.create();
+    const message = outsider.encrypt("intruder");
+    expect(() => alice.decrypt("outsider", message)).toThrow();
+  });
+
+  it("rotation drops a removed member: their later messages no longer decrypt", () => {
+    const { alice, bob, carol } = trio();
+    // Carol is removed. Alice rotates and keeps only bob, then redistributes to bob.
+    alice.rotate(["bob"]);
+    bob.acceptDistribution("alice", alice.ownDistribution());
+    const afterRotation = alice.encrypt("secret after carol left");
+    // Bob (still in the group) decrypts fine with the fresh key.
+    expect(bob.decrypt("alice", afterRotation)).toBe("secret after carol left");
+    // Carol still holds alice's OLD sender key; the new generation does not match it.
+    expect(() => carol.decrypt("alice", afterRotation)).toThrow();
+  });
+
+  it("survives serialize/restore (page reload) and keeps decrypting", () => {
+    const { alice, bob } = trio();
+    const before = alice.encrypt("before reload");
+    expect(bob.decrypt("alice", before)).toBe("before reload");
+
+    const restoredBob = GroupSession.restore(bob.serialize());
+    const after = alice.encrypt("after reload");
+    expect(restoredBob.decrypt("alice", after)).toBe("after reload");
   });
 });

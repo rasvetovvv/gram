@@ -113,6 +113,8 @@ export const VAULT_KEYS = {
   session: (userId: string, chatId: string) => `session:${userId}:${chatId}`,
   // Which peer identity key the user has confirmed out of band for a secret chat.
   verification: (userId: string, chatId: string) => `verify:${userId}:${chatId}`,
+  // This member's full sender-key group state (own key + every peer's imported key) for a group.
+  group: (userId: string, chatId: string) => `group:${userId}:${chatId}`,
   groupSender: (userId: string, chatId: string) => `group-sender:${userId}:${chatId}`,
   groupReceiver: (userId: string, chatId: string, memberId: string) =>
     `group-recv:${userId}:${chatId}:${memberId}`
