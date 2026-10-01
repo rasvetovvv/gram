@@ -28,7 +28,10 @@ export function useSecretChat(
   currentUserId: string | undefined,
   messages: Message[]
 ) {
-  const isSecret = activeChat?.kind === "secret";
+  // A 1:1 secret chat (kind) and a secret GROUP (is_secret flag) are both end-to-end encrypted,
+  // but use different engines: the 1:1 pairwise ratchet here, the group sender-key path in
+  // useSecretGroup. This hook owns ONLY the 1:1 case so the two never cross wires.
+  const isSecret = activeChat?.kind === "secret" && !activeChat?.is_group;
   const chatId = activeChat?.id;
   const peerUsername = activeChat?.participant?.username;
 

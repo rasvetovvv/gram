@@ -26,6 +26,7 @@ import {
   verificationStatus
 } from "./fingerprint";
 import { GroupSession } from "./group-session";
+import { GroupKeyCoordinator, type GroupKeyTransport } from "./group-coordinator";
 import {
   buildGroupKeyDistributionWire,
   buildGroupMessageWire,
@@ -405,5 +406,58 @@ describe("group wire envelopes", () => {
     expect(parseGroupMessageWire("not json")).toBeNull();
     expect(parseGroupKeyDistributionWire("{}")).toBeNull();
     expect(parseGroupMessageWire(JSON.stringify({ v: 1, t: "gmsg" }))).toBeNull();
+  });
+});
+
+describe("GroupKeyCoordinator (distribution bookkeeping)", () => {
+  // A transport that records every (member, wire) it was asked to send, and can be made to fail.
+  function recordingTransport() {
+    const sends: Array<{ memberId: string; wire: string }> = [];
+    let failNext = false;
+    const transport: GroupKeyTransport = {
+      async sendToMember(memberId, wire) {
+        if (failNext) {
+          failNext = false;
+          throw new Error("transport down");
+        }
+        sends.push({ memberId, wire });
+      }
+    };
+    return { sends, transport, failOnce: () => (failNext = true) };
+  }
+
+  it("sends to each member once and never to self", async () => {
+    const { sends, transport } = recordingTransport();
+    const coord = new GroupKeyCoordinator("me", "wire-gen-1", transport);
+    const sent = await coord.distributeTo(["me", "bob", "carol"]);
+    expect(sent.sort()).toEqual(["bob", "carol"]);
+    // A second pass sends to nobody already seeded (and a newly added member is picked up).
+    const again = await coord.distributeTo(["bob", "carol", "dave"]);
+    expect(again).toEqual(["dave"]);
+    expect(sends.map((s) => s.memberId).sort()).toEqual(["bob", "carol", "dave"]);
+  });
+
+  it("retries a member whose send failed (not marked seeded on failure)", async () => {
+    const { transport, failOnce } = recordingTransport();
+    const coord = new GroupKeyCoordinator("me", "wire-gen-1", transport);
+    failOnce();
+    await expect(coord.distributeTo(["bob"])).rejects.toThrow();
+    expect(coord.hasSeeded("bob")).toBe(false);
+    // The retry succeeds and marks bob seeded.
+    const sent = await coord.distributeTo(["bob"]);
+    expect(sent).toEqual(["bob"]);
+    expect(coord.hasSeeded("bob")).toBe(true);
+  });
+
+  it("rotation re-seeds everyone with the fresh generation", async () => {
+    const { sends, transport } = recordingTransport();
+    const coord = new GroupKeyCoordinator("me", "wire-gen-1", transport);
+    await coord.distributeTo(["bob", "carol"]);
+    coord.onRotated("wire-gen-2");
+    // After rotation nobody is seeded, so a distribute re-sends the NEW wire to the remaining set.
+    const sent = await coord.distributeTo(["bob"]);
+    expect(sent).toEqual(["bob"]);
+    const lastSend = sends[sends.length - 1];
+    expect(lastSend.wire).toBe("wire-gen-2");
   });
 });
