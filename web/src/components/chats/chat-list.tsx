@@ -395,12 +395,29 @@ function ChatAvatar({ chat }: { chat: Chat }) {  if (chat.is_group || !chat.part
 
 /** Groups name the speaker in the preview, as the reference does. */
 function preview(chat: Chat) {
+  // A secret chat's last-message body is ciphertext the list cannot (and must not) decrypt — the
+  // keys live only inside the open conversation. Show a neutral marker instead of raw JSON.
+  const isSecret = chat.kind === "secret" || Boolean(chat.is_secret);
   const detail = chat.last_message_detail;
-  if (!detail) return chat.last_message;
+  if (isSecret) {
+    if (detail?.service) return detail.content;
+    return "🔒 Зашифрованное сообщение";
+  }
+  if (!detail) return looksEncrypted(chat.last_message) ? "🔒 Зашифрованное сообщение" : chat.last_message;
   if (detail.service) return detail.content;
   const text = detail.content || wordless(detail);
   if (chat.is_group && !detail.is_mine) return `${detail.sender.display_name}: ${text}`;
   return text;
+}
+
+/**
+ * A cheap guard against ever flashing a ciphertext envelope in the list: if a body looks like one
+ * of our E2EE wire envelopes (a JSON object carrying a `ct`/`dh` field), treat it as encrypted.
+ * This is a belt-and-braces fallback for a chat whose secret flag has not loaded yet.
+ */
+function looksEncrypted(body: string | undefined): boolean {
+  if (!body || body[0] !== "{") return false;
+  return /"(ct|dh)"\s*:/.test(body);
 }
 
 /**

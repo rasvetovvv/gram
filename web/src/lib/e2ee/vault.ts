@@ -117,5 +117,8 @@ export const VAULT_KEYS = {
   group: (userId: string, chatId: string) => `group:${userId}:${chatId}`,
   groupSender: (userId: string, chatId: string) => `group-sender:${userId}:${chatId}`,
   groupReceiver: (userId: string, chatId: string, memberId: string) =>
-    `group-recv:${userId}:${chatId}:${memberId}`
+    `group-recv:${userId}:${chatId}:${memberId}`,
+  // Our OWN outgoing plaintext per chat, so the sender can still read their own messages after a
+  // reload — a sending-chain ciphertext cannot be decrypted by the receiving chain.
+  ownMessages: (userId: string, chatId: string) => `own:${userId}:${chatId}`
 } as const;

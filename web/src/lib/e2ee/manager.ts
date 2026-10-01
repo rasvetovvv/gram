@@ -155,6 +155,37 @@ export class E2eeManager {
     }
   }
 
+  /**
+   * Persist our own outbound plaintext for a chat so the SENDER can still read their own messages
+   * after a page reload. A sending-chain ciphertext cannot be decrypted by the receiving chain, so
+   * without this the sender's own bubbles would come back as "undecryptable" on the next load.
+   * Stored device-locally and encrypted-at-rest in the same vault as every other secret; bounded
+   * to the most recent 500 messages per chat so it cannot grow without limit.
+   */
+  private async rememberOwnPersisted(chatId: string, ciphertext: string, plaintext: string): Promise<void> {
+    this.rememberOwn(ciphertext, plaintext);
+    const key = VAULT_KEYS.ownMessages(this.userId, chatId);
+    const stored = (await vaultGet<Record<string, string>>(key)) ?? {};
+    if (stored[ciphertext] !== undefined) return;
+    stored[ciphertext] = plaintext;
+    const keys = Object.keys(stored);
+    if (keys.length > 500) {
+      // Drop the oldest insertions (object key order is insertion order for string keys).
+      for (const old of keys.slice(0, keys.length - 500)) delete stored[old];
+    }
+    await vaultPut(key, stored);
+  }
+
+  /** Our own plaintext for a ciphertext in this chat, from memory or the persisted vault copy. */
+  private async ownPlaintextFor(chatId: string, ciphertext: string): Promise<string | undefined> {
+    const inMemory = this.ownPlaintext.get(ciphertext);
+    if (inMemory !== undefined) return inMemory;
+    const stored = await vaultGet<Record<string, string>>(VAULT_KEYS.ownMessages(this.userId, chatId));
+    const value = stored?.[ciphertext];
+    if (value !== undefined) this.rememberOwn(ciphertext, value);
+    return value;
+  }
+
   /** Load-or-create this browser's device and make sure its public bundle is on the server. */
   async ensureDevice(): Promise<void> {
     if (this.device) return;
@@ -321,15 +352,16 @@ export class E2eeManager {
     const envelope = session.encrypt(plaintext);
     await this.persistSession(chatId);
     const wire = JSON.stringify(envelope);
-    // We cannot decrypt our own outbound ciphertext, so remember it for when the server echoes it.
-    this.rememberOwn(wire, plaintext);
+    // We cannot decrypt our own outbound ciphertext, so remember it (persisted) for when the
+    // server echoes it back — now and after a reload.
+    await this.rememberOwnPersisted(chatId, wire, plaintext);
     return wire;
   }
 
   /** Decrypt an inbound secret-chat message body. Lazily accepts a session on the first envelope. */
   async decrypt(chatId: string, rawContent: string): Promise<string> {
-    const own = this.ownPlaintext.get(rawContent);
-    if (own !== undefined) return own; // our own message echoed back by the server
+    const own = await this.ownPlaintextFor(chatId, rawContent);
+    if (own !== undefined) return own; // our own message echoed back by the server (now or post-reload)
     let envelope: EncryptedEnvelope;
     try {
       envelope = JSON.parse(rawContent) as EncryptedEnvelope;
@@ -526,8 +558,8 @@ export class E2eeManager {
     const message = session.encrypt(plaintext);
     await this.persistGroup(chatId);
     const wire = buildGroupMessageWire(selfMemberId, message);
-    // We cannot decrypt our own outbound group ciphertext, so remember it for the server echo.
-    this.rememberOwn(wire, plaintext);
+    // We cannot decrypt our own outbound group ciphertext, so remember it (persisted) for the echo.
+    await this.rememberOwnPersisted(chatId, wire, plaintext);
     return wire;
   }
 
@@ -538,8 +570,8 @@ export class E2eeManager {
    * when a genuine group ciphertext cannot be decrypted (missing/!matching sender key).
    */
   async decryptGroup(chatId: string, senderId: string, rawContent: string): Promise<string> {
-    const own = this.ownPlaintext.get(rawContent);
-    if (own !== undefined) return own; // our own message echoed back by the server
+    const own = await this.ownPlaintextFor(chatId, rawContent);
+    if (own !== undefined) return own; // our own message echoed back by the server (now or post-reload)
     const envelope = parseGroupMessageWire(rawContent);
     if (!envelope) return rawContent; // not a group ciphertext (service text, etc.)
     // The envelope's claimed sender must match the server-attested author: a mismatch means a

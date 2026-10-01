@@ -102,6 +102,7 @@ export function useSecretGroup(
     (async () => {
       for (const message of messages) {
         if (message.service) continue;
+        if (message.pending) continue; // optimistic bubble already holds plaintext
         if (plaintextById[message.id] !== undefined) continue;
         if (decryptingRef.current.has(message.id)) continue;
         decryptingRef.current.add(message.id);
@@ -133,6 +134,7 @@ export function useSecretGroup(
     return messages
       .map((message) => {
         if (message.service) return message;
+        if (message.pending) return message; // optimistic bubble already holds plaintext
         const plaintext = plaintextById[message.id];
         if (plaintext === undefined) return { ...message, content: "🔒 …" };
         return { ...message, content: plaintext };

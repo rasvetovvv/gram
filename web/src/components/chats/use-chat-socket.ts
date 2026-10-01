@@ -4,48 +4,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_URL, api } from "@/lib/api";
 import type { Message } from "@/lib/types";
+import { mergeMessage } from "./message-merge";
 
-/**
- * Fold one message into a cached thread, optimistic rows included.
- *
- * A message I sent appears twice unless something reconciles the two copies: once as the
- * optimistic bubble drawn on submit, and again as the server's row arriving over the socket or
- * from the mutation's response. They carry different ids, so identity is re-established by
- * content: the pending row is *replaced* rather than appended to, and its `client_key` is
- * carried onto the server row so the list keeps drawing it under the same key. Without that the
- * swap is an unmount plus a remount, and the bubble visibly blinks.
- */
-export function mergeMessage(current: Message[], incoming: Message): Message[] {
-  const index = current.findIndex((item) => item.id === incoming.id);
-  if (index >= 0) {
-    const next = current.slice();
-    next[index] = {
-      ...next[index],
-      ...incoming,
-      // `read` is the sender's business and can arrive blank; keep what the last poll knew.
-      read: incoming.read ?? next[index].read,
-      client_key: next[index].client_key ?? incoming.client_key,
-      pending: false
-    };
-    return next;
-  }
-  if (incoming.is_mine) {
-    const text = incoming.content.trim();
-    const waiting = current.findIndex(
-      (item) => item.pending && item.is_mine && item.content.trim() === text
-    );
-    if (waiting >= 0) {
-      const next = current.slice();
-      next[waiting] = {
-        ...incoming,
-        client_key: current[waiting].client_key ?? incoming.client_key,
-        pending: false
-      };
-      return next;
-    }
-  }
-  return [...current, { ...incoming, pending: false }];
-}
+// Re-exported so existing imports (`import { mergeMessage } from "./use-chat-socket"`) keep working
+// while the pure, dependency-free logic lives in message-merge.ts where it can be unit-tested
+// without pulling in the `@/lib/api` client this module depends on.
+export { mergeMessage };
 
 /** Who is typing right now, as the strip under the header reads it. */
 export type TypingPeer = { userId: string; displayName: string };

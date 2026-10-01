@@ -66,6 +66,9 @@ export function useSecretChat(
     (async () => {
       for (const message of messages) {
         if (message.service) continue;
+        // A pending optimistic bubble already holds the typed plaintext; it has no ciphertext to
+        // decrypt and must not be masked.
+        if (message.pending) continue;
         if (plaintextById[message.id] !== undefined) continue;
         if (decryptingRef.current.has(message.id)) continue;
         decryptingRef.current.add(message.id);
@@ -136,6 +139,8 @@ export function useSecretChat(
     if (!isSecret) return messages;
     return messages.map((message) => {
       if (message.service) return message;
+      // A pending optimistic bubble is already the typed plaintext — show it as-is, never mask it.
+      if (message.pending) return message;
       const plaintext = plaintextById[message.id];
       return plaintext === undefined ? { ...message, content: "🔒 …" } : { ...message, content: plaintext };
     });
