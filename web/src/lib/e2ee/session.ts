@@ -22,14 +22,26 @@ export interface InitiatorSessionState {
   ratchet: RatchetState;
   preludeSent: boolean;
   prelude: Prelude;
+  // The two long-lived identity DH public keys bound into this session (base64). Public values,
+  // kept so the safety-number fingerprint can be shown without re-fetching the peer bundle.
+  localIdentityDh: string;
+  peerIdentityDh: string;
 }
 
 export interface ResponderSessionState {
   role: "responder";
   ratchet: RatchetState;
+  localIdentityDh: string;
+  peerIdentityDh: string;
 }
 
 export type SessionState = InitiatorSessionState | ResponderSessionState;
+
+/** The pair of identity DH public keys bound into a session, for the safety-number fingerprint. */
+export interface SessionIdentities {
+  readonly local: Uint8Array;
+  readonly peer: Uint8Array;
+}
 
 /** X3DH prelude present only on the first ciphertext of a session. */
 interface Prelude {
@@ -80,6 +92,8 @@ export class InitiatorSession {
   private ratchet: DoubleRatchet;
   private preludeSent = false;
   private prelude: Prelude;
+  private localIdentityDh!: Uint8Array;
+  private peerIdentityDh!: Uint8Array;
 
   constructor(ownIdentityDh: KeyPair, ownIdentitySigningPublic: Uint8Array, bundle: FetchedBundle) {
     const x3dh = initiateX3DH(ownIdentityDh, ownIdentitySigningPublic, bundle);
@@ -88,6 +102,8 @@ export class InitiatorSession {
       x3dh.associatedData,
       bundle.signedPreKeyPublic
     );
+    this.localIdentityDh = ownIdentityDh.publicKey;
+    this.peerIdentityDh = bundle.identityDhPublic;
     this.prelude = {
       ik: toBase64(ownIdentityDh.publicKey),
       ek: toBase64(x3dh.ephemeralPublic),
@@ -107,9 +123,21 @@ export class InitiatorSession {
     return textDecoder.decode(this.ratchet.decrypt(deserialize(envelope)));
   }
 
+  /** The identity public keys bound into this session, for the safety-number fingerprint. */
+  identities(): SessionIdentities {
+    return { local: this.localIdentityDh, peer: this.peerIdentityDh };
+  }
+
   /** SECRET session state for device-local persistence. Never send to the server. */
   serialize(): InitiatorSessionState {
-    return { role: "initiator", ratchet: this.ratchet.serialize(), preludeSent: this.preludeSent, prelude: this.prelude };
+    return {
+      role: "initiator",
+      ratchet: this.ratchet.serialize(),
+      preludeSent: this.preludeSent,
+      prelude: this.prelude,
+      localIdentityDh: toBase64(this.localIdentityDh),
+      peerIdentityDh: toBase64(this.peerIdentityDh)
+    };
   }
 
   static restore(state: InitiatorSessionState): InitiatorSession {
@@ -117,6 +145,10 @@ export class InitiatorSession {
     session.ratchet = DoubleRatchet.deserialize(state.ratchet);
     session.preludeSent = state.preludeSent;
     session.prelude = state.prelude;
+    // Older persisted sessions predate the stored identities; fall back to the prelude's own
+    // initiator identity for the local half and leave the peer half empty rather than crash.
+    session.localIdentityDh = fromBase64(state.localIdentityDh ?? state.prelude.ik);
+    session.peerIdentityDh = state.peerIdentityDh ? fromBase64(state.peerIdentityDh) : new Uint8Array();
     return session;
   }
 }
@@ -124,9 +156,17 @@ export class InitiatorSession {
 /** Responder session — created lazily from the first inbound envelope's prelude. */
 export class ResponderSession {
   private readonly ratchet: DoubleRatchet;
+  private localIdentityDh: Uint8Array;
+  private peerIdentityDh: Uint8Array;
 
-  private constructor(ratchet: DoubleRatchet) {
+  private constructor(
+    ratchet: DoubleRatchet,
+    localIdentityDh: Uint8Array = new Uint8Array(),
+    peerIdentityDh: Uint8Array = new Uint8Array()
+  ) {
     this.ratchet = ratchet;
+    this.localIdentityDh = localIdentityDh;
+    this.peerIdentityDh = peerIdentityDh;
   }
 
   /**
@@ -160,7 +200,12 @@ export class ResponderSession {
       x3dh.associatedData,
       material.signedPreKey
     );
-    const session = new ResponderSession(ratchet);
+    // The responder's own identity is the local half; the initiator's (from the prelude) is the peer.
+    const session = new ResponderSession(
+      ratchet,
+      material.identityDh.publicKey,
+      fromBase64(prelude.ik)
+    );
     const firstPlaintext = session.decrypt(firstEnvelope);
     return { session, firstPlaintext };
   }
@@ -173,12 +218,26 @@ export class ResponderSession {
     return textDecoder.decode(this.ratchet.decrypt(deserialize(envelope)));
   }
 
+  /** The identity public keys bound into this session, for the safety-number fingerprint. */
+  identities(): SessionIdentities {
+    return { local: this.localIdentityDh, peer: this.peerIdentityDh };
+  }
+
   /** SECRET session state for device-local persistence. Never send to the server. */
   serialize(): ResponderSessionState {
-    return { role: "responder", ratchet: this.ratchet.serialize() };
+    return {
+      role: "responder",
+      ratchet: this.ratchet.serialize(),
+      localIdentityDh: toBase64(this.localIdentityDh),
+      peerIdentityDh: toBase64(this.peerIdentityDh)
+    };
   }
 
   static restore(state: ResponderSessionState): ResponderSession {
-    return new ResponderSession(DoubleRatchet.deserialize(state.ratchet));
+    return new ResponderSession(
+      DoubleRatchet.deserialize(state.ratchet),
+      state.localIdentityDh ? fromBase64(state.localIdentityDh) : new Uint8Array(),
+      state.peerIdentityDh ? fromBase64(state.peerIdentityDh) : new Uint8Array()
+    );
   }
 }

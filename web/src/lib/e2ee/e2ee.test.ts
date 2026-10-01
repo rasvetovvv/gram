@@ -18,6 +18,11 @@ import {
   decryptGroupMessage,
   importDistribution
 } from "./group";
+import {
+  computeSafetyNumber,
+  formatSafetyNumber,
+  safetyNumberQrPayload
+} from "./fingerprint";
 import type { KeyPair } from "./primitives";
 
 describe("e2ee primitives", () => {
@@ -200,5 +205,43 @@ describe("group sender-key encryption", () => {
     const rotated = createSenderKey();
     const message = encryptGroupMessage(rotated, "after rotation");
     expect(() => decryptGroupMessage(view, message)).toThrow();
+  });
+});
+
+describe("safety numbers (key fingerprints)", () => {
+  it("both parties derive the identical 60-digit number regardless of key order", () => {
+    const alice = generateDhKeyPair();
+    const bob = generateDhKeyPair();
+    const fromAlice = computeSafetyNumber(alice.publicKey, bob.publicKey);
+    const fromBob = computeSafetyNumber(bob.publicKey, alice.publicKey);
+    expect(fromAlice).toBe(fromBob);
+    expect(fromAlice).toMatch(/^\d{60}$/);
+  });
+
+  it("changes when either identity key changes (a swapped key is visible)", () => {
+    const alice = generateDhKeyPair();
+    const bob = generateDhKeyPair();
+    const mallory = generateDhKeyPair();
+    const honest = computeSafetyNumber(alice.publicKey, bob.publicKey);
+    const mitm = computeSafetyNumber(alice.publicKey, mallory.publicKey);
+    expect(honest).not.toBe(mitm);
+  });
+
+  it("formats into twelve space-separated groups of five", () => {
+    const alice = generateDhKeyPair();
+    const bob = generateDhKeyPair();
+    const formatted = formatSafetyNumber(computeSafetyNumber(alice.publicKey, bob.publicKey));
+    const groups = formatted.split(" ");
+    expect(groups).toHaveLength(12);
+    for (const group of groups) expect(group).toMatch(/^\d{5}$/);
+  });
+
+  it("produces an order-independent QR payload both devices agree on", () => {
+    const alice = generateDhKeyPair();
+    const bob = generateDhKeyPair();
+    const fromAlice = safetyNumberQrPayload(alice.publicKey, bob.publicKey);
+    const fromBob = safetyNumberQrPayload(bob.publicKey, alice.publicKey);
+    expect(fromAlice).toBe(fromBob);
+    expect(fromAlice.startsWith("GRAM-SN:v1:")).toBe(true);
   });
 });

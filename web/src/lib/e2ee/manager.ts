@@ -20,6 +20,7 @@ import {
   type DeviceState
 } from "./device";
 import { fromBase64, toBase64, type KeyPair } from "./primitives";
+import { computeSafetyNumber, safetyNumberQrPayload } from "./fingerprint";
 import {
   InitiatorSession,
   ResponderSession,
@@ -282,6 +283,30 @@ export class E2eeManager {
         : ResponderSession.restore(state as ResponderSessionState);
     this.sessions.set(chatId, session);
     return true;
+  }
+
+  /**
+   * The safety number for a secret chat, or null if no session exists yet on this device (nothing
+   * has been sent or received, so there are no bound identity keys to fingerprint). Opening the
+   * session first (sending or receiving one message) is what makes a number available.
+   */
+  async safetyNumber(chatId: string): Promise<string | null> {
+    await this.restoreSession(chatId);
+    const session = this.sessions.get(chatId);
+    if (!session) return null;
+    const { local, peer } = session.identities();
+    if (local.length === 0 || peer.length === 0) return null;
+    return computeSafetyNumber(local, peer);
+  }
+
+  /** The QR payload mirroring the safety number, or null when no session exists yet. */
+  async safetyNumberQr(chatId: string): Promise<string | null> {
+    await this.restoreSession(chatId);
+    const session = this.sessions.get(chatId);
+    if (!session) return null;
+    const { local, peer } = session.identities();
+    if (local.length === 0 || peer.length === 0) return null;
+    return safetyNumberQrPayload(local, peer);
   }
 }
 

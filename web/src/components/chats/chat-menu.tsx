@@ -64,6 +64,7 @@ export function ChatMenu({
   onOpenInfo,
   onAppearance,
   onWallpaper,
+  onVerifyKeys,
   onReport
 }: {
   chat: Chat;
@@ -74,6 +75,7 @@ export function ChatMenu({
   onOpenInfo: () => void;
   onAppearance: () => void;
   onWallpaper: () => void;
+  onVerifyKeys: () => void;
 }) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -218,6 +220,10 @@ export function ChatMenu({
           ) : (
             <MenuRow icon={Gift} label="Send a gift" onSelect={onSendGift} />
           )}
+          {/* A secret chat can prove no one swapped keys: compare the safety number out of band. */}
+          {chat.kind === "secret" ? (
+            <MenuRow icon={ShieldCheck} label="Код безопасности" onSelect={onVerifyKeys} />
+          ) : null}
           <MenuRow icon={Languages} label="Translate chat" onSelect={soon("Chat translation")} />
 
           <DropdownMenu.Separator className={RULE} />

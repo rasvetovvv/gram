@@ -24,6 +24,9 @@ export function useSecretChat(
   // messageId -> decrypted plaintext (or a marker when it could not be decrypted on this device).
   const [plaintextById, setPlaintextById] = useState<Record<string, string>>({});
   const decryptingRef = useRef<Set<string>>(new Set());
+  // The safety number for this chat, recomputed whenever a session first appears or its keys change.
+  const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
+  const [safetyQr, setSafetyQr] = useState<string | null>(null);
 
   // Ensure this browser has a published device as soon as a secret chat is opened.
   useEffect(() => {
@@ -66,6 +69,41 @@ export function useSecretChat(
     };
   }, [isSecret, currentUserId, chatId, messages, plaintextById]);
 
+  // Recompute the safety number whenever the session may have changed (a message arrived or the
+  // chat switched). It becomes available only after a session exists on this device, so this
+  // settles from null to a value once the first message has been sent or received.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!isSecret || !currentUserId || !chatId) {
+        if (!cancelled) {
+          setSafetyNumber(null);
+          setSafetyQr(null);
+        }
+        return;
+      }
+      const manager = e2eeManager(currentUserId);
+      try {
+        const [number, qr] = await Promise.all([
+          manager.safetyNumber(chatId),
+          manager.safetyNumberQr(chatId)
+        ]);
+        if (!cancelled) {
+          setSafetyNumber(number);
+          setSafetyQr(qr);
+        }
+      } catch {
+        if (!cancelled) {
+          setSafetyNumber(null);
+          setSafetyQr(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSecret, currentUserId, chatId, messages]);
+
   // Replace ciphertext with the decrypted body for rendering, leaving service messages untouched.
   const displayMessages = useMemo(() => {
     if (!isSecret) return messages;
@@ -85,5 +123,5 @@ export function useSecretChat(
     [isSecret, currentUserId, chatId, peerUsername]
   );
 
-  return { isSecret, displayMessages, encryptForSend };
+  return { isSecret, displayMessages, encryptForSend, safetyNumber, safetyQr };
 }

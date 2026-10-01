@@ -15,6 +15,7 @@ import {
   MessageSquare,
   Paperclip,
   Pencil,
+  ShieldCheck,
   UserMinus,
   UserPlus,
   Users,
@@ -51,12 +52,14 @@ export function ChatInfoPanel({
   chat,
   open,
   onClose,
-  onSendGift
+  onSendGift,
+  onVerifyKeys
 }: {
   chat: Chat;
   open: boolean;
   onClose: () => void;
   onSendGift: () => void;
+  onVerifyKeys?: () => void;
 }) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -339,9 +342,24 @@ export function ChatInfoPanel({
                 )}
                 <p className="m-0 text-[13px] text-[var(--muted)]">{subtitle}</p>
                 {chat.kind === "secret" ? (
-                  <p className="m-0 text-[12px] text-emerald-400/80">
-                    Secret chat — the conversation is flagged and hidden from general search
-                  </p>
+                  <>
+                    <p className="m-0 text-[12px] text-emerald-400/80">
+                      Секретный чат — сквозное шифрование, переписка скрыта из общего поиска
+                    </p>
+                    {onVerifyKeys ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          onVerifyKeys();
+                        }}
+                        className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1.5 text-[12px] font-semibold text-emerald-400 transition active:scale-95"
+                      >
+                        <ShieldCheck size={14} />
+                        Код безопасности
+                      </button>
+                    ) : null}
+                  </>
                 ) : null}
               </div>
 

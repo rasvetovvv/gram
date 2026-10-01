@@ -39,6 +39,7 @@ import { MessageThread } from "./message-thread";
 import { MessageComposer, type ComposerHandle } from "./message-composer";
 import { useChatSocket, mergeMessage } from "./use-chat-socket";
 import { useSecretChat } from "./use-secret-chat";
+import { SafetyNumberSheet } from "./safety-number-sheet";
 import { useVisualViewportHeight } from "./use-visual-viewport";
 
 export function ChatView() {
@@ -95,7 +96,7 @@ export function ChatView() {
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
   // Secret chats: decrypt inbound bodies for display and encrypt outbound before send. For any
   // other chat this is a transparent pass-through (isSecret === false).
-  const { isSecret, displayMessages, encryptForSend } = useSecretChat(activeChat, me?.id, messages);
+  const { isSecret, displayMessages, encryptForSend, safetyNumber, safetyQr } = useSecretChat(activeChat, me?.id, messages);
   const reduceMotion = useReducedMotion();
 
   /**
@@ -288,6 +289,7 @@ export function ChatView() {
     search: string;
     appearance: boolean;
     wallpaper: boolean;
+    verifyKeys: boolean;
     selecting: boolean;
     picked: string[];
     forwarding: boolean;
@@ -297,6 +299,7 @@ export function ChatView() {
     search: "",
     appearance: false,
     wallpaper: false,
+    verifyKeys: false,
     selecting: false,
     picked: [],
     forwarding: false
@@ -310,6 +313,7 @@ export function ChatView() {
           search: "",
           appearance: false,
           wallpaper: false,
+          verifyKeys: false,
           selecting: false,
           picked: [] as string[],
           forwarding: false
@@ -671,6 +675,7 @@ export function ChatView() {
                   onOpenInfo={() => setUi({ info: true })}
                   onAppearance={() => setUi({ appearance: true })}
                   onWallpaper={() => setUi({ wallpaper: true })}
+                  onVerifyKeys={() => setUi({ verifyKeys: true })}
                   onReport={() => setReport({ open: true, messageId: undefined })}
                 />
               </div>
@@ -884,7 +889,17 @@ export function ChatView() {
               open={ui.info}
               onClose={() => setUi({ info: false })}
               onSendGift={() => setGiftOpen(true)}
+              onVerifyKeys={() => setUi({ info: false, verifyKeys: true })}
             />
+            {isSecret ? (
+              <SafetyNumberSheet
+                open={ui.verifyKeys}
+                onOpenChange={(open) => setUi({ verifyKeys: open })}
+                peerName={activeChat.participant?.display_name ?? `@${activeChat.participant?.username ?? ""}`}
+                safetyNumber={safetyNumber}
+                safetyQr={safetyQr}
+              />
+            ) : null}
             <ChatAppearanceSheet
               open={ui.appearance}
               onOpenChange={(open) => setUi({ appearance: open })}
