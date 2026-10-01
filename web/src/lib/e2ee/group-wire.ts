@@ -14,6 +14,13 @@ import type { GroupMessage, SenderKeyDistribution } from "./group";
 
 export const GROUP_WIRE_VERSION = 1;
 
+/**
+ * Returned by the 1:1 decrypt path when the decrypted body turned out to be a group sender-key
+ * distribution (handled internally) rather than a human message. The UI treats this sentinel as
+ * "nothing to show" and hides the bubble — a key handshake is plumbing, not a message.
+ */
+export const GROUP_KEY_DISTRIBUTION_MARKER = "\u0000gram:group-key-distribution\u0000";
+
 export interface GroupMessageEnvelope {
   readonly v: number;
   readonly t: "gmsg";

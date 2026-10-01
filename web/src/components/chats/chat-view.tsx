@@ -39,6 +39,7 @@ import { MessageThread } from "./message-thread";
 import { MessageComposer, type ComposerHandle } from "./message-composer";
 import { useChatSocket, mergeMessage } from "./use-chat-socket";
 import { useSecretChat } from "./use-secret-chat";
+import { useSecretGroup } from "./use-secret-group";
 import { SafetyNumberSheet } from "./safety-number-sheet";
 import { useVisualViewportHeight } from "./use-visual-viewport";
 
@@ -96,7 +97,18 @@ export function ChatView() {
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
   // Secret chats: decrypt inbound bodies for display and encrypt outbound before send. For any
   // other chat this is a transparent pass-through (isSecret === false).
-  const { isSecret, displayMessages, encryptForSend, safetyNumber, safetyQr, verification, markVerified, reVerify, keyHealth } = useSecretChat(activeChat, me?.id, messages);
+  const secret1to1 = useSecretChat(activeChat, me?.id, messages);
+  const secretGroup = useSecretGroup(activeChat, me?.id, messages);
+  // A chat is either a 1:1 secret chat or a secret group, never both — pick whichever is active.
+  const { isSecret, safetyNumber, safetyQr, verification, markVerified, reVerify, keyHealth } =
+    secret1to1;
+  const isSecretGroup = secretGroup.isSecretGroup;
+  const encryptForSend = isSecretGroup ? secretGroup.encryptForSend : secret1to1.encryptForSend;
+  const displayMessages = isSecretGroup
+    ? secretGroup.displayMessages
+    : secret1to1.displayMessages;
+  // Whether the composer must encrypt before sending — true for either secret mode.
+  const encryptsOutbound = isSecret || isSecretGroup;
   const reduceMotion = useReducedMotion();
 
   /**
@@ -203,7 +215,7 @@ export function ChatView() {
         return api.sendMessageMedia(activeId!, attachment.file, text.trim(), replyTo?.id);
       }
       // Secret chats: the body sent to the server is a ciphertext envelope, never the plaintext.
-      const wire = isSecret ? await encryptForSend(text.trim()) : text.trim();
+      const wire = encryptsOutbound ? await encryptForSend(text.trim()) : text.trim();
       return api.sendMessage(activeId!, wire, replyTo?.id);
     },
     /**
@@ -549,7 +561,9 @@ export function ChatView() {
       ? "blocked by administration"
       : (typingLabel ??
         (activeChat.is_group
-          ? `${activeChat.members_count ?? 0} ${plural(activeChat.members_count ?? 0, "member", "members", "members")}`
+          ? activeChat.is_secret
+            ? `🔒 ${activeChat.members_count ?? 0} ${plural(activeChat.members_count ?? 0, "member", "members", "members")} · сквозное шифрование`
+            : `${activeChat.members_count ?? 0} ${plural(activeChat.members_count ?? 0, "member", "members", "members")}`
           : activeChat.kind === "saved"
             ? "for your eyes only"
             : activeChat.kind === "secret"

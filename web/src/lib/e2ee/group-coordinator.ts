@@ -26,10 +26,16 @@ export class GroupKeyCoordinator {
   // Members we have already handed the current generation to.
   private readonly sentTo = new Set<string>();
 
-  constructor(selfMemberId: string, distributionWire: string, transport: GroupKeyTransport) {
+  constructor(
+    selfMemberId: string,
+    distributionWire: string,
+    transport: GroupKeyTransport,
+    alreadySeeded: Iterable<string> = []
+  ) {
     this.selfMemberId = selfMemberId;
     this.transport = transport;
     this.distributionWire = distributionWire;
+    for (const memberId of alreadySeeded) this.sentTo.add(memberId);
   }
 
   /**

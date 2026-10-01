@@ -23,11 +23,13 @@ import {
 import { fromBase64, toBase64, type KeyPair } from "./primitives";
 import { computeSafetyNumber, safetyNumberQrPayload, verificationStatus, type VerificationStatus } from "./fingerprint";
 import { GroupSession, type GroupSessionState } from "./group-session";
+import { GroupKeyCoordinator } from "./group-coordinator";
 import {
   buildGroupKeyDistributionWire,
   buildGroupMessageWire,
   parseGroupKeyDistributionWire,
-  parseGroupMessageWire
+  parseGroupMessageWire,
+  GROUP_KEY_DISTRIBUTION_MARKER
 } from "./group-wire";
 import {
   InitiatorSession,
@@ -356,7 +358,25 @@ export class E2eeManager {
     }
     const plaintext = session.decrypt(envelope);
     await this.persistSession(chatId);
+    // A 1:1 secret message may actually carry a group's sender-key distribution (the pairwise
+    // channel is how group keys travel). If so, import it and return a sentinel the UI hides,
+    // rather than showing the raw JSON as a chat message.
+    const imported = await this.importIfGroupDistribution(plaintext);
+    if (imported) return GROUP_KEY_DISTRIBUTION_MARKER;
     return plaintext;
+  }
+
+  /**
+   * If `plaintext` is a group sender-key distribution (received over a pairwise 1:1 channel),
+   * import it into the right group and return true. Otherwise return false and do nothing.
+   */
+  private async importIfGroupDistribution(plaintext: string): Promise<boolean> {
+    const envelope = parseGroupKeyDistributionWire(plaintext);
+    if (!envelope) return false;
+    const session = await this.ensureGroup(envelope.group);
+    session.acceptDistribution(envelope.from, envelope.skd);
+    await this.persistGroup(envelope.group);
+    return true;
   }
 
   private async persistSession(chatId: string): Promise<void> {
@@ -543,6 +563,35 @@ export class E2eeManager {
     const session = await this.ensureGroup(chatId);
     session.rotate(remainingMemberIds);
     await this.persistGroup(chatId);
+  }
+
+  /**
+   * Hand this member's current sender key to every group member who does not already hold it, by
+   * sending the distribution wire over each peer's pairwise 1:1 secret channel. `send(peerUserId,
+   * wire)` is the injected transport (the UI wires it to the 1:1 secret-chat send against that
+   * peer). `peerUserIds` excludes self. Returns the peers actually sent to; a failed send is left
+   * un-seeded so a later call retries it. Delivery is tracked device-locally per group.
+   */
+  async distributeGroupKeys(
+    chatId: string,
+    selfMemberId: string,
+    peerUserIds: Iterable<string>,
+    send: (peerUserId: string, wire: string) => Promise<void>
+  ): Promise<string[]> {
+    const wire = await this.groupDistributionWire(chatId, selfMemberId);
+    const seeded = await vaultGet<string[]>(VAULT_KEYS.groupSender(this.userId, chatId));
+    const coordinator = new GroupKeyCoordinator(
+      selfMemberId,
+      wire,
+      { sendToMember: send },
+      seeded ?? []
+    );
+    const sent = await coordinator.distributeTo(peerUserIds);
+    if (sent.length > 0) {
+      const nowSeeded = [...new Set([...(seeded ?? []), ...sent])];
+      await vaultPut(VAULT_KEYS.groupSender(this.userId, chatId), nowSeeded);
+    }
+    return sent;
   }
 }
 
