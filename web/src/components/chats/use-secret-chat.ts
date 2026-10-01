@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Chat, Message } from "@/lib/types";
 import { e2eeManager } from "@/lib/e2ee/manager";
 import type { VerificationStatus } from "@/lib/e2ee/fingerprint";
+import { looksLikeEnvelope } from "@/lib/e2ee/envelope-detect";
 
 /** Device-wide key health, surfaced read-only in the secret-chat security sheet. */
 export interface KeyHealth {
@@ -142,7 +143,13 @@ export function useSecretChat(
       // A pending optimistic bubble is already the typed plaintext — show it as-is, never mask it.
       if (message.pending) return message;
       const plaintext = plaintextById[message.id];
-      return plaintext === undefined ? { ...message, content: "🔒 …" } : { ...message, content: plaintext };
+      if (plaintext !== undefined) return { ...message, content: plaintext };
+      // Only an undecrypted CIPHERTEXT envelope gets the lock placeholder. A body that is not an
+      // envelope (our own just-sent row, already folded to plaintext; a plain service line) is
+      // shown directly, so the sender never sees a "🔒 …" flash on a message they just wrote.
+      return looksLikeEnvelope(message.content)
+        ? { ...message, content: "🔒 …" }
+        : message;
     });
   }, [isSecret, messages, plaintextById]);
 

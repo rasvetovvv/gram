@@ -269,8 +269,14 @@ export function ChatView() {
           current ? mergeMessage(current, sent as Message) : current
         );
       }
+      // A secret send is already correct in the cache after the merge above (the row keeps its
+      // decrypted plaintext). Refetching the thread would replace it with the ciphertext envelope
+      // and flash "🔒 …" until the async decrypt re-folds it, so skip the messages refetch for an
+      // encrypted send and let the socket/poll be the backstop. The chat LIST still refreshes.
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["messages", activeId] }),
+        encryptsOutbound
+          ? Promise.resolve()
+          : queryClient.invalidateQueries({ queryKey: ["messages", activeId] }),
         queryClient.invalidateQueries({ queryKey: ["chats"] })
       ]);
       if (wasEditing) notify("Message edited", { variant: "success" });

@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import type { Chat, Message } from "@/lib/types";
 import { e2eeManager } from "@/lib/e2ee/manager";
 import { GROUP_KEY_DISTRIBUTION_MARKER } from "@/lib/e2ee/group-wire";
+import { looksLikeGroupEnvelope } from "@/lib/e2ee/envelope-detect";
 
 /**
  * Wires a SECRET GROUP (is_group && is_secret) to the sender-key E2EE engine.
@@ -136,8 +137,12 @@ export function useSecretGroup(
         if (message.service) return message;
         if (message.pending) return message; // optimistic bubble already holds plaintext
         const plaintext = plaintextById[message.id];
-        if (plaintext === undefined) return { ...message, content: "🔒 …" };
-        return { ...message, content: plaintext };
+        if (plaintext !== undefined) return { ...message, content: plaintext };
+        // Only a real undecrypted group envelope gets the lock placeholder; our own just-sent row
+        // (already folded to plaintext) and non-envelope bodies are shown as-is.
+        return looksLikeGroupEnvelope(message.content)
+          ? { ...message, content: "🔒 …" }
+          : message;
       })
       .filter((message) => message.content !== GROUP_KEY_DISTRIBUTION_MARKER);
   }, [isSecretGroup, messages, plaintextById]);
