@@ -17,6 +17,7 @@ import {
   createDevice,
   publishableBundle,
   replenishOneTimePreKeys,
+  rotateSignedPreKey,
   type DeviceState
 } from "./device";
 import { fromBase64, toBase64, type KeyPair } from "./primitives";
@@ -34,6 +35,10 @@ import { VAULT_KEYS, vaultDelete, vaultGet, vaultPut } from "./vault";
 
 const ONE_TIME_PREKEY_TARGET = 50;
 const REPLENISH_THRESHOLD = 10;
+// A signed prekey is medium-lived: rotating it weekly limits how long a future compromise of one
+// signed prekey can help an attacker start NEW sessions. Existing sessions are unaffected (the
+// Double Ratchet has already moved past X3DH), so rotation is safe to do silently on load.
+const SIGNED_PREKEY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Persisted, base64-encoded form of a device's own key material + one-time prekey pool. */
 interface StoredDevice {
@@ -47,9 +52,16 @@ interface StoredDevice {
   signedPreKeyPublic: string;
   oneTimePreKeys: Record<number, { priv: string; pub: string }>;
   nextOneTimePreKeyId: number;
+  // When the signed prekey was last rotated (epoch ms). Absent on devices created before rotation
+  // existed; treated as "rotate now" so an old device gets a fresh signed prekey on next load.
+  signedPreKeyRotatedAt?: number;
 }
 
-function serializeDevice(devicePublicId: string, device: DeviceState): StoredDevice {
+function serializeDevice(
+  devicePublicId: string,
+  device: DeviceState,
+  signedPreKeyRotatedAt: number
+): StoredDevice {
   const oneTimePreKeys: Record<number, { priv: string; pub: string }> = {};
   for (const [id, keyPair] of device.oneTimePreKeys) {
     oneTimePreKeys[id] = { priv: toBase64(keyPair.privateKey), pub: toBase64(keyPair.publicKey) };
@@ -64,11 +76,16 @@ function serializeDevice(devicePublicId: string, device: DeviceState): StoredDev
     signedPreKeyPrivate: toBase64(device.material.signedPreKey.privateKey),
     signedPreKeyPublic: toBase64(device.material.signedPreKey.publicKey),
     oneTimePreKeys,
-    nextOneTimePreKeyId: device.nextOneTimePreKeyId
+    nextOneTimePreKeyId: device.nextOneTimePreKeyId,
+    signedPreKeyRotatedAt
   };
 }
 
-function deserializeDevice(stored: StoredDevice): { publicId: string; device: DeviceState } {
+function deserializeDevice(stored: StoredDevice): {
+  publicId: string;
+  device: DeviceState;
+  signedPreKeyRotatedAt: number;
+} {
   const material: DeviceKeyMaterial = {
     identityDh: {
       privateKey: fromBase64(stored.identityDhPrivate),
@@ -93,7 +110,9 @@ function deserializeDevice(stored: StoredDevice): { publicId: string; device: De
   }
   return {
     publicId: stored.devicePublicId,
-    device: { material, oneTimePreKeys, nextOneTimePreKeyId: stored.nextOneTimePreKeyId }
+    device: { material, oneTimePreKeys, nextOneTimePreKeyId: stored.nextOneTimePreKeyId },
+    // Absent on pre-rotation devices: default to 0 (epoch) so they are seen as overdue and rotated.
+    signedPreKeyRotatedAt: stored.signedPreKeyRotatedAt ?? 0
   };
 }
 
@@ -102,6 +121,8 @@ export class E2eeManager {
   private readonly userId: string;
   private devicePublicId = "";
   private device: DeviceState | null = null;
+  // Epoch ms of the last signed-prekey rotation, so a stale one is refreshed on load.
+  private signedPreKeyRotatedAt = 0;
   private readonly sessions = new Map<string, InitiatorSession | ResponderSession>();
   // A sender cannot decrypt its own outbound ciphertext (its sending chain is not its receiving
   // chain). When the server echoes our own message back, we look its plaintext up here by the
@@ -128,9 +149,11 @@ export class E2eeManager {
     if (this.device) return;
     const stored = await vaultGet<StoredDevice>(VAULT_KEYS.device(this.userId));
     if (stored) {
-      const { publicId, device } = deserializeDevice(stored);
+      const { publicId, device, signedPreKeyRotatedAt } = deserializeDevice(stored);
       this.devicePublicId = publicId;
       this.device = device;
+      this.signedPreKeyRotatedAt = signedPreKeyRotatedAt;
+      await this.rotateSignedPreKeyIfStale();
       await this.replenishIfLow();
       return;
     }
@@ -139,13 +162,77 @@ export class E2eeManager {
     const devicePublicId = crypto.randomUUID();
     this.devicePublicId = devicePublicId;
     this.device = device;
+    this.signedPreKeyRotatedAt = Date.now();
     await this.persistDevice();
     await this.publishBundle();
   }
 
   private async persistDevice(): Promise<void> {
     if (!this.device) return;
-    await vaultPut(VAULT_KEYS.device(this.userId), serializeDevice(this.devicePublicId, this.device));
+    await vaultPut(
+      VAULT_KEYS.device(this.userId),
+      serializeDevice(this.devicePublicId, this.device, this.signedPreKeyRotatedAt)
+    );
+  }
+
+  /**
+   * Rotate the signed prekey when it is older than the max age. Only the signed prekey (and its
+   * signature) change; the identity keys and already-established sessions are untouched, so this
+   * is safe to run silently on load. The rotated PUBLIC bundle is re-published so new initiators
+   * use the fresh signed prekey.
+   */
+  private async rotateSignedPreKeyIfStale(): Promise<void> {
+    if (!this.device) return;
+    if (Date.now() - this.signedPreKeyRotatedAt < SIGNED_PREKEY_MAX_AGE_MS) return;
+    const rotated = rotateSignedPreKey(this.device);
+    this.device = {
+      material: rotated.material,
+      oneTimePreKeys: this.device.oneTimePreKeys,
+      nextOneTimePreKeyId: this.device.nextOneTimePreKeyId
+    };
+    this.signedPreKeyRotatedAt = Date.now();
+    await this.persistDevice();
+    await this.publishBundle();
+  }
+
+  /** Days until the signed prekey is next due for rotation (0 = due now). Null if no device yet. */
+  async signedPreKeyAgeDays(): Promise<number | null> {
+    await this.ensureDevice();
+    if (!this.signedPreKeyRotatedAt) return 0;
+    return Math.floor((Date.now() - this.signedPreKeyRotatedAt) / (24 * 60 * 60 * 1000));
+  }
+
+  /** How many one-time prekeys this device still holds locally (its unconsumed pool). */
+  async oneTimePreKeyPoolSize(): Promise<number> {
+    await this.ensureDevice();
+    return this.device?.oneTimePreKeys.size ?? 0;
+  }
+
+  /**
+   * A compact health summary of this device's key material for a settings/security panel:
+   * the one-time prekey pool size, its target, whether a top-up is due, and the signed-prekey age.
+   */
+  async keyHealth(): Promise<{
+    oneTimePreKeys: number;
+    target: number;
+    lowThreshold: number;
+    low: boolean;
+    signedPreKeyAgeDays: number;
+    signedPreKeyMaxAgeDays: number;
+  }> {
+    await this.ensureDevice();
+    const pool = this.device?.oneTimePreKeys.size ?? 0;
+    const ageDays = this.signedPreKeyRotatedAt
+      ? Math.floor((Date.now() - this.signedPreKeyRotatedAt) / (24 * 60 * 60 * 1000))
+      : 0;
+    return {
+      oneTimePreKeys: pool,
+      target: ONE_TIME_PREKEY_TARGET,
+      lowThreshold: REPLENISH_THRESHOLD,
+      low: pool < REPLENISH_THRESHOLD,
+      signedPreKeyAgeDays: ageDays,
+      signedPreKeyMaxAgeDays: Math.floor(SIGNED_PREKEY_MAX_AGE_MS / (24 * 60 * 60 * 1000))
+    };
   }
 
   private async publishBundle(): Promise<void> {

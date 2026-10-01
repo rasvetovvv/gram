@@ -1,9 +1,10 @@
 "use client";
 
 import { QRCodeCanvas } from "qrcode.react";
-import { AlertTriangle, Check, Copy, QrCode, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Check, Copy, KeyRound, QrCode, RefreshCw, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { formatSafetyNumber, type VerificationStatus } from "@/lib/e2ee/fingerprint";
+import type { KeyHealth } from "./use-secret-chat";
 import { BottomSheet } from "../ui/bottom-sheet";
 import { useToast } from "../ui/toast";
 
@@ -28,7 +29,8 @@ export function SafetyNumberSheet({
   safetyQr,
   verification,
   onMarkVerified,
-  onReVerify
+  onReVerify,
+  keyHealth
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -38,6 +40,7 @@ export function SafetyNumberSheet({
   verification: VerificationStatus;
   onMarkVerified: () => Promise<void> | void;
   onReVerify: () => Promise<void> | void;
+  keyHealth: KeyHealth | null;
 }) {
   const { notify } = useToast();
   const [copied, setCopied] = useState(false);
@@ -187,6 +190,39 @@ export function SafetyNumberSheet({
             </p>
           </div>
         )}
+
+        {keyHealth ? (
+          <div className="mx-auto mt-6 max-w-[380px] rounded-[16px] bg-white/[0.04] px-4 py-3.5">
+            <p className="m-0 mb-2 flex items-center gap-2 text-[12px] font-bold uppercase tracking-[0.1em] text-[var(--faint)]">
+              <KeyRound size={14} />
+              Ключи этого устройства
+            </p>
+            <div className="flex items-center justify-between gap-3 py-1.5 text-[13px]">
+              <span className="text-[var(--muted)]">Одноразовые предключи</span>
+              <span className={keyHealth.low ? "font-semibold text-amber-400" : "text-[var(--ink)]"}>
+                {keyHealth.oneTimePreKeys} / {keyHealth.target}
+                {keyHealth.low ? " · пополняются" : ""}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3 py-1.5 text-[13px]">
+              <span className="flex items-center gap-1.5 text-[var(--muted)]">
+                <RefreshCw size={13} />
+                Подписанный предключ
+              </span>
+              <span className="text-[var(--ink)]">
+                {keyHealth.signedPreKeyAgeDays === 0
+                  ? "обновлён сегодня"
+                  : `${keyHealth.signedPreKeyAgeDays} дн.`}
+                {" · ротация каждые "}
+                {keyHealth.signedPreKeyMaxAgeDays} дн.
+              </span>
+            </div>
+            <p className="m-0 mt-2 text-[11px] leading-4 text-[var(--faint)]">
+              Предключи и их ротация обновляются автоматически — на сервере лежат только публичные
+              значения.
+            </p>
+          </div>
+        ) : null}
       </div>
     </BottomSheet>
   );

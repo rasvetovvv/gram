@@ -5,6 +5,16 @@ import type { Chat, Message } from "@/lib/types";
 import { e2eeManager } from "@/lib/e2ee/manager";
 import type { VerificationStatus } from "@/lib/e2ee/fingerprint";
 
+/** Device-wide key health, surfaced read-only in the secret-chat security sheet. */
+export interface KeyHealth {
+  oneTimePreKeys: number;
+  target: number;
+  lowThreshold: number;
+  low: boolean;
+  signedPreKeyAgeDays: number;
+  signedPreKeyMaxAgeDays: number;
+}
+
 /**
  * Wires a secret chat to the E2EE engine. For a chat whose `kind` is `secret`, message bodies on
  * the wire are ciphertext envelopes; this hook decrypts them for display and encrypts outgoing
@@ -32,6 +42,8 @@ export function useSecretChat(
   const [verification, setVerification] = useState<VerificationStatus>("unverified");
   // Bumped by markVerified/reVerify so the status effect re-reads the persisted trust state.
   const [verifyEpoch, setVerifyEpoch] = useState(0);
+  // This device's key-material health (prekey pool + signed-prekey age), for the security sheet.
+  const [keyHealth, setKeyHealth] = useState<KeyHealth | null>(null);
 
   // Ensure this browser has a published device as soon as a secret chat is opened.
   useEffect(() => {
@@ -90,21 +102,24 @@ export function useSecretChat(
       }
       const manager = e2eeManager(currentUserId);
       try {
-        const [number, qr, status] = await Promise.all([
+        const [number, qr, status, health] = await Promise.all([
           manager.safetyNumber(chatId),
           manager.safetyNumberQr(chatId),
-          manager.verificationStatus(chatId)
+          manager.verificationStatus(chatId),
+          manager.keyHealth()
         ]);
         if (!cancelled) {
           setSafetyNumber(number);
           setSafetyQr(qr);
           setVerification(status);
+          setKeyHealth(health);
         }
       } catch {
         if (!cancelled) {
           setSafetyNumber(null);
           setSafetyQr(null);
           setVerification("unverified");
+          setKeyHealth(null);
         }
       }
     })();
@@ -154,6 +169,7 @@ export function useSecretChat(
     safetyQr,
     verification,
     markVerified,
-    reVerify
+    reVerify,
+    keyHealth
   };
 }

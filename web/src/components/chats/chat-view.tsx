@@ -96,7 +96,7 @@ export function ChatView() {
   const { data: me } = useQuery({ queryKey: ["me"], queryFn: api.currentUser });
   // Secret chats: decrypt inbound bodies for display and encrypt outbound before send. For any
   // other chat this is a transparent pass-through (isSecret === false).
-  const { isSecret, displayMessages, encryptForSend, safetyNumber, safetyQr, verification, markVerified, reVerify } = useSecretChat(activeChat, me?.id, messages);
+  const { isSecret, displayMessages, encryptForSend, safetyNumber, safetyQr, verification, markVerified, reVerify, keyHealth } = useSecretChat(activeChat, me?.id, messages);
   const reduceMotion = useReducedMotion();
 
   /**
@@ -905,6 +905,7 @@ export function ChatView() {
                 verification={verification}
                 onMarkVerified={markVerified}
                 onReVerify={reVerify}
+                keyHealth={keyHealth}
               />
             ) : null}
             <ChatAppearanceSheet

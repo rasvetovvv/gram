@@ -9,7 +9,7 @@ import {
   secureRandom,
   toBase64
 } from "./primitives";
-import { createDevice, consumeOneTimePreKey, publishableBundle } from "./device";
+import { createDevice, consumeOneTimePreKey, publishableBundle, rotateSignedPreKey } from "./device";
 import { InitiatorSession, ResponderSession } from "./session";
 import type { InitiatorSessionState, ResponderSessionState } from "./session";
 import {
@@ -167,6 +167,42 @@ describe("1:1 X3DH + Double Ratchet session", () => {
     const first = initiator.encrypt("no otk");
     const { firstPlaintext } = ResponderSession.accept(bob.material, first, () => null);
     expect(firstPlaintext).toBe("no otk");
+  });
+
+  it("rotates the signed prekey without disturbing identity keys or the pool", () => {
+    const bob = createDevice(5);
+    const beforeSpkId = bob.material.signedPreKeyId;
+    const beforeSpkPub = toBase64(bob.material.signedPreKey.publicKey);
+    const beforeIdentity = toBase64(bob.material.identityDh.publicKey);
+    const beforeSigning = toBase64(bob.material.identitySigning.publicKey);
+    const beforePool = bob.oneTimePreKeys.size;
+
+    const rotated = rotateSignedPreKey(bob);
+
+    // Signed prekey advances to a new id and a new public value...
+    expect(rotated.signedPreKeyId).toBe(beforeSpkId + 1);
+    expect(rotated.signedPreKeyPublic).not.toBe(beforeSpkPub);
+    // ...while the long-lived identity and signing keys are untouched.
+    expect(toBase64(rotated.material.identityDh.publicKey)).toBe(beforeIdentity);
+    expect(toBase64(rotated.material.identitySigning.publicKey)).toBe(beforeSigning);
+    // The one-time prekey pool is the caller's, not touched by rotation.
+    expect(bob.oneTimePreKeys.size).toBe(beforePool);
+
+    // A session built on the rotated signed prekey still completes the handshake.
+    const alice = createDevice(5);
+    const bundle = publishableBundle({ ...bob, material: rotated.material }, true);
+    const initiator = new InitiatorSession(
+      alice.material.identityDh,
+      alice.material.identitySigning.publicKey,
+      bundle
+    );
+    const first = initiator.encrypt("post-rotation");
+    const { firstPlaintext } = ResponderSession.accept(
+      { ...bob.material, ...rotated.material },
+      first,
+      (id) => consumeOneTimePreKey({ ...bob, material: rotated.material }, id)
+    );
+    expect(firstPlaintext).toBe("post-rotation");
   });
 });
 
