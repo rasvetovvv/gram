@@ -365,6 +365,21 @@ describe("GroupSession (multi-member sender-key engine)", () => {
     const after = alice.encrypt("after reload");
     expect(restoredBob.decrypt("alice", after)).toBe("after reload");
   });
+
+  it("rotateOwnKey locks out a departed member but keeps remaining members' history", () => {
+    const { alice, bob, carol } = trio();
+    // Carol leaves. Alice rotates only her OWN key and re-shares it with bob (not carol).
+    const beforeLeave = bob.encrypt("bob before");
+    alice.rotateOwnKey();
+    bob.acceptDistribution("alice", alice.ownDistribution());
+    const afterLeave = alice.encrypt("alice after carol left");
+    // Bob reads alice's new messages with the fresh key.
+    expect(bob.decrypt("alice", afterLeave)).toBe("alice after carol left");
+    // Alice can still read bob's history: rotateOwnKey kept bob's imported key.
+    expect(alice.decrypt("bob", beforeLeave)).toBe("bob before");
+    // Carol, holding only alice's OLD key, cannot read the new generation.
+    expect(() => carol.decrypt("alice", afterLeave)).toThrow();
+  });
 });
 
 describe("group wire envelopes", () => {

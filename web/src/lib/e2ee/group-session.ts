@@ -161,6 +161,16 @@ export class GroupSession {
     }
   }
 
+  /**
+   * Mint a fresh OWN sender key while keeping every imported peer key. Used when a member leaves:
+   * our new messages must be unreadable to the departed member (who held our old key), but past
+   * messages from the members who remain must stay decryptable, so their receive keys are kept.
+   * The caller redistributes the fresh key to the remaining members only.
+   */
+  rotateOwnKey(): void {
+    this.own = createSenderKey();
+  }
+
   /** SECRET serialized state for device-local persistence. Never send to the server. */
   serialize(): GroupSessionState {
     const peers: Record<string, StoredPeerSenderKey> = {};

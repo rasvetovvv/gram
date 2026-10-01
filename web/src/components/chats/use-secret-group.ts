@@ -38,9 +38,14 @@ export function useSecretGroup(
     enabled: isSecretGroup && Boolean(chatId)
   });
   const members = useMemo(() => info.data?.members ?? [], [info.data?.members]);
+  // The member-id set we last distributed to, so a shrink (someone left) triggers a key rotation
+  // before the next hand-out. A grow (someone joined) only needs a hand-out, not a rotation.
+  const lastMemberIdsRef = useRef<Set<string> | null>(null);
 
   // Distribute our sender key to every member who does not already hold it, over their pairwise
-  // 1:1 secret channel. Runs when the group opens and whenever its membership changes.
+  // 1:1 secret channel. Runs when the group opens and whenever its membership changes. If a member
+  // left since last time, rotate our sender key first so the departed member cannot read what we
+  // send next, then re-distribute the fresh key to everyone still here.
   useEffect(() => {
     if (!isSecretGroup || !currentUserId || !chatId || members.length === 0) return;
     let cancelled = false;
@@ -49,6 +54,21 @@ export function useSecretGroup(
       await manager.ensureDevice();
       const peers = members.map((m) => m.user).filter((u) => u.id !== currentUserId);
       const byId = new Map(peers.map((u) => [u.id, u.username] as const));
+      const currentIds = new Set(members.map((m) => m.user.id));
+
+      // A member left if the previous set had someone the current set no longer does.
+      const previous = lastMemberIdsRef.current;
+      const someoneLeft =
+        previous !== null && [...previous].some((id) => !currentIds.has(id));
+      if (someoneLeft) {
+        try {
+          await manager.rotateGroupOnMembershipChange(chatId);
+        } catch {
+          /* rotation failure is retried on the next membership change */
+        }
+      }
+      lastMemberIdsRef.current = currentIds;
+
       try {
         await manager.distributeGroupKeys(
           chatId,

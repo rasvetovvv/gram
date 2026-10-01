@@ -566,6 +566,21 @@ export class E2eeManager {
   }
 
   /**
+   * React to a member leaving a secret group: mint a fresh OWN sender key (so the departed member,
+   * who still holds our old key, cannot read anything we send next), keep the remaining members'
+   * imported keys (so their history stays readable), and clear the device-local "already seeded"
+   * record so the fresh key is re-distributed to everyone still here on the next distributeGroupKeys.
+   * This does NOT send anything — the caller runs distributeGroupKeys afterwards.
+   */
+  async rotateGroupOnMembershipChange(chatId: string): Promise<void> {
+    const session = await this.ensureGroup(chatId);
+    session.rotateOwnKey();
+    await this.persistGroup(chatId);
+    // Forget who was seeded so the fresh generation is handed out again to the current members.
+    await vaultDelete(VAULT_KEYS.groupSender(this.userId, chatId));
+  }
+
+  /**
    * Hand this member's current sender key to every group member who does not already hold it, by
    * sending the distribution wire over each peer's pairwise 1:1 secret channel. `send(peerUserId,
    * wire)` is the injected transport (the UI wires it to the 1:1 secret-chat send against that
