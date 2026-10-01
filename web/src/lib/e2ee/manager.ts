@@ -354,6 +354,10 @@ export class E2eeManager {
       this.sessions.set(chatId, responder);
       await this.persistDevice(); // a one-time prekey was consumed
       await this.persistSession(chatId);
+      // The very first message over a fresh pairwise channel is often a group sender-key handoff
+      // (a peer distributing their key to us). Import it and hide the plumbing, same as below.
+      const importedFirst = await this.importIfGroupDistribution(firstPlaintext);
+      if (importedFirst) return GROUP_KEY_DISTRIBUTION_MARKER;
       return firstPlaintext;
     }
     const plaintext = session.decrypt(envelope);
