@@ -46,6 +46,16 @@ describe("mergeMessage reconciliation", () => {
     expect(out[0].read).toBe(true);
   });
 
+  it("a ciphertext echo does NOT overwrite an already-plaintext-folded row by id", () => {
+    // The row was folded to plaintext on send; the socket then echoes the SAME id with ciphertext.
+    const folded = msg({ id: "srv-x", content: "привет секрет", client_key: "ck" });
+    const echo = msg({ id: "srv-x", content: '{"v":1,"dh":"abc","pn":0,"n":0,"ct":"zzzz"}', read: true });
+    const out = mergeMessage([folded], echo);
+    expect(out).toHaveLength(1);
+    expect(out[0].content).toBe("привет секрет"); // keeps plaintext, no "🔒 …" flip
+    expect(out[0].read).toBe(true); // but still absorbs the read receipt
+  });
+
   it("appends an inbound message from someone else", () => {
     const mine = msg({ id: "srv-4", content: "hi", is_mine: true });
     const theirs = msg({ id: "srv-5", content: "yo", is_mine: false, sender_id: "bob" });

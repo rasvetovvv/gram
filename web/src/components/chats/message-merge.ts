@@ -1,4 +1,10 @@
 import type { Message } from "@/lib/types";
+import { looksLikeEnvelope, looksLikeGroupEnvelope } from "@/lib/e2ee/envelope-detect";
+
+/** True for an E2EE ciphertext body (1:1 ratchet envelope or group sender-key envelope). */
+function isCiphertextBody(body: string | undefined): boolean {
+  return looksLikeEnvelope(body) || looksLikeGroupEnvelope(body);
+}
 
 /**
  * Fold one message into a cached thread, optimistic rows included.
@@ -18,13 +24,19 @@ import type { Message } from "@/lib/types";
 export function mergeMessage(current: Message[], incoming: Message): Message[] {
   const index = current.findIndex((item) => item.id === incoming.id);
   if (index >= 0) {
+    const existing = current[index];
+    // Guard against re-ciphering a row we already folded to plaintext: when a later copy of the
+    // SAME message (socket echo, poll) arrives carrying the ciphertext envelope, keep the plaintext
+    // body we are already showing. Otherwise the bubble flips back to "🔒 …" after the first decrypt.
+    const keepBody = isCiphertextBody(incoming.content) && !isCiphertextBody(existing.content);
     const next = current.slice();
     next[index] = {
-      ...next[index],
+      ...existing,
       ...incoming,
+      content: keepBody ? existing.content : incoming.content,
       // `read` is the sender's business and can arrive blank; keep what the last poll knew.
-      read: incoming.read ?? next[index].read,
-      client_key: next[index].client_key ?? incoming.client_key,
+      read: incoming.read ?? existing.read,
+      client_key: existing.client_key ?? incoming.client_key,
       pending: false
     };
     return next;
