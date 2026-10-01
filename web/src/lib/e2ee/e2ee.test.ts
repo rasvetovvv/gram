@@ -26,6 +26,12 @@ import {
   verificationStatus
 } from "./fingerprint";
 import { GroupSession } from "./group-session";
+import {
+  buildGroupKeyDistributionWire,
+  buildGroupMessageWire,
+  parseGroupKeyDistributionWire,
+  parseGroupMessageWire
+} from "./group-wire";
 import type { KeyPair } from "./primitives";
 
 describe("e2ee primitives", () => {
@@ -357,5 +363,47 @@ describe("GroupSession (multi-member sender-key engine)", () => {
     const restoredBob = GroupSession.restore(bob.serialize());
     const after = alice.encrypt("after reload");
     expect(restoredBob.decrypt("alice", after)).toBe("after reload");
+  });
+});
+
+describe("group wire envelopes", () => {
+  it("round-trips a group message envelope and binds the sender", () => {
+    const alice = GroupSession.create();
+    // Distribute first (as the real flow does), then encrypt — the receiver starts at index 0.
+    const bob = GroupSession.create();
+    bob.acceptDistribution("alice", alice.ownDistribution());
+    const message = alice.encrypt("wire test");
+    const wire = buildGroupMessageWire("alice", message);
+    const parsed = parseGroupMessageWire(wire);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.from).toBe("alice");
+    expect(bob.decrypt(parsed!.from, parsed!.msg)).toBe("wire test");
+  });
+
+  it("round-trips a sender-key distribution envelope", () => {
+    const alice = GroupSession.create();
+    const wire = buildGroupKeyDistributionWire("chat-1", "alice", alice.ownDistribution());
+    const parsed = parseGroupKeyDistributionWire(wire);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.group).toBe("chat-1");
+    expect(parsed?.from).toBe("alice");
+    // The parsed distribution is importable and decrypts alice's stream.
+    const bob = GroupSession.create();
+    bob.acceptDistribution(parsed!.from, parsed!.skd);
+    const message = alice.encrypt("via wire skd");
+    expect(bob.decrypt("alice", message)).toBe("via wire skd");
+  });
+
+  it("rejects cross-type and malformed payloads without throwing", () => {
+    const alice = GroupSession.create();
+    const msgWire = buildGroupMessageWire("alice", alice.encrypt("x"));
+    const skdWire = buildGroupKeyDistributionWire("c", "alice", alice.ownDistribution());
+    // A message wire is not a distribution and vice versa.
+    expect(parseGroupKeyDistributionWire(msgWire)).toBeNull();
+    expect(parseGroupMessageWire(skdWire)).toBeNull();
+    // Garbage and plain text parse to null, never an exception.
+    expect(parseGroupMessageWire("not json")).toBeNull();
+    expect(parseGroupKeyDistributionWire("{}")).toBeNull();
+    expect(parseGroupMessageWire(JSON.stringify({ v: 1, t: "gmsg" }))).toBeNull();
   });
 });

@@ -22,6 +22,13 @@ import {
 } from "./device";
 import { fromBase64, toBase64, type KeyPair } from "./primitives";
 import { computeSafetyNumber, safetyNumberQrPayload, verificationStatus, type VerificationStatus } from "./fingerprint";
+import { GroupSession, type GroupSessionState } from "./group-session";
+import {
+  buildGroupKeyDistributionWire,
+  buildGroupMessageWire,
+  parseGroupKeyDistributionWire,
+  parseGroupMessageWire
+} from "./group-wire";
 import {
   InitiatorSession,
   ResponderSession,
@@ -124,6 +131,8 @@ export class E2eeManager {
   // Epoch ms of the last signed-prekey rotation, so a stale one is refreshed on load.
   private signedPreKeyRotatedAt = 0;
   private readonly sessions = new Map<string, InitiatorSession | ResponderSession>();
+  // One sender-key group engine per secret group chat (lazily loaded from the device vault).
+  private readonly groups = new Map<string, GroupSession>();
   // A sender cannot decrypt its own outbound ciphertext (its sending chain is not its receiving
   // chain). When the server echoes our own message back, we look its plaintext up here by the
   // ciphertext bytes. Bounded so it cannot grow without limit within a session.
@@ -428,6 +437,112 @@ export class E2eeManager {
   /** Clear a previously recorded verification (e.g. the user chooses to re-verify). */
   async clearVerification(chatId: string): Promise<void> {
     await vaultDelete(VAULT_KEYS.verification(this.userId, chatId));
+  }
+
+  // ─── Secret GROUP chats (sender-key fan-out) ────────────────────────────────────────────────
+  //
+  // A secret group never establishes one shared ratchet. Instead every member owns a sender key
+  // (group-session.ts) and distributes its PUBLIC half to each other member over the pairwise 1:1
+  // secret channel. Thereafter a member encrypts each message once and the server fans the single
+  // ciphertext out. The manager keeps one GroupSession per group chat, persisted device-locally.
+
+  private async loadGroup(chatId: string): Promise<GroupSession | null> {
+    const existing = this.groups.get(chatId);
+    if (existing) return existing;
+    const state = await vaultGet<GroupSessionState>(VAULT_KEYS.group(this.userId, chatId));
+    if (!state) return null;
+    const session = GroupSession.restore(state);
+    this.groups.set(chatId, session);
+    return session;
+  }
+
+  /** Load-or-create this member's sender-key state for a group and persist it. */
+  async ensureGroup(chatId: string): Promise<GroupSession> {
+    const loaded = await this.loadGroup(chatId);
+    if (loaded) return loaded;
+    const session = GroupSession.create();
+    this.groups.set(chatId, session);
+    await this.persistGroup(chatId);
+    return session;
+  }
+
+  private async persistGroup(chatId: string): Promise<void> {
+    const session = this.groups.get(chatId);
+    if (!session) return;
+    await vaultPut(VAULT_KEYS.group(this.userId, chatId), session.serialize());
+  }
+
+  /**
+   * The wire payload carrying THIS member's sender key for `chatId`, to be delivered to each other
+   * member over the pairwise 1:1 secret channel (the caller does the sending). `selfMemberId` is
+   * how this member identifies itself to peers (its user id).
+   */
+  async groupDistributionWire(chatId: string, selfMemberId: string): Promise<string> {
+    const session = await this.ensureGroup(chatId);
+    return buildGroupKeyDistributionWire(chatId, selfMemberId, session.ownDistribution());
+  }
+
+  /**
+   * Consume a sender-key distribution received over a pairwise channel. Returns the group chat id
+   * it was for (so the caller can refresh that group) or null if the content is not a distribution.
+   * Importing is idempotent-by-replacement: a peer's rotation simply overwrites its old key.
+   */
+  async acceptGroupDistributionWire(rawContent: string): Promise<string | null> {
+    const envelope = parseGroupKeyDistributionWire(rawContent);
+    if (!envelope) return null;
+    const session = await this.ensureGroup(envelope.group);
+    session.acceptDistribution(envelope.from, envelope.skd);
+    await this.persistGroup(envelope.group);
+    return envelope.group;
+  }
+
+  /** Encrypt a group message into the wire string stored as the chat's message content. */
+  async encryptGroup(chatId: string, selfMemberId: string, plaintext: string): Promise<string> {
+    const session = await this.ensureGroup(chatId);
+    const message = session.encrypt(plaintext);
+    await this.persistGroup(chatId);
+    const wire = buildGroupMessageWire(selfMemberId, message);
+    // We cannot decrypt our own outbound group ciphertext, so remember it for the server echo.
+    this.rememberOwn(wire, plaintext);
+    return wire;
+  }
+
+  /**
+   * Decrypt an inbound group message. `rawContent` is the stored message body and `senderId` is
+   * the server-attested author. A distribution payload or a non-group body returns the raw string
+   * unchanged (service messages, or a key handshake the UI shows as a system notice). Throws only
+   * when a genuine group ciphertext cannot be decrypted (missing/!matching sender key).
+   */
+  async decryptGroup(chatId: string, senderId: string, rawContent: string): Promise<string> {
+    const own = this.ownPlaintext.get(rawContent);
+    if (own !== undefined) return own; // our own message echoed back by the server
+    const envelope = parseGroupMessageWire(rawContent);
+    if (!envelope) return rawContent; // not a group ciphertext (service text, etc.)
+    // The envelope's claimed sender must match the server-attested author: a mismatch means a
+    // relabelled message. The sender key's signature (checked in group.ts) is the real authority,
+    // but refusing a mismatch here closes an obvious spoof before any crypto runs.
+    if (envelope.from !== senderId) throw new Error("e2ee: group message sender mismatch");
+    const session = await this.loadGroup(chatId);
+    if (!session) throw new Error("e2ee: no group session on this device");
+    const plaintext = session.decrypt(senderId, envelope.msg);
+    await this.persistGroup(chatId);
+    return plaintext;
+  }
+
+  /** Whether this device holds the sender key for `senderId` in `chatId` (can decrypt them yet). */
+  async hasGroupSenderKey(chatId: string, senderId: string): Promise<boolean> {
+    const session = await this.loadGroup(chatId);
+    return session?.hasPeer(senderId) ?? false;
+  }
+
+  /**
+   * Rotate this member's sender key on a membership change and persist. The caller MUST then send
+   * a fresh `groupDistributionWire` to every remaining member. `remainingMemberIds` excludes self.
+   */
+  async rotateGroup(chatId: string, remainingMemberIds: Iterable<string>): Promise<void> {
+    const session = await this.ensureGroup(chatId);
+    session.rotate(remainingMemberIds);
+    await this.persistGroup(chatId);
   }
 }
 
